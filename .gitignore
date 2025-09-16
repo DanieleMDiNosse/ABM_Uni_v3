@@ -172,3 +172,14 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# csv
+*.csv
+
+# folder
+data/*
+mev_out/*
+images/*
+
+# personal notebook
+personal.ipynb
