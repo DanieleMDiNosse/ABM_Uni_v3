@@ -72,7 +72,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, List, Optional, Callable
+from typing import Dict, Tuple, List, Optional
 
 from bisect import bisect_right, bisect_left
 
@@ -149,9 +149,6 @@ class V3Pool:
 
     Fees & swaps:
       â€¢ Fee f is **on input**; r = 1 - f is the retained fraction used to move S.
-        Fees are accrued **per band segment**: if a swap consumes input Δq_eff in a band,
-        the fee charged there is Δq_eff·(1/r - 1) and is allocated to LPs pro-rata by
-        the band's active L at the *start* of that segment.
       â€¢ Swaps consume liquidity only where it exists. If L_active == 0 (â€œdesertâ€), price
         does not move. The engine outside the raw swap functions can **bridge** to the next
         initialized band and then swap. See `swap_exact_to_target(...)` and `ensure_liquidity(...)`.
@@ -167,7 +164,7 @@ class V3Pool:
     f: float
     liquidity_net: Dict[int, float] = field(default_factory=dict)
     L_active: float = 0.0
-    tick_spacing: int = 5  # 5 bps pool default
+    tick_spacing: int = 10  # 5 bps pool default
 
     # ----- derived properties -----
     @property
@@ -230,7 +227,7 @@ class V3Pool:
 
 
     # ----- exact v3 swaps for the noise trader (spacing aware) -----
-    def swap_x_to_y(self, dx_in: float, fee_cb: Optional[Callable[[str, float, int, float], None]] = None) -> Tuple[float, float, float]:
+    def swap_x_to_y(self, dx_in: float) -> Tuple[float, float, float]:
         if dx_in <= 0 or self.L_active <= 0:
             return 0.0, 0.0, 0.0
 
@@ -248,37 +245,25 @@ class V3Pool:
             dx_to = self.L_active * (1 / S_lo - 1 / self.S)
 
             if dx_eff < dx_to - EPS_BOUNDARY:
-                # Snapshot tick/L for this segment before applying it
-                _tick_snap = self.tick; _L_snap = self.L_active
                 S_new = 1 / (1 / self.S + dx_eff / self.L_active)
                 dy = self.L_active * (S_new - self.S)
                 self.S = S_new
                 dx_used += dx_eff
                 dy_out += -dy
-                # Per-segment fee (token X) on *input* with fee-on-input model
-                _fee_seg = (dx_eff / self.r) - dx_eff
-                if fee_cb and _fee_seg > 0.0 and _L_snap > 0.0:
-                    fee_cb("x", _fee_seg, _tick_snap, _L_snap)
                 dx_eff = 0.0
             else:
-                # Snapshot tick/L for this segment before crossing
-                _tick_snap = self.tick; _L_snap = self.L_active
                 dy = self.L_active * (S_lo - self.S)
                 self.S = S_lo
                 dx_eff -= dx_to
                 dx_used += dx_to
                 dy_out += -dy
-                # Per-segment fee (token X)
-                _fee_seg = (dx_to / self.r) - dx_to
-                if fee_cb and _fee_seg > 0.0 and _L_snap > 0.0:
-                    fee_cb("x", _fee_seg, _tick_snap, _L_snap)
                 self._cross_down_once()
 
         dx_pre = dx_used / self.r if self.r > 0 else dx_used
         fee_x = dx_pre - dx_used
         return dx_pre, dy_out, fee_x
 
-    def swap_y_to_x(self, dy_in: float, fee_cb: Optional[Callable[[str, float, int, float], None]] = None) -> Tuple[float, float, float]:
+    def swap_y_to_x(self, dy_in: float) -> Tuple[float, float, float]:
         if dy_in <= 0 or self.L_active <= 0:
             return 0.0, 0.0, 0.0
 
@@ -296,29 +281,17 @@ class V3Pool:
             dy_to = self.L_active * (S_hi - self.S)
 
             if dy_eff < dy_to - EPS_BOUNDARY:
-                # Snapshot tick/L for this segment before applying it
-                _tick_snap = self.tick; _L_snap = self.L_active
                 S_new = self.S + dy_eff / self.L_active
                 dx = self.L_active * (1 / self.S - 1 / S_new)
                 self.S = S_new
                 dy_used += dy_eff
                 dx_out += dx
-                # Per-segment fee (token Y) on *input*
-                _fee_seg = (dy_eff / self.r) - dy_eff
-                if fee_cb and _fee_seg > 0.0 and _L_snap > 0.0:
-                    fee_cb("y", _fee_seg, _tick_snap, _L_snap)
                 dy_eff = 0.0
             else:
-                # Snapshot tick/L for this segment before crossing
-                _tick_snap = self.tick; _L_snap = self.L_active
                 dx = self.L_active * (1 / self.S - 1 / S_hi)
                 self.S = S_hi
                 dy_eff -= dy_to
                 dx_out += dx
-                # Per-segment fee (token Y)
-                _fee_seg = (dy_to / self.r) - dy_to
-                if fee_cb and _fee_seg > 0.0 and _L_snap > 0.0:
-                    fee_cb("y", _fee_seg, _tick_snap, _L_snap)
                 self._cross_up_once()
 
         dy_pre = dy_used / self.r if self.r > 0 else dy_used
@@ -760,9 +733,8 @@ def simulate(
     binom_n: int = 8,
     binom_p: float = 0.5,
     # --- lognormal noise parameters (new; not yet used) ---
-    trader_mean: float = -2.0,
-    trader_sigma: float = 1.0,
-    theta_T: float = 1.0,
+    lognorm_mean: float = -2.0,
+    lognorm_sigma: float = 1.0,
     # --- other params ---
     mint_mu: float = 0.01,
     mint_sigma: float = 0.02,
@@ -851,7 +823,6 @@ def simulate(
     trader_steps, trader_dirs = [], []
     arb_steps, arb_dirs = [], []
     mint_steps, mint_sizes, burn_steps, burn_sizes = [], [], [], []
-    mint_widths = []
     liq_history: List[Dict[int, float]] = []
     tick_history: List[int] = []
     delta_a_cex_series = []
@@ -915,10 +886,11 @@ def simulate(
 
 
     def mint_lp(lp: LPAgent, width_ticks: int) -> None:
-        # Use an INTEGER number of spacing bands around the active band.
-        # Min total width = tick_spacing; all widths multiples of tick_spacing.
-        n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
-        
+        # snap width to multiples of tick_spacing, at least one band
+        half_w = max(
+            pool.tick_spacing,
+            pool.tick_spacing * int(max(1, round(width_ticks / pool.tick_spacing)))
+        )
 
         X = abs(np.random.normal(mint_mu, mint_sigma))
         want = X * L_SCALE
@@ -928,16 +900,8 @@ def simulate(
         if L_new <= 0: 
             return
 
-        # Center around current sqrt price S (approximately), not the snapped active band.
-        S_now = pool.S
-        s = pool.tick_spacing
-        nb = n_bands
-        denom = (1.0 + (pool.g ** (nb * s + s)))
-        if denom <= 0.0:
-            denom = 1.0
-        lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-        lower = pool._snap(int(round(lower_real)))
-        upper = lower + nb * s
+        center = pool._snap(pool.tick)
+        lower, upper = center - half_w, center + half_w
         if upper <= lower:
             upper = lower + pool.tick_spacing
 
@@ -962,7 +926,6 @@ def simulate(
 
         mint_steps.append(t)
         mint_sizes.append(L_new)
-        mint_widths.append(upper - lower)
         if t < verbose_steps:
             print(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}")
         lp.L_live = getattr(lp, "L_live", 0.0) + L_new
@@ -1023,7 +986,7 @@ def simulate(
         pool.tick = tick_from_S(pool.S)
         return dx_pre, dy_out, fee_x
 
-    def swap_exact_to_target(target_price: float, direction: str, fee_cb: Optional[Callable[[str, float, int, float], None]] = None) -> Tuple[float, float, float, float, float]:
+    def swap_exact_to_target(target_price: float, direction: str) -> Tuple[float, float, float, float, float]:
         target_S = math.sqrt(max(1e-18, target_price))
 
         # --- Desert bridge (peek â†’ optionally apply) ---
@@ -1044,13 +1007,9 @@ def simulate(
             while pool.L_active > 0 and pool.S < target_S - EPS_BOUNDARY:
                 S_hi = pool.s_upper()
                 L_before = pool.L_active
-                _tick_before = pool.tick
                 dy, dx, f = fast_span_up(S_hi, target_S)
                 if dy > 0 and L_first == 0.0:
                     L_first = L_before
-                # Per-span fee allocation (token Y)
-                if fee_cb and f > 0.0 and L_before > 0.0:
-                    fee_cb("y", f, _tick_before, L_before)
                 fee_y += f; total_in += dy; total_out += dx
                 if pool.S >= target_S - EPS_BOUNDARY:
                     break
@@ -1066,13 +1025,9 @@ def simulate(
             while pool.L_active > 0 and pool.S > target_S + EPS_BOUNDARY:
                 S_lo = pool.s_lower()
                 L_before = pool.L_active
-                _tick_before = pool.tick
                 dx, dy, f = fast_span_down(S_lo, target_S)
                 if dx > 0 and L_first == 0.0:
                     L_first = L_before
-                # Per-span fee allocation (token X)
-                if fee_cb and f > 0.0 and L_before > 0.0:
-                    fee_cb("x", f, _tick_before, L_before)
                 fee_x += f; total_in += dx; total_out += dy
                 if pool.S <= target_S + EPS_BOUNDARY:
                     break
@@ -1101,11 +1056,11 @@ def simulate(
             lo, hi = ref.m * r, ref.m / r
             if P < lo * (1 - 1e-9):
                 # up: returns (dy_in, dx_out, fee_x=0, fee_y, L_first)
-                dy_in, dx_out, fx, fy, Lff = swap_exact_to_target(lo, "up", fee_cb=allocate_fees)
+                dy_in, dx_out, fx, fy, Lff = swap_exact_to_target(lo, "up")
                 return dy_in, dx_out, 0.0, ("up" if dy_in > 0 else None), fx, fy, Lff
             if P > hi * (1 + 1e-9):
                 # down: returns (dx_in, dy_out, fee_x, fee_y=0, L_first)
-                dx_in, dy_out, fx, fy, Lff = swap_exact_to_target(hi, "down", fee_cb=allocate_fees)
+                dx_in, dy_out, fx, fy, Lff = swap_exact_to_target(hi, "down")
                 return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), fx, fy, Lff
             return 0.0, 0.0, 0.0, None, 0.0, 0.0, 0.0
         else:
@@ -1147,16 +1102,13 @@ def simulate(
         noise_ticks = 0.0
         if binom_n > 0 and 0.0 < binom_p < 1.0:
             K = np.random.binomial(binom_n, binom_p)
-            noise_ticks = abs((K - binom_n * binom_p) * pool.tick_spacing)  # non-negative noise per spec
+            noise_ticks = (K - binom_n * binom_p) * pool.tick_spacing
 
         # Map to width in ticks: w = clip(w_min + slope * basis_in_ticks + noise_ticks, w_min, w_max)
         w_unclipped = w_min_ticks + slope_s * basis_in_ticks + noise_ticks
-        step_width_ticks = pool.tick_spacing  # total width snaps to tick_spacing
+        step_width_ticks = lcm(w_min_ticks, 2 * pool.tick_spacing)
         w_ticks = int(round(w_unclipped / step_width_ticks)) * step_width_ticks
-        # Enforce minimum based on w_min_ticks (rounded up to spacing multiple), not just one band
-        _min_bands = max(1, (w_min_ticks + step_width_ticks - 1) // step_width_ticks)
-        _max_bands = max(1, w_max_ticks // step_width_ticks)
-        w_ticks = max(_min_bands * step_width_ticks, min(w_ticks, _max_bands * step_width_ticks))
+        w_ticks = max(step_width_ticks, min(w_ticks, (w_max_ticks // step_width_ticks) * step_width_ticks))
         # w_ticks = int(round(max(w_min_ticks, min(w_unclipped, w_max_ticks))))
         # ---------------------------------------------------------------------
 
@@ -1203,18 +1155,10 @@ def simulate(
                     pos = lp.positions[i]
                     width = pos.upper - pos.lower
                     L_same = pos.L
-                    burn_any(lp, i)
-                    # Center around current sqrt price S (approximately), not the snapped active band.
-                    n_bands = max(1, int(round(width / pool.tick_spacing)))
-                    S_now = pool.S
-                    s = pool.tick_spacing
-                    nb = n_bands
-                    denom = (1.0 + (pool.g ** (nb * s + s)))
-                    if denom <= 0.0:
-                        denom = 1.0
-                    lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-                    lower = pool._snap(int(round(lower_real)))
-                    upper = lower + nb * s
+                    burn_any(lp, i)  # cooldown starts, but re-center is allowed as itâ€™s a reposition
+                    center = pool._snap(pool.tick)
+                    lower = pool._snap(center - (width // 2))
+                    upper = lower + width
                     sa, sb = pool.s_lower(lower), pool.s_upper(upper)
                     amt0, amt1 = minted_amounts_at_S(L_same, sa, sb, pool.S)
                     newpos = Position(
@@ -1224,7 +1168,7 @@ def simulate(
                     pool.add_liquidity_range(lower, upper, L_same)
                     bidx.mark_dirty()
                     lp.positions.append(newpos)
-                    mint_steps.append(t); mint_sizes.append(L_same); mint_widths.append(upper - lower)
+                    mint_steps.append(t); mint_sizes.append(L_same)
                     if t < verbose_steps:
                         print(f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}")
 
@@ -1340,7 +1284,7 @@ def simulate(
 
 
         def act_trader():
-            nonlocal trader_y_this, L_pre_trader_this, trader_pnl_this, _trader_execs, delta_a_cex_this
+            nonlocal trader_y_this, L_pre_trader_this, trader_pnl_this, _trader_execs
 
             if random.random() >= p_trade:
                 return
@@ -1351,16 +1295,14 @@ def simulate(
             m_now = ref.m
 
             if side == "X_to_Y":
-                # clip_x = 0.015 * max(pool.L_active, 1e-12) / max(1e-12, pool.S)
-                # dx = abs(np.random.lognormal(mean=trader_mean, sigma=trader_sigma)) * clip_x
-                dx = np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma))
+                clip_x = 0.015 * max(pool.L_active, 1e-12) / max(1e-12, pool.S)
+                dx = abs(np.random.lognormal(mean=lognorm_mean, sigma=lognorm_sigma)) * clip_x
                 if dx <= 0:
                     return
 
                 dy_dex_quote = quote_x_to_y(dx)
                 dy_cex = dx * m_now
-                if dy_dex_quote <= theta_T*dy_cex:
-                    delta_a_cex_this -= dx
+                if dy_dex_quote <= dy_cex:
                     return
 
                 prev_tick, prev_S = pool.tick, pool.S
@@ -1373,7 +1315,8 @@ def simulate(
                     pool.recompute_active_L()
                     bridged = True
 
-                used_dx_pre, dy_out_real, fee_x = pool.swap_x_to_y(dx, fee_cb=allocate_fees)
+                tick_snap = pool.tick; L_snap = pool.L_active
+                used_dx_pre, dy_out_real, fee_x = pool.swap_x_to_y(dx)
                 if used_dx_pre <= EPS_LIQ:
                     if bridged:
                         pool.tick, pool.S = prev_tick, prev_S
@@ -1384,20 +1327,18 @@ def simulate(
                 trader_y_this = -P_pre * used_dx_pre
                 trader_pnl_this += (dy_out_real - used_dx_pre * m_now)
                 _trader_execs += int(used_dx_pre > 0)
-                # Fees already allocated per band via fee_cb
+                allocate_fees("x", fee_x, tick_snap, L_snap)
 
             else:  # Y->X
-                # clip_y = 0.015 * max(pool.L_active, 1e-12) * pool.S
-                # dy = abs(np.random.lognormal(mean=trader_mean, sigma=trader_sigma)) * clip_y
-                dy = np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma))
+                clip_y = 0.015 * max(pool.L_active, 1e-12) * pool.S
+                dy = abs(np.random.lognormal(mean=lognorm_mean, sigma=lognorm_sigma)) * clip_y
                 if dy <= 0:
                     return
 
                 dx_dex_quote = quote_y_to_x(dy)
                 val_dex_y = dx_dex_quote * P_pre
                 val_cex_y = dy
-                if val_dex_y <= theta_T*val_cex_y:
-                    delta_a_cex_this += dy / m_now
+                if val_dex_y <= val_cex_y:
                     return
 
                 prev_tick, prev_S = pool.tick, pool.S
@@ -1410,7 +1351,8 @@ def simulate(
                     pool.recompute_active_L()
                     bridged = True
 
-                used_dy_pre, dx_out_real, fee_y = pool.swap_y_to_x(dy, fee_cb=allocate_fees)
+                tick_snap = pool.tick; L_snap = pool.L_active
+                used_dy_pre, dx_out_real, fee_y = pool.swap_y_to_x(dy)
                 if used_dy_pre <= EPS_LIQ:
                     if bridged:
                         pool.tick, pool.S = prev_tick, prev_S
@@ -1421,7 +1363,7 @@ def simulate(
                 trader_y_this = +used_dy_pre
                 trader_pnl_this += (dx_out_real * m_now - used_dy_pre)
                 _trader_execs += int(used_dy_pre > 0)
-                # Fees already allocated per band via fee_cb
+                allocate_fees("y", fee_y, tick_snap, L_snap)
 
         def act_arbitrageur():
             nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, arb_pnl_this, _arb_execs
@@ -1438,14 +1380,16 @@ def simulate(
                     arb_y_this = +in_used
                     arb_pnl_this += (x_out_from_dex * ref.m - in_used)
                     _arb_execs += int(in_used > 0)
-                    # Fees already allocated per span via fee_cb
+                    if fee_y_arb > 0:
+                        allocate_fees("y", fee_y_arb, pool.tick, L_first)
                 else:
                     # DEX expensive: sell A on DEX (A in), buy A on CEX @ m_now
                     delta_a_cex_this = +in_used
                     arb_y_this = -pool.price * in_used
                     arb_pnl_this += (y_out_from_dex - in_used * ref.m)
                     _arb_execs += int(in_used > 0)
-                    # Fees already allocated per span via fee_cb
+                    if fee_x_arb > 0:
+                        allocate_fees("x", fee_x_arb, pool.tick, L_first)
 
         # --- async LP micro-scheduler: A â†’ trader â†’ B â†’ arb â†’ C ---
 
@@ -1708,7 +1652,6 @@ def simulate(
         "arb_dirs": arb_dirs,
         "mint_steps": mint_steps,
         "mint_sizes": mint_sizes,
-        "mint_widths": mint_widths,
         "burn_steps": burn_steps,
         "burn_sizes": burn_sizes,
         "liq_history": liq_history,
@@ -1841,18 +1784,14 @@ if __name__ == "__main__":
                     p_trade=0.7, p_lp_narrow=0.8, p_lp_wide=0.4,
                     N_LP=500, tau=10,
                     # width via EWMA(B_t):
-                    w_min_ticks=5, w_max_ticks=1774540, basis_half_life=10, slope_s=0.1,
+                    w_min_ticks=10, w_max_ticks=1774540, basis_half_life=50, slope_s=1.0,
                     # binomial noise now in effect (n, p):
                     binom_n=10, binom_p=0.5,
                     # trade size
-                    trader_mean=2.0, trader_sigma=1, theta_T=1,
+                    lognorm_mean=-2.0, lognorm_sigma=1,
                     mint_mu=0.05, mint_sigma=0.01,
                     theta_TP=0.05, theta_SL=0.10, evolve_initial_hill=True,
                     initial_binom_N=500, initial_total_L=250_000, k_out=5, visualize=True)
-    
-    plt.figure(figsize=(8, 4))
-    plt.hist(out['mint_widths'], bins=30, color="#4C78A8", edgecolor="k", alpha=0.7)
-    plt.show()
 
     # make_liquidity_gif(
     #     liq_history=out["liq_history"],

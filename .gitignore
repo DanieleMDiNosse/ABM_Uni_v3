@@ -183,3 +183,15 @@ images/*
 
 # personal notebook
 personal.ipynb
+
+# GIF
+*.gif
+
+# PNG
+*.png
+
+# PDF
+*.pdf
+
+# TXT
+*.txt
