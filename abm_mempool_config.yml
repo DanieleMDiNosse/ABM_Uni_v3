@@ -12,7 +12,7 @@ simulate:
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.0
   # Volatility of the reference CEX price process (per step)
-  cex_sigma: 0.0075
+  cex_sigma: 0.0015
   # Probability that a smart-router trade intent arrives in each micro step
   p_trade: 0.7
   # Probability that a noise trader submits even when best execution fails
@@ -22,9 +22,9 @@ simulate:
   # Mint probability for wide, less active LPs
   p_lp_wide: 0.7
   # Fraction of LP agents designated as passive baseline providers
-  passive_lp_share: 0.1
+  passive_lp_share: 0.2
   # Probability per review that a passive LP mints when not already in the pool
-  passive_mint_prob: 0.2
+  passive_mint_prob: 0.3
   # Probability per review that a passive LP burns its existing position
   passive_burn_prob: 0.05
   # Range width in ticks used for passive LP positions
