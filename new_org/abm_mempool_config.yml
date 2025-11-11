@@ -1,0 +1,95 @@
+# Scenario label used when naming outputs and aggregating results
+scenario: static_baseline
+
+# Parameter overrides passed to the simulate() runner
+simulate:
+  # Number of micro-time steps aggregated per block (1 switches to non-block mode)
+  block_size: 5
+  # Total number of simulation blocks to execute
+  T: 750
+  # Random seed used for reproducibility across RNGs
+  seed: 7
+  # Drift of the reference CEX price process (per step)
+  cex_mu: 0.0
+  # Volatility of the reference CEX price process (per step)
+  cex_sigma: 0.0015
+  # Probability that a smart-router trade intent arrives in each micro step
+  p_trade: 0.7
+  # Probability that a noise trader submits even when best execution fails
+  noise_floor: 0.5
+  # Mint probability for narrow, actively re-centering LPs
+  p_lp_narrow: 0.95
+  # Mint probability for wide, less active LPs
+  p_lp_wide: 0.7
+  # Fraction of LP agents designated as passive baseline providers
+  passive_lp_share: 0.2
+  # Probability per review that a passive LP mints when not already in the pool
+  passive_mint_prob: 0.3
+  # Probability per review that a passive LP burns its existing position
+  passive_burn_prob: 0.05
+  # Range width in ticks used for passive LP positions
+  passive_width_ticks: 500
+  # Total number of LP agents instantiated in the simulation
+  N_LP: 500
+  # Average cadence (in steps) between LP reviews of their positions
+  tau: 20
+  # Minimum width in ticks for programmatic LP mints
+  w_min_ticks: 10
+  # Maximum width in ticks allowed for programmatic LP mints
+  w_max_ticks: 1774540
+  # Half-life (steps) of the EWMA basis signal driving LP widths
+  basis_half_life: 20
+  # Sensitivity of LP width (ticks per unit of basis signal)
+  slope_s: 0.15
+  # Number of trials for the binomial noise component on LP width
+  binom_n: 10
+  # Success probability for the binomial noise component on LP width
+  binom_p: 0.5
+  # Mean of log-normal order size distribution for traders
+  trader_mean: 1.0
+  # Standard deviation of log-normal order size distribution for traders
+  trader_sigma: 0.6
+  # Threshold multiplier for CEX-vs-DEX price comparison (best execution)
+  theta_T: 0.95
+  # Mean of log-normal draw scaling LP mint sizes
+  mint_mu: 0.05
+  # Standard deviation of log-normal draw scaling LP mint sizes
+  mint_sigma: 0.01
+  # Take-profit ratio (relative to initial HODL value) for LP burn decisions
+  theta_TP: 0.1
+  # Stop-loss ratio (relative to initial HODL value) for LP burn decisions
+  theta_SL: 0.25
+  # If true, bootstraps liquidity via dynamic sharded hill and evolving LP budgets
+  evolve_initial_hill: true
+  # Binomial hill depth used to seed initial liquidity distribution
+  initial_binom_N: 450
+  # Total initial liquidity deployed across seed LPs
+  initial_total_L: 500000.0
+  # Whether to render the initial liquidity hill for diagnostics
+  plot_initial_hill: false
+  # Number of consecutive steps out of range before a narrow LP recenters
+  k_out: 5
+  # Whether to generate plots and GIFs at the end of the run
+  visualize: true
+  # Number of initial steps to omit from visualizations and analytics
+  skip_step: 300
+  # Fee controller mode: static, volatility, toxicity, imbalance, or hybrid
+  fee_mode: static
+  # Baseline fee level applied when controller is static or as floor for dynamics
+  f0: 0.003
+  # Minimum fee cap enforced by the controller
+  f_min: 0.0005
+  # Maximum fee cap enforced by the controller
+  f_max: 0.05
+  # Half-life (steps) of the EWMA used for fee controller signals
+  fee_half_life: 10
+  # Multiplier converting EWMA volatility into a fee adjustment
+  k_sigma: 50.0
+  # Multiplier converting EWMA basis (ticks) into a fee adjustment
+  k_basis: 0.0001
+  # Minimum absolute fee change (in bps) required before committing an update
+  fee_step_bps_min: 0.001
+  # Maximum fee change (in bps) allowed per update step
+  fee_step_bps_max: 20.0
+  # Cooldown (steps) between consecutive fee updates
+  fee_cooldown: 0
