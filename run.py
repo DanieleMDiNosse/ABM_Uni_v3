@@ -709,6 +709,7 @@ def simulate(
         # Split per-actor accumulators
         sr_acc = TraderStepAccumulator()
         noise_acc = TraderStepAccumulator()
+        arb_acc = TraderStepAccumulator()
         delta_a_cex_this = 0.0
         L_pre_trader_this = np.nan
         L_pre_arb_eff_this = np.nan
@@ -1208,7 +1209,7 @@ def simulate(
             execute_trader("noise", noise_floor, noise_acc, False)
 
         def act_arbitrageur():
-            nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, arb_pnl_this, _arb_execs
+            nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
 
             in_used, x_out_from_dex, y_out_from_dex, dir_arb, fee_x_arb, fee_y_arb, L_first = arbitrage_to_target(arb_ref_m)
             delta_a_cex_this = 0.0
@@ -1221,14 +1222,14 @@ def simulate(
                     # DEX cheap: buy A on DEX (A out), sell A on CEX @ m_now
                     delta_a_cex_this = -x_out_from_dex
                     arb_y_this = +in_used
-                    arb_pnl_this += (x_out_from_dex * ref.m - in_used)
+                    arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
                     _arb_execs += int(in_used > 0)
                     # Fees already allocated per span via fee_cb
                 else:
                     # DEX expensive: sell A on DEX (A in), buy A on CEX @ m_now
                     delta_a_cex_this = +in_used
                     arb_y_this = -pool.price * in_used
-                    arb_pnl_this += (y_out_from_dex - in_used * ref.m)
+                    arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
                     _arb_execs += int(in_used > 0)
                     # Fees already allocated per span via fee_cb
 
@@ -1266,8 +1267,7 @@ def simulate(
         # Block mode (block_size > 1):
         #   - Snapshot CEX at block start: arb_ref_m
         #   - Micro-steps: diffuse-only; enqueue intents with p_trade_micro/noise_floor_micro
-        #   - Boundary order (current): A -> Arb(to arb_ref_m) -> B -> mempool -> C
-        #     (Backrun-like alternative: A -> mempool -> Arb -> B -> C)
+        #   - Boundary order (current): Arb -> (populate+execute mempool)  (LPs act via mempool)
         # =====================================================================
         # run the schedule
         if block_size == 1:
@@ -1300,7 +1300,12 @@ def simulate(
                 _broadcast_price_move(ref.m)
                 M_micro.append(ref.m)
 
-            
+            # --- Arbitrage before mempool execution ---
+            arb_ref_m = ref.m  # end-of-block CEX price (post-diffusion, pre-arb impact)
+            band_lo_target.append(arb_ref_m * r)
+            band_hi_target.append(arb_ref_m / r)
+            act_arbitrageur()
+
             # --- Include LP intents in the mempool (shuffled with traders) ---
             # Allow due LPs to act this block
             _enable(due)
@@ -1394,13 +1399,8 @@ def simulate(
             # Execute all mempool intents (traders + LPs) in random order
             L_pre_trader_this = pool.L_active
             execute_mempool_orders()
-            # --- End-of-block CEX snapshot for arbitrage target ---
-            arb_ref_m = ref.m  # end-of-block CEX price (post-diffusion, pre-arb impact)
-            band_lo_target.append(arb_ref_m * r)
-            band_hi_target.append(arb_ref_m / r)
 
-            act_arbitrageur()
-            # update last micro-sample of DEX price to reflect boundary execution
+            # update last micro-sample of DEX price to reflect mempool executions
             if block_size > 1:
                 P_micro[_micro_start + block_size - 1] = pool.price
         # disable everyone for next step
@@ -1417,6 +1417,8 @@ def simulate(
         sr_acc.settle(settlement_m)
         noise_acc.settle(settlement_m)
         trader_pnl_this = sr_acc.pnl + noise_acc.pnl
+        arb_acc.settle(settlement_m)
+        arb_pnl_this = arb_acc.pnl
 
         # ================== Dynamic fee controller  ==================
         # Signals based on END-OF-STEP state; new fee applies NEXT step.
