@@ -15,7 +15,8 @@ The implementation lives in `run.py` and can be configured through YAML scenario
   - **LPs**: passive baselines, active narrow, active wide. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
 - **Block-aware mempool**:
   - `block_size == 1`: deterministic schedule `LP bucket A → smart+noise → LP bucket B → arb → LP bucket C`.
-  - `block_size > 1`: micro diffusion on the CEX, intents are queued, arbitrage executes **first**, then LP + trader intents are shuffled together and executed to mimic intra-block random ordering.
+  - `block_size > 1`: (i) freeze the validated snapshot, (ii) run the arbitrage at that price, (iii) diffuse the CEX for each micro-step, (iv) enqueue LP/trader intents, and (v) execute the shuffled mempool to mimic intra-block ordering. When desired the block length itself can be re-drawn from a bounded Zipf(α) distribution.
+- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block all agents—LPs, smart/noise traders, and the arbitrageur—make decisions against this shared “last validated” snapshot, so order placement reflects the price that would be visible on-chain once the prior block finalizes.
 - **Dynamic fee controller** with three modes:
   - `static` fixes the fee at `f0`.
   - `volatility` adds a multiple of EWMA(|log-return|).
@@ -30,31 +31,32 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 
 ### Reference Market (CEX)
 - Modeled as a GBM with drift `cex_mu`, volatility `cex_sigma`, and impact function `kappa * sign(Δa) * |Δa|^{1+xi}`.
-- Diffuses every micro time-step. At the end of each block the arbitrageur observes the latest CEX price and trades the DEX back into the `[m * r, m / r]` band.
+- Diffuses every micro time-step. At block boundaries we snapshot the CEX mark (`validated_cex`); every agent references that immutable price until the block closes, while the live `ref.m` continues to diffuse for impact accounting.
 
 ### Arbitrageur
-- Runs `arbitrage_to_target(arb_ref_m)` to bring the pool price inside the tolerance band.
-- Arbitrage fires **before** mempool execution using the pre-mempool DEX price and the current CEX snapshot. This mirrors a MEV searcher inserting the backrun at the front of the block.
+- Runs `arbitrage_to_target(arb_ref_m)` using the snapshot price that was validated at the **end of the previous block**. That price defines the no-arb band `[arb_ref_m·r, arb_ref_m/r]`.
+- Arbitrage fires **before** mempool execution using the frozen DEX/CEX snapshot. The arb therefore represents a backrun that lands immediately before user transactions inside the next block.
 - PnL is measured in token1 using the same settlement convention as other agents (CEX price after the block’s net impact).
 
 ### Smart Router
 - Samples swaps from log-normal size distributions (`trader_mean`, `trader_sigma`).
 - Enforces:
-  - Best execution vs. CEX (`theta_T` threshold). Smart Router trades on DEX only if the DEX quote is no less that `theta_T` times CEX quote.
-  - Slippage tolerance (`slippage_tolerance`).
-- Intents are routed into the mempool and executed if liquidity is available. Token flows are tracked and PnL is settled **after** the CEX incorporates arbitrage impact, mimicking settlement on block confirmation.
+  - Best execution vs. the **validated** CEX snapshot (`theta_T` threshold). The router never chases intra-block diffusion; it compares DEX quotes to the last confirmed on-chain price.
+  - Slippage tolerance (`slippage_tolerance`) against the live pool at the exact execution time.
+- Intents are routed into the mempool and executed if liquidity is available. Token flows are tracked and PnL is settled **after** the block settles on-chain (i.e., after the CEX applies impact from the arb).
 
 ### Noise Trader
-- Shares the same size distribution as the smart router but **skips** the best-execution check (only slippage is enforced). Useful for stress testing liquidity by supplying “uninformed” flow.
+- Shares the same size distribution as the smart router but **skips** the best-execution check (only slippage is enforced). Useful for stress testing liquidity by supplying “uninformed” flow. Noise traders still quote against the frozen CEX snapshot to stay synchronized with the rest of the mempool.
 
 ### Liquidity Providers
 - **Classes**:
   - *Passive baselines* (`passive_lp_share`): wide default ranges, probabilistic mint/burn rules (`passive_mint_prob`, `passive_burn_prob`, `passive_width_ticks`).
-  - *Active narrow LPS*: concentrate liquidity near the mid, recenter after `k_out` steps out of range, follow an EWMA-driven width rule with binomial noise.
+  - *Active narrow LPS*: concentrate liquidity near the mid, recenter after `k_out` steps out of range, follow an EWMA-driven width rule with binomial noise. Recency decisions are computed from the validated DEX snapshot so all LPs “see” the same last confirmed price even while the mempool is in-flight.
   <!-- - *Active wide LPS*: optional additional cohort (`active_wide_lp_enabled`), slower to react but still “active”. -->
 - **Scheduler**:
   - Each LP has a geometric review clock (`tau`) and a cooldown after burning.
-  - All due LPs inject their intents into the mempool (burns/recenters/mints) and are shuffled with trader flow.
+  - When `block_size == 1`, due LPs are split into three buckets (A/B/C) to interleave deterministically with traders and the arbitrageur. When `block_size > 1`, all due LPs push intents into the shared mempool.
+  - Regardless of how the intent is executed, LP logic references the frozen snapshot: `pos.in_range(agent_tick_ref)` for re-centering, `pos.PnL_y(agent_S_ref, validated_cex)` for TP/SL, and `minted_amounts_at_S(..., agent_S_ref)` plus `hodl0_value_y = amt0 * validated_cex + amt1` for new positions. The pool mutation still applies to the live pool state, but parameters are locked in when the LP observes the snapshot.
   <!-- - In single-step mode due LPs are split across three buckets to interleave with other actors deterministically. -->
 - **Budgets & bootstrap**:
   - Liquidity budgets derived from `initial_total_L`.
@@ -70,14 +72,12 @@ The implementation lives in `run.py` and can be configured through YAML scenario
    - Parse CLI (`python run.py --config path/to/config.yml`).
    - Load scenario from YAML (see next section).
    - Seed RNGs, build empty pool, generate LP roster, bootstrap liquidity.
-2. **Per step**:
-   - Update reference CEX (diffusion and, after swaps, impact).
-   - Evolve EWMA signals for LP widths and fee controller.
-   - Randomize actor order depending on `block_size`.
-   - Execute arbitrage.
-   - Run mempool or direct swaps, apply fees, update LP positions.
-   - Settle smart-router, noise and arbitrageur PnL at the post-impact CEX price.
-   - Update fee schedule for the next step, record telemetry, and log to `abm_results/verbose_steps_*`.
+2. **Per step (block)**:
+   - Copy the validated snapshot into agent-facing variables (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`).
+   - Update/adapt reference CEX (diffusion + impact) and evolve EWMA signals.
+   - Randomize actor order depending on `block_size`. In block mode: arb at the snapshot price, diffuse micro-steps, enqueue intents (all referencing the snapshot), then replay the mempool against the live pool.
+   - Apply fees, update LP positions, and settle agent PnL at the post-impact CEX price.
+   - Update the dynamic fee controller, log state, and finally capture the new validated snapshot (live DEX + CEX) for the next iteration.
 3. **Post-processing**:
    - Generate the default plot suite (prices, LP stats, PnLs, fee path).
    - Compute DEX log-return autocorrelation (saved under `abm_results/png` and `abm_results/html`).
@@ -154,4 +154,3 @@ Outputs:
 ---
 
 For further questions or ideas, open an issue or start a discussion in this repository. Happy simulating!
-

@@ -439,8 +439,8 @@ def simulate(
         if L_new <= 0: 
             return
 
-        # Center around current sqrt price S (approximately), not the snapped active band.
-        S_now = pool.S
+        # Center around the validated sqrt price snapshot (pre-mempool)
+        S_now = agent_S_ref
         s = pool.tick_spacing
         nb = n_bands
         denom = (1.0 + (pool.g ** (nb * s + s)))
@@ -453,14 +453,14 @@ def simulate(
             upper = lower + pool.tick_spacing
 
         sa, sb = pool.s_lower(lower), pool.s_upper(upper)
-        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, pool.S)
+        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
 
         pos = Position(
             owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
-            amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * ref.m + amt1,
+            amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1,
         )
 
-        assert abs(pos.PnL_y(pool.S, ref.m)) <= 1e-9 * max(1.0, pos.hodl0_value_y), "Non-zero PnL at mint"
+        assert abs(pos.PnL_y(agent_S_ref, cex_ref_for_agents)) <= 1e-9 * max(1.0, pos.hodl0_value_y), "Non-zero PnL at mint"
 
         pool.add_liquidity_range(lower, upper, L_new)
         pool.recompute_active_L()
@@ -647,10 +647,21 @@ def simulate(
     total_noise_swaps_skipped = 0
     total_smart_swaps_executed = 0
     total_smart_swaps_skipped = 0
+    # Track the last validated DEX state (end of previous block)
+    validated_price = pool.price
+    validated_S = pool.S
+    validated_tick = pool.tick
+    validated_cex = ref.m
+    agent_S_ref = validated_S
+    agent_tick_ref = validated_tick
+    cex_ref_for_agents = validated_cex
 
     # ------------------ Main loop ------------------
     for t in range(T):
-        arb_ref_m = ref.m  # default; overridden per-block to end-of-block CEX
+        agent_S_ref = validated_S
+        agent_tick_ref = validated_tick
+        cex_ref_for_agents = validated_cex
+        arb_ref_m = cex_ref_for_agents  # default snapshot (end of previous block)
         # --- Apply any committed fee update (commit→reveal) ---
         if fee_cooldown_left > 0:
             fee_cooldown_left -= 1
@@ -834,9 +845,9 @@ def simulate(
                         if upper <= lower or L_new <= 0.0:
                             return
                         sa, sb = pool.s_lower(lower), pool.s_upper(upper)
-                        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, pool.S)
+                        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
-                                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * ref.m + amt1)
+                                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
                         pool.add_liquidity_range(lower, upper, L_new)
                         pool.recompute_active_L(); bidx.mark_dirty()
                         lp.positions.append(pos)
@@ -857,9 +868,9 @@ def simulate(
                         if upper <= lower or L_new <= 0.0:
                             return
                         sa, sb = pool.s_lower(lower), pool.s_upper(upper)
-                        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, pool.S)
+                        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
-                                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * ref.m + amt1)
+                                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
                         pool.add_liquidity_range(lower, upper, L_new)
                         pool.recompute_active_L(); bidx.mark_dirty()
                         lp.positions.append(pos)
@@ -970,7 +981,7 @@ def simulate(
                 f.write(f"[t={t:03d}] MEMPOOL after P={pool.price:.4f}\n")
             mempool_orders.clear()
 
-        def execute_trader(agent_label: str, probability: float, accumulator: TraderStepAccumulator, enforce_best_ex: bool) -> None:
+        def execute_trader(agent_label: str, probability: float, accumulator: TraderStepAccumulator, enforce_best_ex: bool, m_reference: float) -> None:
             nonlocal L_pre_trader_this, trader_y_this, _trader_execs
             nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
             nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
@@ -981,7 +992,6 @@ def simulate(
             side = random.choice(["X_to_Y", "Y_to_X"])
             L_pre_trader_this = pool.L_active
             P_pre = pool.price
-            m_now = ref.m
 
             if side == "X_to_Y":
                 dx = np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma))
@@ -991,7 +1001,7 @@ def simulate(
                 if initial_quote <= 0.0:
                     return
                 if enforce_best_ex:
-                    if initial_quote < theta_T * dx * m_now:
+                    if initial_quote < theta_T * dx * m_reference:
                         return
                 min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
                 final_quote = pool.quote_x_to_y(dx, bidx)
@@ -1049,7 +1059,7 @@ def simulate(
                 if initial_quote <= 0.0:
                     return
                 if enforce_best_ex:
-                    dx_cex = dy / max(m_now, 1e-18)
+                    dx_cex = dy / max(m_reference, 1e-18)
                     if initial_quote < theta_T * dx_cex:
                         return
                 min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
@@ -1111,7 +1121,7 @@ def simulate(
                     continue
                 to_burn = []
                 for i, pos in enumerate(lp.positions):
-                    pnl = pos.PnL_y(pool.S, ref.m)
+                    pnl = pos.PnL_y(agent_S_ref, ref.m)
                     if pnl >= theta_TP * pos.hodl0_value_y or pnl <= -theta_SL * pos.hodl0_value_y:
                         to_burn.append(i)
                 for i in reversed(to_burn):
@@ -1123,7 +1133,7 @@ def simulate(
                     continue
                 to_recenters: List[int] = []
                 for i, pos in enumerate(lp.positions):
-                    in_rng = pos.in_range(pool.tick)
+                    in_rng = pos.in_range(agent_tick_ref)
                     out_steps = getattr(pos, "out_steps", 0)
                     out_steps = 0 if in_rng else out_steps + 1
                     setattr(pos, "out_steps", out_steps)
@@ -1137,7 +1147,7 @@ def simulate(
                     burn_any(lp, i)
                     # Center around current sqrt price S (approximately), not the snapped active band.
                     n_bands = max(1, int(round(width / pool.tick_spacing)))
-                    S_now = pool.S
+                    S_now = agent_S_ref
                     s = pool.tick_spacing
                     nb = n_bands
                     denom = (1.0 + (pool.g ** (nb * s + s)))
@@ -1147,10 +1157,10 @@ def simulate(
                     lower = pool._snap(int(round(lower_real)))
                     upper = lower + nb * s
                     sa, sb = pool.s_lower(lower), pool.s_upper(upper)
-                    amt0, amt1 = minted_amounts_at_S(L_same, sa, sb, pool.S)
+                    amt0, amt1 = minted_amounts_at_S(L_same, sa, sb, agent_S_ref)
                     newpos = Position(
                         owner=lp.id, lower=lower, upper=upper, L=L_same, sa=sa, sb=sb,
-                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * ref.m + amt1,
+                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1,
                     )
                     pool.add_liquidity_range(lower, upper, L_same)
                     bidx.mark_dirty()
@@ -1185,7 +1195,7 @@ def simulate(
                 L_new = max(0.0, min(want, cap_step, cap_left))
                 if L_new <= 0.0:
                     continue
-                S_now = pool.S
+                S_now = agent_S_ref
                 sps = pool.tick_spacing
                 nb = n_bands
                 denom = (1.0 + (pool.g ** (nb * sps + sps)))
@@ -1203,10 +1213,12 @@ def simulate(
                 pool.L_active = 0.0
 
         def act_smart_router():
-            execute_trader("smart", p_trade_micro, sr_acc, True)
+            for _ in range(max(0, int(N_smart_router))):
+                execute_trader("smart", p_trade_micro, sr_acc, True, cex_ref_for_agents)
 
         def act_noise_trader():
-            execute_trader("noise", noise_floor, noise_acc, False)
+            for _ in range(max(0, int(N_noise))):
+                execute_trader("noise", noise_floor_micro, noise_acc, False, cex_ref_for_agents)
 
         def act_arbitrageur():
             nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
@@ -1271,9 +1283,10 @@ def simulate(
         # =====================================================================
         # run the schedule
         if block_size == 1:
-            # target band uses current ref.m (end-of-step ≈ current) in non-block mode
-            band_lo_target.append(ref.m * r)
-            band_hi_target.append(ref.m / r)
+            # target band uses validated CEX snapshot in non-block mode
+            target_band_m = cex_ref_for_agents
+            band_lo_target.append(target_band_m * r)
+            band_hi_target.append(target_band_m / r)
             _enable(bucketA)
             act_LPs()
 
@@ -1294,16 +1307,17 @@ def simulate(
             P_micro.extend([pool.price] * block_size)
             micro_steps.extend([t * block_size + k for k in range(block_size)])
             for _k in range(block_size):
-                maybe_enqueue_smart_router_intent(ref.m)
-                maybe_enqueue_noise_trader_intent(ref.m)
+                maybe_enqueue_smart_router_intent(cex_ref_for_agents)
+                maybe_enqueue_noise_trader_intent(cex_ref_for_agents)
                 ref.diffuse_only()
                 _broadcast_price_move(ref.m)
                 M_micro.append(ref.m)
 
             # --- Arbitrage before mempool execution ---
-            arb_ref_m = ref.m  # end-of-block CEX price (post-diffusion, pre-arb impact)
-            band_lo_target.append(arb_ref_m * r)
-            band_hi_target.append(arb_ref_m / r)
+            arb_ref_m = cex_ref_for_agents  # snapshot from end of previous block
+            target_band_m = cex_ref_for_agents
+            band_lo_target.append(target_band_m * r)
+            band_hi_target.append(target_band_m / r)
             act_arbitrageur()
 
             # --- Include LP intents in the mempool (shuffled with traders) ---
@@ -1321,7 +1335,7 @@ def simulate(
                     continue
                 to_burn = []
                 for i, pos in enumerate(lp.positions):
-                    pnl = pos.PnL_y(pool.S, ref.m)
+                    pnl = pos.PnL_y(agent_S_ref, ref.m)
                     if pnl >= theta_TP * pos.hodl0_value_y or pnl <= -theta_SL * pos.hodl0_value_y:
                         to_burn.append(i)
                 for i in reversed(to_burn):
@@ -1335,7 +1349,7 @@ def simulate(
                     continue
                 to_recenters = []
                 for i, pos in enumerate(lp.positions):
-                    in_rng = pos.in_range(pool.tick)
+                    in_rng = pos.in_range(agent_tick_ref)
                     out_steps = getattr(pos, "out_steps", 0)
                     out_steps = 0 if in_rng else out_steps + 1
                     setattr(pos, "out_steps", out_steps)
@@ -1345,7 +1359,7 @@ def simulate(
                     pos = lp.positions[i]
                     width_ticks = pos.upper - pos.lower
                     n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
-                    S_now = pool.S
+                    S_now = agent_S_ref
                     sps = pool.tick_spacing
                     nb = n_bands
                     denom = (1.0 + (pool.g ** (nb * sps + sps)))
@@ -1383,7 +1397,7 @@ def simulate(
                 L_new = max(0.0, min(want, cap_step, cap_left))
                 if L_new <= 0.0:
                     continue
-                S_now = pool.S
+                S_now = agent_S_ref
                 sps = pool.tick_spacing
                 nb = n_bands
                 denom = (1.0 + (pool.g ** (nb * sps + sps)))
@@ -1597,6 +1611,11 @@ def simulate(
 
         liq_history.append(dict(pool.liquidity_net))
         tick_history.append(pool.tick)
+
+        validated_price = pool.price
+        validated_S = pool.S
+        validated_tick = pool.tick
+        validated_cex = ref.m
 
     summary_lines = [
         "# Run summary",

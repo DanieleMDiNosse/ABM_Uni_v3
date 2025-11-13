@@ -11,7 +11,7 @@ simulate:
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.0
   # Volatility of the reference CEX price process (per step)
-  cex_sigma: 0.015
+  cex_sigma: 0.0015
   # Probability that a smart-router trade intent arrives in each micro step
   p_trade: 0.7
   # Probability that a noise trader submits even when best execution fails
@@ -67,7 +67,7 @@ simulate:
   # Total initial liquidity deployed across seed LPs
   initial_total_L: 500000.0
   # Number of consecutive steps out of range before a narrow LP recenters
-  k_out: 5
+  k_out: 10
   # Whether to generate plots and GIFs at the end of the run
   visualize: true
   # Number of initial steps to omit from visualizations and analytics
