@@ -3,20 +3,38 @@ Main simulation runner for the ABM model.
 """
 from __future__ import annotations
 
+import argparse
 import math
 import random
 import inspect
 from pathlib import Path
-from typing import Any, Dict, Tuple, List, Optional, Callable
+from typing import Any, Dict, Tuple, List, Optional, Callable, Set
 from dataclasses import dataclass
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+try:
+    import mpld3  # type: ignore
+except ImportError:
+    mpld3 = None
+
+HTML_SAVE_WARNING_EMITTED = False
+
+
+def _save_html(fig: plt.Figure, html_path: Path, source: str) -> None:
+    """Save an interactive HTML version of a Matplotlib figure if mpld3 is available."""
+    global HTML_SAVE_WARNING_EMITTED
+    if mpld3 is not None:
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        mpld3.save_html(fig, str(html_path))
+    elif not HTML_SAVE_WARNING_EMITTED:
+        print(f"[{source}] mpld3 not installed; skipping interactive HTML exports.")
+        HTML_SAVE_WARNING_EMITTED = True
+
 # Import from new module structure
 from utils import (
     build_empty_pool,
-    add_static_binomial_hill,
     bootstrap_initial_binomial_hill_sharded,
     minted_amounts_at_S,
     ReferenceMarket,
@@ -34,7 +52,13 @@ from utils import (
     make_liquidity_gif,
     load_simulation_parameters,
 )
-from agents import LPAgent, Position
+from agents import (
+    LPAgent,
+    Position,
+    lp_token0_exposure,
+    lp_mark_to_market_y,
+    lp_wealth_y,
+)
 from uniswapv3_pool import V3Pool, BoundaryIndex
 
 
@@ -47,6 +71,31 @@ class TraderStepAccumulator:
     notional_y: float = 0.0
     pnl: float = 0.0
     execs: int = 0
+    dx_in: float = 0.0
+    dx_out: float = 0.0
+    dy_in: float = 0.0
+    dy_out: float = 0.0
+
+    def record_swap(
+        self,
+        *,
+        dx_in: float = 0.0,
+        dx_out: float = 0.0,
+        dy_in: float = 0.0,
+        dy_out: float = 0.0,
+    ) -> None:
+        """Track token flows for later PnL settlement."""
+        self.dx_in += dx_in
+        self.dx_out += dx_out
+        self.dy_in += dy_in
+        self.dy_out += dy_out
+
+    def settle(self, m_settle: float) -> None:
+        """
+        Value accumulated flows versus the provided CEX price.
+        Positive result means net token1 profit.
+        """
+        self.pnl = (self.dy_out - self.dy_in) + (self.dx_out - self.dx_in) * m_settle
 
 def simulate(
     block_size: int = 10,
@@ -76,20 +125,20 @@ def simulate(
     trader_mean: float = -2.0,
     trader_sigma: float = 1.0,
     theta_T: float = 1.0,
+    # --- slippage ---
+    slippage_tolerance: float = 0.01,
     # --- other params ---
     mint_mu: float = 0.01,
     mint_sigma: float = 0.02,
     theta_TP: float = 0.003,
     theta_SL: float = 0.01,
-    evolve_initial_hill: bool = True,
     initial_binom_N: int = 400,
     initial_total_L: float = 70_000.0,
-    plot_initial_hill: bool = False,
     k_out: int = 2,
     visualize: bool = True,
     skip_step: int = 0,
     # --- Dynamic fee controller (new) ---
-    fee_mode: str = "volatility",      # "static" | "volatility" | "toxicity" | "imbalance" | "hybrid"
+    fee_mode: str = "volatility",      # "static" | "volatility" 
     f0: float = 0.003,             # baseline fee (e.g., 30 bps)
     f_min: float = 0.0005,         # 5 bps
     f_max: float = 0.02,           # 200 bps safety cap
@@ -100,7 +149,13 @@ def simulate(
     fee_step_bps_min: float = 0.5, # do not change fee unless ≥ 0.5 bps move
     fee_step_bps_max: float = 5.0, # max step per update (bps)
     fee_cooldown: int = 1,         # blocks between fee changes (hysteresis)
+    active_wide_lp_enabled: bool = True,
 ):
+    valid_fee_modes = {"static", "volatility", "toxicity"}
+    if fee_mode not in valid_fee_modes:
+        raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
+
+    slippage_tolerance = clamp(slippage_tolerance, 0.0, 1.0)
     """
     Run a Step-1 ABM with a Uniswap v3–style pool.
 
@@ -114,84 +169,60 @@ def simulate(
     passive_share = max(0.0, min(1.0, passive_lp_share))
     share_narrow_default = 0.7
     share_narrow_eff = min(share_narrow_default, max(0.0, 1.0 - passive_share))
+    if not active_wide_lp_enabled:
+        share_narrow_eff = max(0.0, 1.0 - passive_share)
 
     # --- Build pool + reference market + LP agents ----------------------------
-    if evolve_initial_hill:
-        pool, m0 = build_empty_pool()
-        ref = ReferenceMarket(m=m0, mu=cex_mu, sigma=cex_sigma, kappa=1e-3)
+    pool, m0 = build_empty_pool()
+    ref = ReferenceMarket(m=m0, mu=cex_mu, sigma=cex_sigma, kappa=1e-3)
 
-        LPs: List[LPAgent] = []
-        for i in range(N_LP):
-            r = random.random()
-            is_passive = r < passive_share
-            is_narrow = False
-            if not is_passive and r < passive_share + share_narrow_eff:
-                is_narrow = True
-            mintProb = passive_mint_prob if is_passive else (p_lp_narrow if is_narrow else p_lp_wide)
-            LPs.append(
-                LPAgent(
-                    id=i,
-                    mintProb=mintProb,
-                    is_active_narrow=is_narrow,
-                    is_passive=is_passive,
-                )
+    LPs: List[LPAgent] = []
+    for i in range(N_LP):
+        r = random.random()
+        is_passive = r < passive_share
+        is_narrow = False
+        if not is_passive and r < passive_share + share_narrow_eff:
+            is_narrow = True
+        if not active_wide_lp_enabled and not is_passive:
+            is_narrow = True
+        mintProb = passive_mint_prob if is_passive else (p_lp_narrow if is_narrow else p_lp_wide)
+        LPs.append(
+            LPAgent(
+                id=i,
+                mintProb=mintProb,
+                is_active_narrow=is_narrow,
+                is_passive=is_passive,
             )
-            lp = LPs[-1]
-            lp.review_rate = 1.0 / max(1, tau)
-            lp.next_review = int(np.random.geometric(lp.review_rate))
-            lp.cooldown = 0
-            lp.can_act = False
-
-        # Distribute initial_total_L across LPs (each gets ~equal share)
-        L_SCALE = initial_total_L / max(1, N_LP)
-        for lp in LPs:
-            lp.L_budget = 2.0 * L_SCALE   # each LP can deploy up to ~2× their fair share
-            lp.L_live = 0.0               # tracked across mints/burns
-
-        bootstrap_initial_binomial_hill_sharded(
-            pool, ref, LPs,
-            N=initial_binom_N,
-            L_total=initial_total_L,
-            num_seed_lps=20,
-            seed_lp_id_base=10_000,
-            seed_mint_prob=0.0,
-            tau=tau,
-            plot=plot_initial_hill
         )
+        lp = LPs[-1]
+        lp.review_rate = 1.0 / max(1, tau)
+        lp.next_review = int(np.random.geometric(lp.review_rate))
+        lp.cooldown = 0
+        lp.can_act = False
 
-        # ensure budgets exist for every LP, including the just-appended seed
-        for lp in LPs:
-            if lp.L_budget <= 0.0:
-                lp.L_budget = 2.0 * L_SCALE
-            if lp.L_live < 0.0:
-                lp.L_live = 0.0
+    # Distribute initial_total_L across LPs (each gets ~equal share)
+    L_SCALE = initial_total_L / max(1, N_LP)
+    for lp in LPs:
+        lp.L_budget = 2.0 * L_SCALE   # each LP can deploy up to ~2× their fair share
+        lp.L_live = 0.0               # tracked across mints/burns
 
-    else:
-        pool, m0 = build_empty_pool()
-        ref = ReferenceMarket(m=m0, mu=0.0, sigma=0.02, kappa=1e-3)
-        LPs = []
-        for i in range(N_LP):
-            r = random.random()
-            is_passive = r < passive_share
-            is_narrow = False
-            if not is_passive and r < passive_share + share_narrow_eff:
-                is_narrow = True
-            mintProb = passive_mint_prob if is_passive else (0.55 if is_narrow else 0.15)
-            LPs.append(
-                LPAgent(
-                    id=i,
-                    mintProb=mintProb,
-                    is_active_narrow=is_narrow,
-                    is_passive=is_passive,
-                )
-            )
-            lp = LPs[-1]                      # the one we just appended
-            lp.review_rate = 1.0 / max(1, tau)
-            lp.next_review = int(np.random.geometric(lp.review_rate))
-            lp.cooldown = 0
-            lp.can_act = False
+    bootstrap_initial_binomial_hill_sharded(
+        pool, ref, LPs,
+        N=initial_binom_N,
+        L_total=initial_total_L,
+        num_seed_lps=20,
+        seed_lp_id_base=10_000,
+        seed_mint_prob=0.0,
+        tau=tau,
+        plot=False
+    )
 
-        add_static_binomial_hill(pool, N=initial_binom_N, L_total=initial_total_L, plot=plot_initial_hill)
+    # ensure budgets exist for every LP, including the just-appended seed
+    for lp in LPs:
+        if lp.L_budget <= 0.0:
+            lp.L_budget = 2.0 * L_SCALE
+        if lp.L_live < 0.0:
+            lp.L_live = 0.0
 
     bidx = BoundaryIndex(pool.liquidity_net)
 
@@ -217,9 +248,14 @@ def simulate(
     # --- PnL recorders ---
     trader_pnl_steps = []       # realized per-step PnL (token1)
     arb_pnl_steps = []          # realized per-step PnL (token1)
-    lp_pnl_total_series = []    # mark-to-market total LP PnL across all LPs (token1)
-    lp_pnl_active_series = []   # mark-to-market PnL for active (narrow) LPs
-    lp_pnl_passive_series = []  # mark-to-market PnL for passive (wide) LPs
+    lp_pnl_total_series = []    # cumulative hedged PnL (fees - rebal) across all LPs
+    lp_pnl_active_series = []   # cumulative hedged PnL for active (narrow) LPs
+    lp_pnl_passive_series = []  # cumulative hedged PnL for passive LPs
+    lp_pnl_wide_series = []     # cumulative hedged PnL for active wide LPs
+    lp_rebal_total_series = []  # cumulative rebalancing PnL (benchmark) across LPs
+    lp_rebal_active_series = []
+    lp_rebal_passive_series = []
+    lp_rebal_wide_series = []
     trader_exec_count = []
     arb_exec_count = []
 
@@ -245,10 +281,12 @@ def simulate(
     # --- LP wealth recorders (new) ---
     lp_wallet_series = []      # realized wallet (token1)
     lp_wealth_series = []      # wallet + open PnL (token1)
-    lp_wallet_active_series = []
-    lp_wallet_passive_series = []
+    lp_wallet_active_series = []   # active narrow LPs
+    lp_wallet_passive_series = []  # passive LPs
+    lp_wallet_wide_series = []     # active wide LPs
     lp_wealth_active_series = []
     lp_wealth_passive_series = []
+    lp_wealth_wide_series = []
     # --- Dynamic fee signal recorders (new) ---
     fee_sigma_series = []          # EWMA abs log-return (σ̂)
     fee_basis_ticks_series = []    # EWMA fee-adjusted basis, in ticks
@@ -268,18 +306,88 @@ def simulate(
     ewma_basis_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # fee-adjusted log gap
     prev_m_for_vol = ref.m
 
+    # ------------------ LVR rebalancer helpers ------------------
+    REBAL_EPS = 1e-18
+
+    def _ensure_rebalancer_initialized(lp: LPAgent, M_now: float, S_now: float) -> None:
+        rb = lp.rebalancer
+        if rb.initialized:
+            return
+        rb.reset()
+        x_target = lp_token0_exposure(lp, S_now)
+        rb.x_prev = x_target
+        rb.cash_y = -x_target * M_now
+        rb.cumulative_R = 0.0
+        rb.last_M = M_now
+        wealth_now = lp_wealth_y(lp, S_now, M_now)
+        rb.last_wealth_y = wealth_now
+        rb.last_cumulative_R = 0.0
+        rb.hedged_pnl_cum = 0.0
+        rb.initialized = True
+
+    def _rebalance_lp_to_target(lp: LPAgent, M_now: float, S_now: float) -> None:
+        _ensure_rebalancer_initialized(lp, M_now, S_now)
+        rb = lp.rebalancer
+        x_target = lp_token0_exposure(lp, S_now)
+        dx = x_target - rb.x_prev
+        if abs(dx) > REBAL_EPS:
+            rb.cash_y -= dx * M_now
+            rb.x_prev = x_target
+        rb.last_M = M_now
+
+    def _rebalance_subset(lp_subset: List[LPAgent], M_now: float, S_now: float) -> None:
+        if not lp_subset:
+            return
+        for lp in lp_subset:
+            _rebalance_lp_to_target(lp, M_now, S_now)
+
+    def _rebalance_by_ids(lp_ids: Set[int], M_now: float, S_now: float) -> None:
+        if not lp_ids:
+            return
+        id_lookup = lp_ids
+        for lp in LPs:
+            if lp.id in id_lookup:
+                _rebalance_lp_to_target(lp, M_now, S_now)
+
+    def _rebalance_all(M_now: float, S_now: float) -> None:
+        for lp in LPs:
+            _rebalance_lp_to_target(lp, M_now, S_now)
+
+    def _accrue_price_move(lp: LPAgent, M_new: float) -> None:
+        rb = lp.rebalancer
+        if not rb.initialized:
+            rb.last_M = M_new
+            return
+        delta = M_new - rb.last_M
+        if abs(delta) > 0.0:
+            rb.cumulative_R += rb.x_prev * delta
+            rb.last_M = M_new
+
+    def _broadcast_price_move(M_new: float) -> None:
+        for lp in LPs:
+            _accrue_price_move(lp, M_new)
+
+    # Initialize rebalancers to match current exposures before the simulation loop
+    _rebalance_all(ref.m, pool.S)
+
     # ------------------ Helpers ------------------
     def allocate_fees(token: str, fee_amt: float, tick_snapshot: int, L_snapshot: float) -> None:
         if fee_amt <= 0 or L_snapshot <= 0:
             return
+        touched_lp_ids: Set[int] = set()
         for lp in LPs:
             for pos in lp.positions:
                 if pos.in_range(tick_snapshot):
                     share = pos.L / L_snapshot
                     if token == "x":
-                        pos.fees0 += share * fee_amt
+                        delta_fee0 = share * fee_amt
+                        pos.fees0 += delta_fee0
+                        if delta_fee0 != 0.0:
+                            touched_lp_ids.add(pos.owner)
                     else:
                         pos.fees1 += share * fee_amt
+        if touched_lp_ids:
+            _rebalance_by_ids(touched_lp_ids, ref.m, pool.S)
 
     def tick_from_S(S: float) -> int:
         raw = int(math.floor(math.log(max(S, 1e-18) / pool.base_s, pool.g)))
@@ -370,6 +478,7 @@ def simulate(
         with open(verbose_log_path_str, "a") as f:
             f.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
         lp.L_live = getattr(lp, "L_live", 0.0) + L_new
+        _rebalance_lp_to_target(lp, ref.m, pool.S)
 
     def burn_any(lp: LPAgent, idx: int) -> None:
         pos = lp.positions.pop(idx)
@@ -394,6 +503,7 @@ def simulate(
 
         lp.cooldown = np.random.randint(3, 9)  # 3–8 steps of "hands off"
         lp.L_live = max(0.0, getattr(lp, "L_live", 0.0) - pos.L)
+        _rebalance_lp_to_target(lp, ref.m, pool.S)
 
 
     def reserves_in_active_tick() -> Tuple[float, float]:
@@ -533,6 +643,11 @@ def simulate(
         p_trade_micro = p_trade
         noise_floor_micro = noise_floor
 
+    total_noise_swaps_executed = 0
+    total_noise_swaps_skipped = 0
+    total_smart_swaps_executed = 0
+    total_smart_swaps_skipped = 0
+
     # ------------------ Main loop ------------------
     for t in range(T):
         arb_ref_m = ref.m  # default; overridden per-block to end-of-block CEX
@@ -547,6 +662,9 @@ def simulate(
         # Pre-step band window
         band_lo_pre.append(ref.m * r)
         band_hi_pre.append(ref.m / r)
+
+        # Start-of-step rebalance benchmark update (predictable integrand)
+        _rebalance_all(ref.m, pool.S)
 
         # Record start-of-step active L and price
         L_pre_step.append(pool.L_active)
@@ -610,18 +728,42 @@ def simulate(
                 dx = float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
                 if dx <= 0.0:
                     return
-                # best-ex vs CEX: compare dy_out to dx * m_now (value in token1)
-                if pool.quote_x_to_y(dx, bidx) < theta_T * dx * m_now:
+                initial_quote = pool.quote_x_to_y(dx, bidx)
+                if initial_quote <= 0.0:
                     return
-                mempool_orders.append({'type':'swap','agent':'smart','side':'X_to_Y','amount':dx,'unit':'dx','m_submit':m_now})
+                # best-ex vs CEX: compare dy_out to dx * m_now (value in token1)
+                if initial_quote < theta_T * dx * m_now:
+                    return
+                min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                mempool_orders.append({
+                    'type': 'swap',
+                    'agent': 'smart',
+                    'side': 'X_to_Y',
+                    'amount': dx,
+                    'unit': 'dx',
+                    'm_submit': m_now,
+                    'min_output': min_output,
+                })
             else:
                 dy = float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
                 if dy <= 0.0:
                     return
-                # best-ex vs CEX: compare dx_out to dy / m_now (value in token0)
-                if pool.quote_y_to_x(dy, bidx) < theta_T * dy / max(m_now, 1e-18):
+                initial_quote = pool.quote_y_to_x(dy, bidx)
+                if initial_quote <= 0.0:
                     return
-                mempool_orders.append({'type':'swap','agent':'smart','side':'Y_to_X','amount':dy,'unit':'dy','m_submit':m_now})
+                # best-ex vs CEX: compare dx_out to dy / m_now (value in token0)
+                if initial_quote < theta_T * dy / max(m_now, 1e-18):
+                    return
+                min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                mempool_orders.append({
+                    'type': 'swap',
+                    'agent': 'smart',
+                    'side': 'Y_to_X',
+                    'amount': dy,
+                    'unit': 'dy',
+                    'm_submit': m_now,
+                    'min_output': min_output,
+                })
 
         def maybe_enqueue_noise_trader_intent(m_now: float):
             """Enqueue a noise swap intent (no best-ex check)."""
@@ -631,17 +773,45 @@ def simulate(
             if side == "X_to_Y":
                 dx = float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
                 if dx > 0.0:
-                    mempool_orders.append({'type':'swap','agent':'noise','side':'X_to_Y','amount':dx,'unit':'dx','m_submit':m_now})
+                    initial_quote = pool.quote_x_to_y(dx, bidx)
+                    if initial_quote <= 0.0:
+                        return
+                    min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                    mempool_orders.append({
+                        'type': 'swap',
+                        'agent': 'noise',
+                        'side': 'X_to_Y',
+                        'amount': dx,
+                        'unit': 'dx',
+                        'm_submit': m_now,
+                        'min_output': min_output,
+                    })
             else:
                 dy = float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
                 if dy > 0.0:
-                    mempool_orders.append({'type':'swap','agent':'noise','side':'Y_to_X','amount':dy,'unit':'dy','m_submit':m_now})
+                    initial_quote = pool.quote_y_to_x(dy, bidx)
+                    if initial_quote <= 0.0:
+                        return
+                    min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                    mempool_orders.append({
+                        'type': 'swap',
+                        'agent': 'noise',
+                        'side': 'Y_to_X',
+                        'amount': dy,
+                        'unit': 'dy',
+                        'm_submit': m_now,
+                        'min_output': min_output,
+                    })
 
         def execute_mempool_orders():
-            nonlocal trader_y_this, trader_pnl_this, sr_acc, noise_acc
+            nonlocal trader_y_this, sr_acc, noise_acc
+            nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
+            nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
             P_pre_exec = pool.price
             def _exec_one(o):
-                nonlocal P_pre_exec, trader_y_this, trader_pnl_this, sr_acc, noise_acc
+                nonlocal P_pre_exec, trader_y_this, sr_acc, noise_acc
+                nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
+                nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
                 P_pre_exec = pool.price
                 # Handle LP intents (they don't have 'agent' or 'side')
                 typ = o.get('type')
@@ -673,6 +843,7 @@ def simulate(
                         with open(verbose_log_path_str, 'a') as f:
                             f.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
                         lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
+                        _rebalance_lp_to_target(lp, ref.m, pool.S)
                         return
                     if typ == 'lp_recenter':
                         idx = None
@@ -694,8 +865,24 @@ def simulate(
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower)
                         with open(verbose_log_path_str, 'a') as f:
                             f.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
+                        _rebalance_lp_to_target(lp, ref.m, pool.S)
                         return
                 if o.get('side') == 'X_to_Y':
+                    min_output = o.get('min_output')
+                    if min_output is not None:
+                        final_quote = pool.quote_x_to_y(o['amount'], bidx)
+                        if final_quote < min_output:
+                            agent = o.get('agent')
+                            if agent == 'smart':
+                                total_smart_swaps_skipped += 1
+                            elif agent == 'noise':
+                                total_noise_swaps_skipped += 1
+                            with open(verbose_log_path_str, 'a') as f:
+                                f.write(
+                                    f"[t={t:03d}] {agent or 'N/A'} swap X_to_Y SKIPPED (slippage). "
+                                    f"final_quote={final_quote:.4f} < min_output={min_output:.4f}\n"
+                                )
+                            return
                     prev_tick, prev_S = pool.tick, pool.S
                     bridged = False
                     if pool.L_active <= EPS_LIQ:
@@ -710,23 +897,37 @@ def simulate(
                             pool.tick, pool.S = prev_tick, prev_S
                             pool.recompute_active_L()
                         return
-                    if o.get('agent') == 'smart':
+                    agent = o.get('agent')
+                    if agent == 'smart':
                         trader_steps.append(t); trader_dirs.append('down')
                         sr_acc.notional_y += -P_pre_exec * used_dx_pre
                         trader_y_this += -P_pre_exec * used_dx_pre
-                        pnl = (dy_out_real - used_dx_pre * ref.m)
-                        sr_acc.pnl += pnl
-                        trader_pnl_this += pnl
+                        sr_acc.record_swap(dx_in=used_dx_pre, dy_out=dy_out_real)
                         sr_acc.execs += int(used_dx_pre > 0)
-                    else:
+                        total_smart_swaps_executed += int(used_dx_pre > 0)
+                    elif agent == 'noise':
                         trader_steps.append(t); trader_dirs.append('down')
                         noise_acc.notional_y += -P_pre_exec * used_dx_pre
                         trader_y_this += -P_pre_exec * used_dx_pre
-                        pnl = (dy_out_real - used_dx_pre * ref.m)
-                        noise_acc.pnl += pnl
-                        trader_pnl_this += pnl
+                        noise_acc.record_swap(dx_in=used_dx_pre, dy_out=dy_out_real)
                         noise_acc.execs += int(used_dx_pre > 0)
+                        total_noise_swaps_executed += int(used_dx_pre > 0)
                 else:
+                    min_output = o.get('min_output')
+                    if min_output is not None:
+                        final_quote = pool.quote_y_to_x(o['amount'], bidx)
+                        if final_quote < min_output:
+                            agent = o.get('agent')
+                            if agent == 'smart':
+                                total_smart_swaps_skipped += 1
+                            elif agent == 'noise':
+                                total_noise_swaps_skipped += 1
+                            with open(verbose_log_path_str, 'a') as f:
+                                f.write(
+                                    f"[t={t:03d}] {agent or 'N/A'} swap Y_to_X SKIPPED (slippage). "
+                                    f"final_quote={final_quote:.4f} < min_output={min_output:.4f}\n"
+                                )
+                            return
                     prev_tick, prev_S = pool.tick, pool.S
                     bridged = False
                     if pool.L_active <= EPS_LIQ:
@@ -741,22 +942,21 @@ def simulate(
                             pool.tick, pool.S = prev_tick, prev_S
                             pool.recompute_active_L()
                         return
-                    if o.get('agent') == 'smart':
+                    agent = o.get('agent')
+                    if agent == 'smart':
                         trader_steps.append(t); trader_dirs.append('up')
                         sr_acc.notional_y += +used_dy_pre
                         trader_y_this += +used_dy_pre
-                        pnl = (dx_out_real * ref.m - used_dy_pre)
-                        sr_acc.pnl += pnl
-                        trader_pnl_this += pnl
+                        sr_acc.record_swap(dy_in=used_dy_pre, dx_out=dx_out_real)
                         sr_acc.execs += int(used_dy_pre > 0)
-                    else:
+                        total_smart_swaps_executed += int(used_dy_pre > 0)
+                    elif agent == 'noise':
                         trader_steps.append(t); trader_dirs.append('up')
                         noise_acc.notional_y += +used_dy_pre
                         trader_y_this += +used_dy_pre
-                        pnl = (dx_out_real * ref.m - used_dy_pre)
-                        noise_acc.pnl += pnl
-                        trader_pnl_this += pnl
+                        noise_acc.record_swap(dy_in=used_dy_pre, dx_out=dx_out_real)
                         noise_acc.execs += int(used_dy_pre > 0)
+                        total_noise_swaps_executed += int(used_dy_pre > 0)
             n_noise = sum(1 for o in mempool_orders if o.get('agent')=='noise')
             n_smart = sum(1 for o in mempool_orders if o.get('agent')=='smart')
             order_book = list(mempool_orders)
@@ -770,7 +970,9 @@ def simulate(
             mempool_orders.clear()
 
         def execute_trader(agent_label: str, probability: float, accumulator: TraderStepAccumulator, enforce_best_ex: bool) -> None:
-            nonlocal L_pre_trader_this, trader_y_this, trader_pnl_this, _trader_execs
+            nonlocal L_pre_trader_this, trader_y_this, _trader_execs
+            nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
+            nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
 
             if random.random() >= probability:
                 return
@@ -784,10 +986,25 @@ def simulate(
                 dx = np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma))
                 if dx <= 0.0:
                     return
+                initial_quote = pool.quote_x_to_y(dx, bidx)
+                if initial_quote <= 0.0:
+                    return
                 if enforce_best_ex:
-                    dy_dex_quote = pool.quote_x_to_y(dx, bidx)
-                    if dy_dex_quote < theta_T * dx * m_now:
+                    if initial_quote < theta_T * dx * m_now:
                         return
+                min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                final_quote = pool.quote_x_to_y(dx, bidx)
+                if final_quote < min_output:
+                    if agent_label == "smart":
+                        total_smart_swaps_skipped += 1
+                    elif agent_label == "noise":
+                        total_noise_swaps_skipped += 1
+                    with open(verbose_log_path_str, "a") as f:
+                        f.write(
+                            f"[t={t:03d}] {agent_label} swap X_to_Y SKIPPED (slippage). "
+                            f"final_quote={final_quote:.4f} < min_output={min_output:.4f}\n"
+                        )
+                    return
 
                 prev_tick, prev_S = pool.tick, pool.S
                 bridged = False
@@ -813,23 +1030,40 @@ def simulate(
                 accumulator.notional_y += delta_y
                 trader_y_this += delta_y
 
-                pnl = dy_out_real - used_dx_pre * m_now
-                accumulator.pnl += pnl
-                trader_pnl_this += pnl
+                accumulator.record_swap(dx_in=used_dx_pre, dy_out=dy_out_real)
 
                 executed = int(used_dx_pre > 0)
                 accumulator.execs += executed
                 _trader_execs += executed
+                if agent_label == "smart":
+                    total_smart_swaps_executed += executed
+                elif agent_label == "noise":
+                    total_noise_swaps_executed += executed
 
             else:
                 dy = np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma))
                 if dy <= 0.0:
                     return
+                initial_quote = pool.quote_y_to_x(dy, bidx)
+                if initial_quote <= 0.0:
+                    return
                 if enforce_best_ex:
-                    dx_dex_quote = pool.quote_y_to_x(dy, bidx)
                     dx_cex = dy / max(m_now, 1e-18)
-                    if dx_dex_quote < theta_T * dx_cex:
+                    if initial_quote < theta_T * dx_cex:
                         return
+                min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                final_quote = pool.quote_y_to_x(dy, bidx)
+                if final_quote < min_output:
+                    if agent_label == "smart":
+                        total_smart_swaps_skipped += 1
+                    elif agent_label == "noise":
+                        total_noise_swaps_skipped += 1
+                    with open(verbose_log_path_str, "a") as f:
+                        f.write(
+                            f"[t={t:03d}] {agent_label} swap Y_to_X SKIPPED (slippage). "
+                            f"final_quote={final_quote:.4f} < min_output={min_output:.4f}\n"
+                        )
+                    return
 
                 prev_tick, prev_S = pool.tick, pool.S
                 bridged = False
@@ -854,13 +1088,15 @@ def simulate(
                 accumulator.notional_y += used_dy_pre
                 trader_y_this += used_dy_pre
 
-                pnl = dx_out_real * m_now - used_dy_pre
-                accumulator.pnl += pnl
-                trader_pnl_this += pnl
+                accumulator.record_swap(dy_in=used_dy_pre, dx_out=dx_out_real)
 
                 executed = int(used_dy_pre > 0)
                 accumulator.execs += executed
                 _trader_execs += executed
+                if agent_label == "smart":
+                    total_smart_swaps_executed += executed
+                elif agent_label == "noise":
+                    total_noise_swaps_executed += executed
 
         # --- Actor routines (closures) ---
         def act_LPs():
@@ -1061,6 +1297,7 @@ def simulate(
                 maybe_enqueue_smart_router_intent(ref.m)
                 maybe_enqueue_noise_trader_intent(ref.m)
                 ref.diffuse_only()
+                _broadcast_price_move(ref.m)
                 M_micro.append(ref.m)
 
             
@@ -1170,7 +1407,16 @@ def simulate(
         _enable([])
 
         # ---- CEX update  ----
-        ref.step(delta_a_cex_this) if block_size == 1 else ref.apply_impact_only(delta_a_cex_this)
+        if block_size == 1:
+            ref.step(delta_a_cex_this)
+        else:
+            ref.apply_impact_only(delta_a_cex_this)
+        _broadcast_price_move(ref.m)
+
+        settlement_m = ref.m
+        sr_acc.settle(settlement_m)
+        noise_acc.settle(settlement_m)
+        trader_pnl_this = sr_acc.pnl + noise_acc.pnl
 
         # ================== Dynamic fee controller  ==================
         # Signals based on END-OF-STEP state; new fee applies NEXT step.
@@ -1250,36 +1496,73 @@ def simulate(
         arb_pnl_steps.append(arb_pnl_this)
         trader_exec_count.append(_trader_execs)
         arb_exec_count.append(_arb_execs)
-        lp_total = 0.0
-        lp_total_active = 0.0
-        lp_total_passive = 0.0
+        lp_total = 0.0             # cumulative hedged PnL (fees - rebal)
+        lp_total_active = 0.0      # active narrow LPs
+        lp_total_passive = 0.0     # passive LPs
+        lp_total_wide = 0.0        # active wide LPs
+        lp_rebal_total = 0.0
+        lp_rebal_active = 0.0
+        lp_rebal_passive = 0.0
+        lp_rebal_wide = 0.0
         lp_wallet_total = 0.0
         lp_wallet_active = 0.0
         lp_wallet_passive = 0.0
+        lp_wallet_wide = 0.0
+        lp_wealth_total = 0.0
+        lp_wealth_active = 0.0
+        lp_wealth_passive = 0.0
+        lp_wealth_wide = 0.0
         for lp in LPs:
             wallet_y = getattr(lp, 'wallet_y', 0.0)
             lp_wallet_total += wallet_y
-            lp_open_pnl = 0.0
-            for pos in lp.positions:
-                lp_open_pnl += pos.PnL_y(pool.S, ref.m)
-            lp_total += lp_open_pnl
-            if lp.is_active_narrow:
-                lp_total_active += lp_open_pnl
-                lp_wallet_active += wallet_y
-            else:
-                lp_total_passive += lp_open_pnl
+            rb = lp.rebalancer
+            _ensure_rebalancer_initialized(lp, ref.m, pool.S)
+            wealth_now = lp_wealth_y(lp, pool.S, ref.m)
+            delta_rebal = rb.cumulative_R - rb.last_cumulative_R
+            delta_wealth = wealth_now - rb.last_wealth_y
+            hedged_step = delta_wealth - delta_rebal
+            rb.hedged_pnl_cum += hedged_step
+            rb.last_wealth_y = wealth_now
+            rb.last_cumulative_R = rb.cumulative_R
+            rb.last_M = ref.m
+
+            lp_total += rb.hedged_pnl_cum
+            lp_rebal_total += rb.cumulative_R
+            lp_wealth_total += wealth_now
+
+            if lp.is_passive:
+                lp_total_passive += rb.hedged_pnl_cum
+                lp_rebal_passive += rb.cumulative_R
                 lp_wallet_passive += wallet_y
+                lp_wealth_passive += wealth_now
+            elif lp.is_active_narrow:
+                lp_total_active += rb.hedged_pnl_cum
+                lp_rebal_active += rb.cumulative_R
+                lp_wallet_active += wallet_y
+                lp_wealth_active += wealth_now
+            else:
+                lp_total_wide += rb.hedged_pnl_cum
+                lp_rebal_wide += rb.cumulative_R
+                lp_wallet_wide += wallet_y
+                lp_wealth_wide += wealth_now
         lp_pnl_total_series.append(lp_total)
         lp_pnl_active_series.append(lp_total_active)
         lp_pnl_passive_series.append(lp_total_passive)
+        lp_pnl_wide_series.append(lp_total_wide)
+        lp_rebal_total_series.append(lp_rebal_total)
+        lp_rebal_active_series.append(lp_rebal_active)
+        lp_rebal_passive_series.append(lp_rebal_passive)
+        lp_rebal_wide_series.append(lp_rebal_wide)
 
         # Wealth accounting (wallet + open PnL)
         lp_wallet_series.append(lp_wallet_total)
         lp_wallet_active_series.append(lp_wallet_active)
         lp_wallet_passive_series.append(lp_wallet_passive)
-        lp_wealth_series.append(lp_wallet_total + lp_total)
-        lp_wealth_active_series.append(lp_wallet_active + lp_total_active)
-        lp_wealth_passive_series.append(lp_wallet_passive + lp_total_passive)
+        lp_wallet_wide_series.append(lp_wallet_wide)
+        lp_wealth_series.append(lp_wealth_total)
+        lp_wealth_active_series.append(lp_wealth_active)
+        lp_wealth_passive_series.append(lp_wealth_passive)
+        lp_wealth_wide_series.append(lp_wealth_wide)
         # store per-step trader/arb details (now that order is randomized)
         trader_y_series.append(trader_y_this)
         arb_y_series.append(arb_y_this)
@@ -1313,6 +1596,24 @@ def simulate(
         liq_history.append(dict(pool.liquidity_net))
         tick_history.append(pool.tick)
 
+    summary_lines = [
+        "# Run summary",
+        f"total_mints = {len(mint_steps)}",
+        f"total_burns = {len(burn_steps)}",
+        f"total_noise_trader_swaps = {total_noise_swaps_executed}",
+        f"noise_trader_swaps_rejected_slippage = {total_noise_swaps_skipped}",
+        f"total_smart_router_swaps = {total_smart_swaps_executed}",
+        f"smart_router_swaps_rejected_slippage = {total_smart_swaps_skipped}",
+        "----------------------------------------------------------\n",
+    ]
+
+    verbose_path = Path(verbose_log_path_str)
+    try:
+        original_text = verbose_path.read_text()
+    except FileNotFoundError:
+        original_text = ""
+    verbose_path.write_text("\n".join(summary_lines) + original_text)
+
     # =============================================================================
     # Plotting
     # =============================================================================
@@ -1337,15 +1638,24 @@ def simulate(
     noise_pnl_steps = np.array(noise_pnl_steps)
     sr_pnl_cum = np.cumsum(sr_pnl_steps)
     noise_pnl_cum = np.cumsum(noise_pnl_steps)
+    sr_y_series = np.array(sr_y_series)
+    noise_y_series = np.array(noise_y_series)
     lp_pnl_total_series = np.array(lp_pnl_total_series)
     lp_pnl_active_series = np.array(lp_pnl_active_series)
     lp_pnl_passive_series = np.array(lp_pnl_passive_series)
+    lp_pnl_wide_series = np.array(lp_pnl_wide_series)
+    lp_rebal_total_series = np.array(lp_rebal_total_series)
+    lp_rebal_active_series = np.array(lp_rebal_active_series)
+    lp_rebal_passive_series = np.array(lp_rebal_passive_series)
+    lp_rebal_wide_series = np.array(lp_rebal_wide_series)
     lp_wallet_series = np.array(lp_wallet_series)
     lp_wallet_active_series = np.array(lp_wallet_active_series)
     lp_wallet_passive_series = np.array(lp_wallet_passive_series)
+    lp_wallet_wide_series = np.array(lp_wallet_wide_series)
     lp_wealth_series = np.array(lp_wealth_series)
     lp_wealth_active_series = np.array(lp_wealth_active_series)
     lp_wealth_passive_series = np.array(lp_wealth_passive_series)
+    lp_wealth_wide_series = np.array(lp_wealth_wide_series)
     fee_sigma_series = np.array(fee_sigma_series)
     fee_basis_ticks_series = np.array(fee_basis_ticks_series)
     fee_imb_series = np.array(fee_imb_series)
@@ -1375,13 +1685,23 @@ def simulate(
     lp_wealth_series_v = lp_wealth_series[s0:]
     lp_wealth_active_series_v = lp_wealth_active_series[s0:]
     lp_wealth_passive_series_v = lp_wealth_passive_series[s0:]
+    lp_wealth_wide_series_v = lp_wealth_wide_series[s0:]
+    lp_pnl_total_series_v = lp_pnl_total_series[s0:]
+    lp_pnl_active_series_v = lp_pnl_active_series[s0:]
+    lp_pnl_passive_series_v = lp_pnl_passive_series[s0:]
+    lp_pnl_wide_series_v = lp_pnl_wide_series[s0:]
+    lp_rebal_total_series_v = lp_rebal_total_series[s0:]
+    lp_rebal_active_series_v = lp_rebal_active_series[s0:]
+    lp_rebal_passive_series_v = lp_rebal_passive_series[s0:]
+    lp_rebal_wide_series_v = lp_rebal_wide_series[s0:]
     fee_series_v = fee_series[s0:]
     fee_sigma_series_v = fee_sigma_series[s0:]
     fee_basis_ticks_series_v = fee_basis_ticks_series[s0:]
     fee_imb_series_v = fee_imb_series[s0:]
     fee_signal_series_v = fee_signal_series[s0:]
-    trader_y_v = np.array(trader_y_series)[s0:]
     arb_y_v = np.array(arb_y_series)[s0:]
+    sr_y_v = sr_y_series[s0:]
+    noise_y_v = noise_y_series[s0:]
     
     if visualize:
         # ΔL per step (aggregate)
@@ -1400,13 +1720,72 @@ def simulate(
         # ===== Separate figures instead of a single multi-subplot figure =====
         from pathlib import Path as _Path
         _out_dir = _Path("abm_results")
-        _out_dir.mkdir(parents=True, exist_ok=True)
+        _png_dir = _out_dir / "png"
+        _html_dir = _out_dir / "html"
+        _png_dir.mkdir(parents=True, exist_ok=True)
+        _html_dir.mkdir(parents=True, exist_ok=True)
         _prefix = f"abm_fee_{fee_mode}_{cex_sigma}"
+
+        def _scale_marker_sizes(values: List[float], min_pts: float = 4.0, max_pts: float = 16.0) -> List[float]:
+            if not values:
+                return []
+            cleaned = [max(float(v), 0.0) for v in values]
+            if not any(cleaned):
+                return [min_pts] * len(cleaned)
+            # Dampen extremes with sqrt scaling
+            dampened = [math.sqrt(v) for v in cleaned]
+            max_dampened = max(dampened)
+            if max_dampened <= 0:
+                return [min_pts] * len(cleaned)
+            return [
+                min_pts + (max_pts - min_pts) * (dv / max_dampened)
+                for dv in dampened
+            ]
+
+        def _plot_variable_markers(
+            ax: plt.Axes,
+            xs: List[int],
+            ys: List[float],
+            values: List[float],
+            marker: str,
+            color: str,
+            label: Optional[str] = None,
+            facecolor: Optional[str] = None,
+            edgecolor: Optional[str] = None,
+            min_size: float = 1.0,
+            max_size: float = 4.0,
+        ) -> None:
+            if not xs:
+                return
+            sizes_pts = _scale_marker_sizes(values, min_size, max_size)
+            grouped: Dict[float, Tuple[List[int], List[float]]] = {}
+            for x_val, y_val, size in zip(xs, ys, sizes_pts):
+                size_key = round(size, 2)
+                if size_key not in grouped:
+                    grouped[size_key] = ([], [])
+                grouped[size_key][0].append(x_val)
+                grouped[size_key][1].append(y_val)
+            for idx, (size_key, (gx, gy)) in enumerate(grouped.items()):
+                use_label = label if idx == 0 else None
+                ax.plot(
+                    gx,
+                    gy,
+                    linestyle="None",
+                    marker=marker,
+                    markersize=size_key,
+                    markerfacecolor=facecolor if facecolor is not None else color,
+                    markeredgecolor=edgecolor if edgecolor is not None else color,
+                    label=use_label,
+                )
 
         # Common helper to save + tidy
         def _save_fig(fig, name):
             fig.tight_layout()
-            fig.savefig(_out_dir / f"{_prefix}_{name}.png", dpi=150)
+            png_path = _png_dir / f"{_prefix}_{name}.png"
+            fig.savefig(png_path, dpi=150)
+            html_path = _html_dir / f"{_prefix}_{name}.html"
+            _save_html(fig, html_path, "simulate")
+            plt.close(fig)
         
         # ----- 1) Price panel -----
         fig1, ax = plt.subplots(figsize=(15, 4.5))
@@ -1431,35 +1810,75 @@ def simulate(
             _scale = lambda a: 30
         if up:
             arr = np.array(up, dtype=int)
-            ax.scatter(arr, P_series[arr] + 1.00*off_y[arr], marker="^", color="green",
-                       s=[_scale(abs(arb_y_series[s])) for s in up], label="Arb (↑ to target)")
+            up_vals = [abs(arb_y_series[s]) for s in up]
+            up_xs = arr.tolist()
+            up_ys = [P_series[s] + 1.00 * off_y[s] for s in up]
+            _plot_variable_markers(
+                ax,
+                up_xs,
+                up_ys,
+                up_vals,
+                marker="^",
+                color="green",
+                label="Arb (↑ to target)",
+                min_size=1.0,
+                max_size=4.0,
+            )
         if dn:
             arr = np.array(dn, dtype=int)
-            ax.scatter(arr, P_series[arr] + 1.60*off_y[arr], marker="v", color="red",
-                       s=[_scale(abs(arb_y_series[s])) for s in dn], label="Arb (↓ to target)")
+            dn_vals = [abs(arb_y_series[s]) for s in dn]
+            dn_xs = arr.tolist()
+            dn_ys = [P_series[s] + 1.60 * off_y[s] for s in dn]
+            _plot_variable_markers(
+                ax,
+                dn_xs,
+                dn_ys,
+                dn_vals,
+                marker="v",
+                color="red",
+                label="Arb (↓ to target)",
+                min_size=1.0,
+                max_size=4.0,
+            )
 
         # LP markers (circles/crosses), stacked higher than arb
         if len(mint_steps) + len(burn_steps) > 0:
-            maxL = 1e-12
-            if mint_sizes: maxL = max(maxL, max(mint_sizes))
-            if burn_sizes: maxL = max(maxL, max(burn_sizes))
-            scaleL = lambda L: 30 + 120 * (L / maxL)
             if mint_steps:
-                mint_steps_v = [s for s in mint_steps if s >= s0]
-                if mint_steps_v:
-                    arr = np.array(mint_steps_v, dtype=int)
-                    ax.scatter(arr, P_series[arr] + 2.40*off_y[arr],
-                               marker="o", facecolors="none", edgecolors="#6a0dad",
-                               s=[scaleL(mint_sizes[mint_steps.index(s)]) for s in mint_steps_v],
-                               label="LP mint/center")
+                mint_points = [(step, size) for step, size in zip(mint_steps, mint_sizes) if step >= s0]
+                if mint_points:
+                    mint_xs = [step for step, _ in mint_points]
+                    mint_vals = [size for _, size in mint_points]
+                    mint_ys = [P_series[step] + 2.40 * off_y[step] for step in mint_xs]
+                    _plot_variable_markers(
+                        ax,
+                        mint_xs,
+                        mint_ys,
+                        mint_vals,
+                        marker="o",
+                        color="#6a0dad",
+                        facecolor="none",
+                        edgecolor="#6a0dad",
+                        label="LP mint/center",
+                        min_size=1.0,
+                        max_size=4.0,
+                    )
             if burn_steps:
-                burn_steps_v = [s for s in burn_steps if s >= s0]
-                if burn_steps_v:
-                    arr = np.array(burn_steps_v, dtype=int)
-                    ax.scatter(arr, P_series[arr] + 3.20*off_y[arr],
-                               marker="x", color="#ff8c00",
-                               s=[scaleL(burn_sizes[burn_steps.index(s)]) for s in burn_steps_v],
-                               label="LP burn")
+                burn_points = [(step, size) for step, size in zip(burn_steps, burn_sizes) if step >= s0]
+                if burn_points:
+                    burn_xs = [step for step, _ in burn_points]
+                    burn_vals = [size for _, size in burn_points]
+                    burn_ys = [P_series[step] + 3.20 * off_y[step] for step in burn_xs]
+                    _plot_variable_markers(
+                        ax,
+                        burn_xs,
+                        burn_ys,
+                        burn_vals,
+                        marker="x",
+                        color="#ff8c00",
+                        label="LP burn",
+                        min_size=1.0,
+                        max_size=4.0,
+                    )
 
         ax.set_xlim(steps_v[0]-0.5, steps_v[-1]+0.5)
         ax.set_ylabel("Price (token1 per token0)", fontsize=LABEL_FONT_SIZE)
@@ -1491,8 +1910,9 @@ def simulate(
         # ----- 2) Notionals -----
         fig2, ax = plt.subplots(figsize=(15, 3.6))
         ax.axhline(0.0, color="k", lw=1.0, alpha=0.3)
-        ax.bar(steps_v, trader_y_v, width=0.8, alpha=0.5, label="Trader notional (token1, signed)")
-        ax.plot(steps_v, arb_y_v, label="Arbitrage notional (token1, signed)", lw=1.8)
+        ax.plot(steps_v, sr_y_v, lw=1.8, label="Smart router notional (token1, signed)")
+        ax.plot(steps_v, noise_y_v, lw=1.8, linestyle="--", label="Noise trader notional (token1, signed)")
+        ax.plot(steps_v, arb_y_v, lw=1.8, linestyle="-.", label="Arbitrageur notional (token1, signed)")
         ax.set_ylabel("Notional (token1, signed)", fontsize=LABEL_FONT_SIZE)
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
@@ -1539,13 +1959,78 @@ def simulate(
         fig6, ax = plt.subplots(figsize=(15, 3.6))
         ax.axhline(0.0, color="k", lw=1.0, alpha=0.3)
         ax.plot(steps_v, sr_pnl_cum_v, lw=1.8, label="Smart Router cumulative PnL (token1)")
+        ax.plot(
+            steps_v,
+            noise_pnl_cum_v,
+            lw=1.5,
+            linestyle="--",
+            color="#2ca02c",
+            label="Noise trader cumulative PnL (token1)",
+        )
         ax.plot(steps_v, arb_pnl_cum_v, lw=1.8, label="Arbitrageur cumulative PnL (token1)")
-        ax.plot(steps_v, lp_wealth_series_v, lw=1.8, label="LPs Total PnL (wallet+open, token1)")
-        ax.plot(steps_v, lp_wealth_active_series_v, lw=1.5, linestyle="--",
-                label="Active LPs PnL (wallet+open)")
-        ax.plot(steps_v, lp_wealth_passive_series_v, lw=1.5, linestyle=":",
-                label="Passive LPs PnL (wallet+open)")
-        ax.set_ylabel("PnL", fontsize=LABEL_FONT_SIZE)
+        # ax.plot(
+        #     steps_v,
+        #     lp_pnl_total_series_v,
+        #     lw=1.8,
+        #     color="#8c564b",
+        #     label="LP cumulative hedged PnL (token1)",
+        # )
+        # ax.plot(
+        #     steps_v,
+        #     lp_rebal_total_series_v,
+        #     lw=1.2,
+        #     linestyle="--",
+        #     color="#bcbd22",
+        #     label="LP cumulative rebal PnL (token1)",
+        # )
+        ax.plot(
+            steps_v,
+            lp_pnl_active_series_v,
+            lw=1.5,
+            linestyle="--",
+            color="#8c564b",
+            label="Active narrow LP Fee-LVR",
+        )
+        if active_wide_lp_enabled and np.any(np.abs(lp_pnl_wide_series_v) > 1e-12):
+            ax.plot(
+                steps_v,
+                lp_pnl_wide_series_v,
+                lw=1.5,
+                linestyle="-.",
+                color="#bcbd22",
+                label="Active wide LP Fee-LVR",
+            )
+        ax.plot(
+            steps_v,
+            lp_pnl_passive_series_v,
+            lw=1.5,
+            linestyle=":",
+            color="#9467bd",
+            label="Passive LP Fee-LVR",
+        )
+        # ax.plot(
+        #     steps_v,
+        #     lp_wealth_active_series_v,
+        #     lw=1.5,
+        #     linestyle="--",
+        #     label="Active narrow LP wealth (wallet+open)",
+        # )
+        # if active_wide_lp_enabled and np.any(np.abs(lp_wealth_wide_series_v) > 1e-12):
+        #     ax.plot(
+        #         steps_v,
+        #         lp_wealth_wide_series_v,
+        #         lw=1.5,
+        #         linestyle="-.",
+        #         label="Active wide LP wealth (wallet+open)",
+        #     )
+        # ax.plot(
+        #     steps_v,
+        #     lp_wealth_passive_series_v,
+        #     lw=1.5,
+        #     linestyle=":",
+        #     label="Passive LP wealth (wallet+open)",
+        # )
+        ax.set_ylabel("Token1 value", fontsize=LABEL_FONT_SIZE)
         ax.set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
@@ -1615,6 +2100,11 @@ def simulate(
         "lp_pnl_total": lp_pnl_total_series.tolist(),
         "lp_pnl_active": lp_pnl_active_series.tolist(),
         "lp_pnl_passive": lp_pnl_passive_series.tolist(),
+        "lp_pnl_wide": lp_pnl_wide_series.tolist(),
+        "lp_rebal_total_series": lp_rebal_total_series.tolist(),
+        "lp_rebal_active_series": lp_rebal_active_series.tolist(),
+        "lp_rebal_passive_series": lp_rebal_passive_series.tolist(),
+        "lp_rebal_wide_series": lp_rebal_wide_series.tolist(),
         "trader_exec_count": trader_exec_count,
         "fee_series": fee_series,
         "fee_mode": fee_mode,
@@ -1628,9 +2118,12 @@ def simulate(
         "lp_wealth_series": lp_wealth_series.tolist(),
         "lp_wallet_active_series": lp_wallet_active_series.tolist(),
         "lp_wallet_passive_series": lp_wallet_passive_series.tolist(),
+        "lp_wallet_wide_series": lp_wallet_wide_series.tolist(),
         "lp_wealth_active_series": lp_wealth_active_series.tolist(),
         "lp_wealth_passive_series": lp_wealth_passive_series.tolist(),
+        "lp_wealth_wide_series": lp_wealth_wide_series.tolist(),
         "arb_exec_count": arb_exec_count,
+        "active_wide_lp_enabled": active_wide_lp_enabled,
     }
 
 
@@ -1639,7 +2132,15 @@ def simulate(
 # =============================================================================
 
 if __name__ == "__main__":
-    config_path = Path(__file__).with_name("abm_mempool_config.yml")
+    parser = argparse.ArgumentParser(description="Run the ABM Uni v3 simulation.")
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to the YAML configuration file containing a complete 'simulate' section.",
+    )
+    args = parser.parse_args()
+
+    config_path = Path(args.config).expanduser().resolve()
     scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
 
     print(f"[config] {config_path}")
@@ -1654,16 +2155,39 @@ if __name__ == "__main__":
     max_lag = 15
     autocorr = [np.corrcoef(dex_returns[:-lag], dex_returns[lag:])[0, 1] for lag in range(1, max_lag + 1)]
 
+    # Plot autocorrelation of DEX log-returns
+    lags = np.arange(1, max_lag + 1)
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(lags, autocorr, width=0.6, color="#1f77b4")
+    ax.axhline(0.0, color="black", linewidth=1.0, alpha=0.7)
+    ax.set_xlabel("Lag")
+    ax.set_ylabel("Autocorrelation")
+    ax.set_title("DEX Log-Return Autocorrelation")
+    ax.set_xticks(lags)
+    ax.grid(True, axis="y", alpha=0.3)
+
+    results_root = Path("abm_results")
+    png_dir = results_root / "png"
+    html_dir = results_root / "html"
+    png_dir.mkdir(parents=True, exist_ok=True)
+    html_dir.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    png_path = png_dir / f"autocorr_{scenario_label}.png"
+    fig.savefig(png_path, dpi=150)
+    html_path = html_dir / f"autocorr_{scenario_label}.html"
+    _save_html(fig, html_path, "autocorr")
+    plt.close(fig)
+
     # make liquidity GIF
-    make_liquidity_gif(
-    liq_history=out["liq_history"],
-    tick_history=out["tick_history"],
-    base_s=out["grid_base_s"],
-    g=out["grid_g"],
-    out_path=f"abm_results/liquidity_evolution_{scenario_label}.gif",
-    fps=10,
-    dpi=120,
-    pad_frac=0.05,
-    downsample_every=5,
-    center_line=True,
-    )
+    # make_liquidity_gif(
+    # liq_history=out["liq_history"],
+    # tick_history=out["tick_history"],
+    # base_s=out["grid_base_s"],
+    # g=out["grid_g"],
+    # out_path=f"abm_results/liquidity_evolution_{fee_mode}.gif",
+    # fps=20,
+    # dpi=120,
+    # pad_frac=0.05,
+    # downsample_every=5,
+    # center_line=True,
+    # )

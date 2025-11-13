@@ -187,6 +187,9 @@ personal.ipynb
 # GIF
 *.gif
 
+# HTML
+*.html
+
 # PNG
 *.png
 
@@ -195,3 +198,6 @@ personal.ipynb
 
 # TXT
 *.txt
+
+# Zone.Identifiers
+*:Zone.Identifier

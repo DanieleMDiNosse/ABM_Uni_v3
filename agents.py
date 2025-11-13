@@ -21,6 +21,33 @@ from uniswapv3_pool import V3Pool, BoundaryIndex
 # LP positions & agents
 # =============================================================================
 
+
+@dataclass
+class RebalancerState:
+    """
+    Tracks the per-LP rebalancing benchmark used for loss-versus-rebalancing (LVR).
+    All quantities are valued in token1 (“y”) unless otherwise indicated.
+    """
+    x_prev: float = 0.0          # token0 units held after last rebalance
+    cash_y: float = 0.0          # token1 cash balance of the benchmark
+    cumulative_R: float = 0.0    # cumulative rebalancing PnL (token1)
+    last_M: float = 0.0          # last CEX price used for accrual (token1 per token0)
+    last_wealth_y: float = 0.0   # LP wealth snapshot (wallet + mark-to-market) at last update
+    last_cumulative_R: float = 0.0  # snapshot of cumulative_R at last wealth observation
+    hedged_pnl_cum: float = 0.0  # cumulative hedged PnL = wealth - rebal benchmark
+    initialized: bool = False
+
+    def reset(self) -> None:
+        self.x_prev = 0.0
+        self.cash_y = 0.0
+        self.cumulative_R = 0.0
+        self.last_M = 0.0
+        self.last_wealth_y = 0.0
+        self.last_cumulative_R = 0.0
+        self.hedged_pnl_cum = 0.0
+        self.initialized = False
+
+
 @dataclass
 class Position:
     """
@@ -91,6 +118,36 @@ class LPAgent:
     L_budget: float = 0.0
     L_live: float = 0.0
     wallet_y: float = 0.0
+    rebalancer: RebalancerState = field(default_factory=RebalancerState)
+
+
+def lp_token0_exposure(lp: LPAgent, S: float) -> float:
+    """
+    Aggregate token0 exposure for an LP at sqrt-price S, including uncollected token0 fees.
+    """
+    total = 0.0
+    for pos in lp.positions:
+        amt0, _ = pos.current_amounts(S)
+        total += amt0 + pos.fees0
+    return total
+
+
+def lp_mark_to_market_y(lp: LPAgent, S: float, m: float) -> float:
+    """
+    Mark-to-market value (token1) of all open positions including uncollected fees.
+    """
+    total = 0.0
+    for pos in lp.positions:
+        total += pos.position_value_y_now(S, m) + pos.fees_value_y(m)
+    return total
+
+
+def lp_wealth_y(lp: LPAgent, S: float, m: float) -> float:
+    """
+    Total LP wealth (token1) = wallet holdings + mark-to-market open value.
+    """
+    wallet = getattr(lp, "wallet_y", 0.0)
+    return wallet + lp_mark_to_market_y(lp, S, m)
 
 
 # =============================================================================

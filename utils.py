@@ -436,6 +436,18 @@ def load_simulation_parameters(config_path: Path, simulate_func=None) -> Tuple[s
     if not isinstance(params, dict):
         raise ValueError(f"'simulate' section missing in {config_path}")
 
+    scenario_fee_mode = config_data.get("fee_mode")
+    if scenario_fee_mode is not None:
+        fee_mode_param = params.get("fee_mode")
+        if fee_mode_param is not None and fee_mode_param != scenario_fee_mode:
+            raise ValueError(
+                "Conflicting 'fee_mode' definitions between top-level config and simulate() parameters."
+            )
+        params = dict(params)
+        params["fee_mode"] = scenario_fee_mode
+    else:
+        params = dict(params)
+
     signature = inspect.signature(simulate_func)
     expected_keys = set(signature.parameters)
     missing_keys = [name for name in signature.parameters if name not in params]
@@ -446,9 +458,11 @@ def load_simulation_parameters(config_path: Path, simulate_func=None) -> Tuple[s
     if extra_keys:
         raise ValueError(f"Unexpected keys in 'simulate' section: {extra_keys}")
 
-    scenario_label = config_data.get("scenario")
+    scenario_label = params.get("fee_mode")
     if scenario_label is None:
-        scenario_label = params.get("fee_mode", "default")
+        raise ValueError(
+            f"Missing 'fee_mode' in {config_path}. Provide it either at the top level or inside the simulate() parameters."
+        )
 
     return str(scenario_label), dict(params)
 

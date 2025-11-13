@@ -1,0 +1,21 @@
+# Fee sweep configuration consumed by run_fee_sweep.py
+fee_sweep:
+  runs: 20  # Number of Monte Carlo repetitions per parameter value for averaging results
+  steps: 1000  # Simulation timesteps (passed as T) for each individual run
+  seed: 12345  # Master RNG seed used to derive per-run seeds for reproducibility
+  workers: 10  # Size of the ProcessPoolExecutor used to parallelise simulations
+  noise_floor: null  # Optional override of the base config's noise_floor (null keeps the original)
+  output: abm_results/fee_sweep.png  # Destination plot visualising aggregated LP PnL across sweeps
+  csv: abm_results/fee_sweep_results.csv  # Destination CSV storing per-scenario summary statistics
+  base_simulation_config: abm_mempool_config.yml  # Base simulation parameters shared by all sweeps
+  scenarios:  # Scenario-specific parameter sweeps keyed by fee_mode
+    static_baseline:  # Static fee mode baseline (no tuning parameter)
+      param_name: null  # No parameter is varied; run baseline configuration once
+      values: [0.0]  # Dummy list to satisfy sweep loop; value itself is unused
+    volatility_baseline:  # Volatility-aware fee mode sweeping k_sigma
+      param_name: k_sigma  # Target parameter in base config controlling volatility sensitivity
+      values: [1.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0]  # Candidate k_sigma values to evaluate
+    toxicity_baseline:  # Toxicity-aware fee mode sweeping k_basis
+      param_name: k_basis  # Target parameter in base config controlling toxicity sensitivity
+      values: [1.0e-6, 3.0e-6, 1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]  # Candidate k_basis values to evaluate
+

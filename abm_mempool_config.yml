@@ -1,6 +1,5 @@
-# Scenario label used when naming outputs and aggregating results
-scenario: static_baseline
-
+# Fee mode (also used as the scenario label)
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
@@ -12,7 +11,7 @@ simulate:
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.0
   # Volatility of the reference CEX price process (per step)
-  cex_sigma: 0.0015
+  cex_sigma: 0.015
   # Probability that a smart-router trade intent arrives in each micro step
   p_trade: 0.7
   # Probability that a noise trader submits even when best execution fails
@@ -21,6 +20,8 @@ simulate:
   p_lp_narrow: 0.95
   # Mint probability for wide, less active LPs
   p_lp_wide: 0.7
+  # Toggle active wide LP agents
+  active_wide_lp_enabled: false
   # Fraction of LP agents designated as passive baseline providers
   passive_lp_share: 0.2
   # Probability per review that a passive LP mints when not already in the pool
@@ -28,13 +29,13 @@ simulate:
   # Probability per review that a passive LP burns its existing position
   passive_burn_prob: 0.05
   # Range width in ticks used for passive LP positions
-  passive_width_ticks: 500
+  passive_width_ticks: 500 # 500 corresponds to ~10% of the initial price
   # Total number of LP agents instantiated in the simulation
   N_LP: 500
   # Average cadence (in steps) between LP reviews of their positions
   tau: 20
   # Minimum width in ticks for programmatic LP mints
-  w_min_ticks: 10
+  w_min_ticks: 10 # 10 corresponds to ~0.2% of the initial price
   # Maximum width in ticks allowed for programmatic LP mints
   w_max_ticks: 1774540
   # Half-life (steps) of the EWMA basis signal driving LP widths
@@ -50,7 +51,9 @@ simulate:
   # Standard deviation of log-normal order size distribution for traders
   trader_sigma: 0.6
   # Threshold multiplier for CEX-vs-DEX price comparison (best execution)
-  theta_T: 0.95
+  theta_T: 0.98
+  # Maximum relative slippage tolerated by traders (e.g., 0.01 = 1%)
+  slippage_tolerance: 0.01
   # Mean of log-normal draw scaling LP mint sizes
   mint_mu: 0.05
   # Standard deviation of log-normal draw scaling LP mint sizes
@@ -59,24 +62,18 @@ simulate:
   theta_TP: 0.1
   # Stop-loss ratio (relative to initial HODL value) for LP burn decisions
   theta_SL: 0.25
-  # If true, bootstraps liquidity via dynamic sharded hill and evolving LP budgets
-  evolve_initial_hill: true
   # Binomial hill depth used to seed initial liquidity distribution
   initial_binom_N: 450
   # Total initial liquidity deployed across seed LPs
   initial_total_L: 500000.0
-  # Whether to render the initial liquidity hill for diagnostics
-  plot_initial_hill: false
   # Number of consecutive steps out of range before a narrow LP recenters
   k_out: 5
   # Whether to generate plots and GIFs at the end of the run
   visualize: true
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 300
-  # Fee controller mode: static, volatility, toxicity, imbalance, or hybrid
-  fee_mode: static
   # Baseline fee level applied when controller is static or as floor for dynamics
-  f0: 0.003
+  f0: 0.0005
   # Minimum fee cap enforced by the controller
   f_min: 0.0005
   # Maximum fee cap enforced by the controller
