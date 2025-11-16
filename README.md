@@ -1,4 +1,4 @@
-# ABM Uni v3 Simulation
+# ABM Uni v3 Simulation (ongoing)
 
 Agent-based market (ABM) simulator for a Uniswap v3 style pool that extends the Angeris et al. model (“An analysis of Uniswap markets”). The project focuses on **microstructure effects** such as block mempools, asynchronous LP management, dynamic fee schedules, and realistic arbitrage/trader interactions.
 

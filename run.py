@@ -134,7 +134,8 @@ def simulate(
     theta_SL: float = 0.01,
     initial_binom_N: int = 400,
     initial_total_L: float = 70_000.0,
-    k_out: int = 2,
+    k_out_min: int = 2,
+    k_out_max: int = 2,
     visualize: bool = True,
     skip_step: int = 0,
     # --- Dynamic fee controller (new) ---
@@ -154,6 +155,10 @@ def simulate(
     valid_fee_modes = {"static", "volatility", "toxicity"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
+    if k_out_min <= 0 or k_out_max <= 0:
+        raise ValueError("k_out_min and k_out_max must be positive integers.")
+    if k_out_min > k_out_max:
+        raise ValueError("k_out_min cannot exceed k_out_max.")
 
     slippage_tolerance = clamp(slippage_tolerance, 0.0, 1.0)
     """
@@ -199,6 +204,7 @@ def simulate(
         lp.next_review = int(np.random.geometric(lp.review_rate))
         lp.cooldown = 0
         lp.can_act = False
+        lp.k_out_threshold = random.randint(k_out_min, k_out_max)
 
     # Distribute initial_total_L across LPs (each gets ~equal share)
     L_SCALE = initial_total_L / max(1, N_LP)
@@ -223,6 +229,8 @@ def simulate(
             lp.L_budget = 2.0 * L_SCALE
         if lp.L_live < 0.0:
             lp.L_live = 0.0
+        if not hasattr(lp, "k_out_threshold"):
+            lp.k_out_threshold = random.randint(k_out_min, k_out_max)
 
     bidx = BoundaryIndex(pool.liquidity_net)
 
@@ -237,7 +245,12 @@ def simulate(
     trader_steps, trader_dirs = [], []
     arb_steps, arb_dirs = [], []
     mint_steps, mint_sizes, burn_steps, burn_sizes = [], [], [], []
+    mint_is_passive: List[bool] = []
+    burn_is_passive: List[bool] = []
     mint_widths = []
+    w_ticks_series: List[int] = []
+    w_unclipped_series: List[float] = []
+    w_noise_series: List[float] = []
     liq_history: List[Dict[int, float]] = []
     tick_history: List[int] = []
     delta_a_cex_series = []
@@ -474,6 +487,7 @@ def simulate(
         mint_steps.append(t)
         mint_sizes.append(L_new)
         mint_widths.append(upper - lower)
+        mint_is_passive.append(bool(lp.is_passive))
 
         with open(verbose_log_path_str, "a") as f:
             f.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
@@ -497,6 +511,7 @@ def simulate(
         bidx.mark_dirty()
         burn_steps.append(t)
         burn_sizes.append(pos.L)
+        burn_is_passive.append(bool(lp.is_passive))
 
         with open(verbose_log_path_str, "a") as f:
             f.write(f"[t={t:03d}] LP{lp.id} BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | L_active={pool.L_active:.4f}\n")
@@ -641,7 +656,7 @@ def simulate(
         noise_floor_micro = 1.0 - (1.0 - noise_floor)**(1.0 / block_size)
     else:
         p_trade_micro = p_trade
-        noise_floor_micro = noise_floor
+    noise_floor_micro = noise_floor
 
     total_noise_swaps_executed = 0
     total_noise_swaps_skipped = 0
@@ -655,6 +670,15 @@ def simulate(
     agent_S_ref = validated_S
     agent_tick_ref = validated_tick
     cex_ref_for_agents = validated_cex
+    def _baseline_quote_x_to_y(dx: float) -> float:
+        if dx <= 0.0:
+            return 0.0
+        return dx * pool.r * pool.price
+
+    def _baseline_quote_y_to_x(dy: float) -> float:
+        if dy <= 0.0:
+            return 0.0
+        return (dy * pool.r) / max(pool.price, 1e-18)
 
     # ------------------ Main loop ------------------
     for t in range(T):
@@ -708,6 +732,9 @@ def simulate(
         _min_bands = max(1, (w_min_ticks + step_width_ticks - 1) // step_width_ticks)
         _max_bands = max(1, w_max_ticks // step_width_ticks)
         w_ticks = max(_min_bands * step_width_ticks, min(w_ticks, _max_bands * step_width_ticks))
+        w_ticks_series.append(w_ticks)
+        w_unclipped_series.append(w_unclipped)
+        w_noise_series.append(noise_ticks)
         # ---------------------------------------------------------------------
 
         # --- Per-step accumulators (so we can randomize actor order) ---
@@ -746,7 +773,8 @@ def simulate(
                 # best-ex vs CEX: compare dy_out to dx * m_now (value in token1)
                 if initial_quote < theta_T * dx * m_now:
                     return
-                min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                baseline_quote = _baseline_quote_x_to_y(dx)
+                min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
                 mempool_orders.append({
                     'type': 'swap',
                     'agent': 'smart',
@@ -766,7 +794,8 @@ def simulate(
                 # best-ex vs CEX: compare dx_out to dy / m_now (value in token0)
                 if initial_quote < theta_T * dy / max(m_now, 1e-18):
                     return
-                min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                baseline_quote = _baseline_quote_y_to_x(dy)
+                min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
                 mempool_orders.append({
                     'type': 'swap',
                     'agent': 'smart',
@@ -788,7 +817,8 @@ def simulate(
                     initial_quote = pool.quote_x_to_y(dx, bidx)
                     if initial_quote <= 0.0:
                         return
-                    min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                    baseline_quote = _baseline_quote_x_to_y(dx)
+                    min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
                     mempool_orders.append({
                         'type': 'swap',
                         'agent': 'noise',
@@ -804,7 +834,8 @@ def simulate(
                     initial_quote = pool.quote_y_to_x(dy, bidx)
                     if initial_quote <= 0.0:
                         return
-                    min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                    baseline_quote = _baseline_quote_y_to_x(dy)
+                    min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
                     mempool_orders.append({
                         'type': 'swap',
                         'agent': 'noise',
@@ -851,7 +882,7 @@ def simulate(
                         pool.add_liquidity_range(lower, upper, L_new)
                         pool.recompute_active_L(); bidx.mark_dirty()
                         lp.positions.append(pos)
-                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower)
+                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                         with open(verbose_log_path_str, 'a') as f:
                             f.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
                         lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
@@ -874,7 +905,7 @@ def simulate(
                         pool.add_liquidity_range(lower, upper, L_new)
                         pool.recompute_active_L(); bidx.mark_dirty()
                         lp.positions.append(pos)
-                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower)
+                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                         with open(verbose_log_path_str, 'a') as f:
                             f.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
@@ -1003,7 +1034,8 @@ def simulate(
                 if enforce_best_ex:
                     if initial_quote < theta_T * dx * m_reference:
                         return
-                min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                baseline_quote = _baseline_quote_x_to_y(dx)
+                min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
                 final_quote = pool.quote_x_to_y(dx, bidx)
                 if final_quote < min_output:
                     if agent_label == "smart":
@@ -1062,7 +1094,8 @@ def simulate(
                     dx_cex = dy / max(m_reference, 1e-18)
                     if initial_quote < theta_T * dx_cex:
                         return
-                min_output = max(0.0, initial_quote * (1.0 - slippage_tolerance))
+                baseline_quote = _baseline_quote_y_to_x(dy)
+                min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
                 final_quote = pool.quote_y_to_x(dy, bidx)
                 if final_quote < min_output:
                     if agent_label == "smart":
@@ -1137,7 +1170,8 @@ def simulate(
                     out_steps = getattr(pos, "out_steps", 0)
                     out_steps = 0 if in_rng else out_steps + 1
                     setattr(pos, "out_steps", out_steps)
-                    if lp.is_active_narrow and out_steps >= k_out:
+                    k_out_thresh = getattr(lp, "k_out_threshold", k_out_max)
+                    if lp.is_active_narrow and out_steps >= k_out_thresh:
                         to_recenters.append(i)
 
                 for i in reversed(to_recenters):
@@ -1165,7 +1199,7 @@ def simulate(
                     pool.add_liquidity_range(lower, upper, L_same)
                     bidx.mark_dirty()
                     lp.positions.append(newpos)
-                    mint_steps.append(t); mint_sizes.append(L_same); mint_widths.append(upper - lower)
+                    mint_steps.append(t); mint_sizes.append(L_same); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                     with open(verbose_log_path_str, "a") as f:
                         f.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
 
@@ -1342,7 +1376,7 @@ def simulate(
                     pos = lp.positions[i]
                     mempool_orders.append({'type':'lp_burn','lp_id': lp.id,'lower': pos.lower,'upper': pos.upper,'L': pos.L})
 
-            # Recenter (narrow LPs that have been out-of-range for >= k_out)
+            # Recenter (narrow LPs that have been out-of-range past their threshold)
             for lp_idx in due:
                 lp = LPs[lp_idx]
                 if not lp.can_act:
@@ -1353,7 +1387,8 @@ def simulate(
                     out_steps = getattr(pos, "out_steps", 0)
                     out_steps = 0 if in_rng else out_steps + 1
                     setattr(pos, "out_steps", out_steps)
-                    if lp.is_active_narrow and out_steps >= k_out:
+                    k_out_thresh = getattr(lp, "k_out_threshold", k_out_max)
+                    if lp.is_active_narrow and out_steps >= k_out_thresh:
                         to_recenters.append(i)
                 for i in reversed(to_recenters):
                     pos = lp.positions[i]
@@ -1723,20 +1758,30 @@ def simulate(
     arb_y_v = np.array(arb_y_series)[s0:]
     sr_y_v = sr_y_series[s0:]
     noise_y_v = noise_y_series[s0:]
+    w_ticks_series_v = np.array(w_ticks_series)[s0:] if w_ticks_series else np.array([])
+    w_unclipped_series_v = np.array(w_unclipped_series)[s0:] if w_unclipped_series else np.array([])
+    w_noise_series_v = np.array(w_noise_series)[s0:] if w_noise_series else np.array([])
     
     if visualize:
-        # ΔL per step (aggregate)
-        mint_step_sum = np.zeros_like(P_series)
-        for s, L in zip(mint_steps, mint_sizes):
-            if 0 <= s < len(mint_step_sum):
-                mint_step_sum[s] += L
-        burn_step_sum = np.zeros_like(P_series)
-        for s, L in zip(burn_steps, burn_sizes):
-            if 0 <= s < len(burn_step_sum):
-                burn_step_sum[s] += L
+        # ΔL per step (split by LP type)
+        mint_step_sum_passive = np.zeros_like(P_series)
+        mint_step_sum_active = np.zeros_like(P_series)
+        n_steps = len(P_series)
+        for s, L, is_passive in zip(mint_steps, mint_sizes, mint_is_passive):
+            if 0 <= s < n_steps:
+                target = mint_step_sum_passive if is_passive else mint_step_sum_active
+                target[s] += L
+        burn_step_sum_passive = np.zeros_like(P_series)
+        burn_step_sum_active = np.zeros_like(P_series)
+        for s, L, is_passive in zip(burn_steps, burn_sizes, burn_is_passive):
+            if 0 <= s < n_steps:
+                target = burn_step_sum_passive if is_passive else burn_step_sum_active
+                target[s] += L
 
-        mint_step_sum_v = mint_step_sum[s0:]
-        burn_step_sum_v = burn_step_sum[s0:]
+        mint_step_sum_passive_v = mint_step_sum_passive[s0:]
+        mint_step_sum_active_v = mint_step_sum_active[s0:]
+        burn_step_sum_passive_v = burn_step_sum_passive[s0:]
+        burn_step_sum_active_v = burn_step_sum_active[s0:]
         
         # ===== Separate figures instead of a single multi-subplot figure =====
         from pathlib import Path as _Path
@@ -1953,14 +1998,22 @@ def simulate(
                 ax.axvspan(s_idx - 0.5, s_idx + 0.5, color="red", alpha=0.05, lw=0)
         _save_fig(fig3, "3_activeL")
 
-        # ----- 4) L per step -----
-        fig4, ax = plt.subplots(figsize=(15, 3.6))
-        ax.axhline(0.0, color="k", lw=1.0, alpha=0.3)
-        ax.bar(steps_v, mint_step_sum_v, width=0.8, alpha=0.6, label="LP mint/center L (>0)", color="#6a0dad")
-        ax.bar(steps_v, -burn_step_sum_v, width=0.8, alpha=0.6, label="LP burn L (<0)", color="#ff8c00")
-        ax.set_ylabel("L per step", fontsize=LABEL_FONT_SIZE)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
+        # ----- 4) L per step (passive vs active) -----
+        fig4, axes = plt.subplots(2, 1, figsize=(15, 6.5), sharex=True)
+        panel_specs = [
+            ("Passive LPs", mint_step_sum_passive_v, burn_step_sum_passive_v),
+            ("Active LPs", mint_step_sum_active_v, burn_step_sum_active_v),
+        ]
+        for idx, (ax, (title, mint_vals, burn_vals)) in enumerate(zip(axes, panel_specs)):
+            ax.axhline(0.0, color="k", lw=1.0, alpha=0.25)
+            ax.bar(steps_v, mint_vals, width=0.8, alpha=0.65, label="Mint / recenter L", color="#6a0dad")
+            ax.bar(steps_v, -burn_vals, width=0.8, alpha=0.65, label="Burn L", color="#ff8c00")
+            ax.set_ylabel("ΔL per step", fontsize=LABEL_FONT_SIZE)
+            ax.set_title(f"{title}", fontsize=LABEL_FONT_SIZE)
+            ax.grid(True, alpha=0.3)
+            if idx == 0:
+                ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
+        axes[-1].set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
         _save_fig(fig4, "4_L_per_step")
 
         # ----- 5) Active-band reserves -----
@@ -1976,7 +2029,21 @@ def simulate(
                 ax.axvspan(s_idx - 0.5, s_idx + 0.5, color="red", alpha=0.05, lw=0)
         _save_fig(fig5, "5_active_reserves")
 
-        # ----- 6) PnL panel -----
+        # ----- 6b) LP mint width signal -----
+        if len(w_ticks_series_v) > 0:
+            fig6b, ax = plt.subplots(figsize=(15, 3.6))
+            width_baseline_v = w_unclipped_series_v - w_noise_series_v
+            ax.plot(steps_v, width_baseline_v, lw=1.5, label="Baseline width (min + EWMA basis)")
+            ax.plot(steps_v, w_unclipped_series_v, lw=1.2, ls="--", label="Baseline + binomial noise")
+            ax.plot(steps_v, w_ticks_series_v, lw=1.8, ls="-.", label="Final width (rounded/clamped)")
+            ax.set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
+            ax.set_ylabel("Width (ticks)", fontsize=LABEL_FONT_SIZE)
+            ax.set_title("LP mint width signal", fontsize=TITLE_FONT_SIZE)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
+            _save_fig(fig6b, "6b_mint_width_signal")
+
+        # ----- 7) PnL panel -----
         fig6, ax = plt.subplots(figsize=(15, 3.6))
         ax.axhline(0.0, color="k", lw=1.0, alpha=0.3)
         ax.plot(steps_v, sr_pnl_cum_v, lw=1.8, label="Smart Router cumulative PnL (token1)")
@@ -2200,15 +2267,15 @@ if __name__ == "__main__":
     plt.close(fig)
 
     # make liquidity GIF
-    # make_liquidity_gif(
-    # liq_history=out["liq_history"],
-    # tick_history=out["tick_history"],
-    # base_s=out["grid_base_s"],
-    # g=out["grid_g"],
-    # out_path=f"abm_results/liquidity_evolution_{fee_mode}.gif",
-    # fps=20,
-    # dpi=120,
-    # pad_frac=0.05,
-    # downsample_every=5,
-    # center_line=True,
-    # )
+    make_liquidity_gif(
+    liq_history=out["liq_history"],
+    tick_history=out["tick_history"],
+    base_s=out["grid_base_s"],
+    g=out["grid_g"],
+    out_path=f"abm_results/liquidity_evolution_{scenario_label}.gif",
+    fps=20,
+    dpi=120,
+    pad_frac=0.05,
+    downsample_every=10,
+    center_line=True,
+    )
