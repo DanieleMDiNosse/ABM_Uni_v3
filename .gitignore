@@ -177,9 +177,9 @@ cython_debug/
 *.csv
 
 # folder
-data/*
-mev_out/*
-images/*
+abm_results/html/*
+abm_results/png/*
+animation_frames/*
 
 # personal notebook
 personal.ipynb
