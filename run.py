@@ -59,6 +59,8 @@ from agents import (
     lp_mark_to_market_y,
     lp_wealth_y,
 )
+from collections import defaultdict
+
 from uniswapv3_pool import V3Pool, BoundaryIndex
 
 
@@ -223,7 +225,32 @@ def simulate(
         if not hasattr(lp, "k_out_threshold"):
             lp.k_out_threshold = random.randint(k_out_min, k_out_max)
 
+    lp_lookup: Dict[int, LPAgent] = {lp.id: lp for lp in LPs}
     bidx = BoundaryIndex(pool.liquidity_net)
+    positions_by_tick: Dict[int, List[Position]] = defaultdict(list)
+
+    def _register_position(pos: Position) -> None:
+        slots = tuple(range(pos.lower, pos.upper, pool.tick_spacing))
+        pos.tick_slots = slots
+        for tick_val in slots:
+            positions_by_tick[tick_val].append(pos)
+
+    def _unregister_position(pos: Position) -> None:
+        for tick_val in getattr(pos, "tick_slots", ()):
+            bucket = positions_by_tick.get(tick_val)
+            if not bucket:
+                continue
+            try:
+                bucket.remove(pos)
+            except ValueError:
+                continue
+            if not bucket:
+                positions_by_tick.pop(tick_val, None)
+        pos.tick_slots = tuple()
+
+    for lp in LPs:
+        for pos in lp.positions:
+            _register_position(pos)
 
     # ------------------ Recorders ------------------
     P_series, M_series = [], []
@@ -275,11 +302,11 @@ def simulate(
     verbose_log_path = next_numbered_path(Path(f"abm_results/verbose_steps_{fee_mode}"))
     verbose_log_path_str = str(verbose_log_path)
 
-    with open(verbose_log_path_str, "a") as f:
-        f.write("# Simulation parameters\n")
-        for key in sorted(initial_params):
-            f.write(f"{key} = {initial_params[key]}\n")
-        f.write("\n")
+    verbose_log = open(verbose_log_path_str, "a")
+    verbose_log.write("# Simulation parameters\n")
+    for key in sorted(initial_params):
+        verbose_log.write(f"{key} = {initial_params[key]}\n")
+    verbose_log.write("\n")
 
 
     # --- LP wealth recorders (new) ---
@@ -318,7 +345,6 @@ def simulate(
         rb.reset()
         x_target = lp_token0_exposure(lp, S_now)
         rb.x_prev = x_target
-        rb.cash_y = -x_target * M_now
         rb.cumulative_R = 0.0
         rb.last_M = M_now
         wealth_now = lp_wealth_y(lp, S_now, M_now)
@@ -337,18 +363,12 @@ def simulate(
             rb.x_prev = x_target
         rb.last_M = M_now
 
-    def _rebalance_subset(lp_subset: List[LPAgent], M_now: float, S_now: float) -> None:
-        if not lp_subset:
-            return
-        for lp in lp_subset:
-            _rebalance_lp_to_target(lp, M_now, S_now)
-
     def _rebalance_by_ids(lp_ids: Set[int], M_now: float, S_now: float) -> None:
         if not lp_ids:
             return
-        id_lookup = lp_ids
-        for lp in LPs:
-            if lp.id in id_lookup:
+        for lp_id in lp_ids:
+            lp = lp_lookup.get(lp_id)
+            if lp is not None:
                 _rebalance_lp_to_target(lp, M_now, S_now)
 
     def _rebalance_all(M_now: float, S_now: float) -> None:
@@ -374,20 +394,28 @@ def simulate(
 
     # ------------------ Helpers ------------------
     def allocate_fees(token: str, fee_amt: float, tick_snapshot: int, L_snapshot: float) -> None:
-        if fee_amt <= 0 or L_snapshot <= 0:
+        if fee_amt <= 0:
+            return
+        bucket = positions_by_tick.get(tick_snapshot)
+        if not bucket:
+            return
+        total_L = math.fsum(pos.L for pos in bucket if pos.L > 0.0)
+        if total_L <= 0.0:
             return
         touched_lp_ids: Set[int] = set()
-        for lp in LPs:
-            for pos in lp.positions:
-                if pos.in_range(tick_snapshot):
-                    share = pos.L / L_snapshot
-                    if token == "x":
-                        delta_fee0 = share * fee_amt
-                        pos.fees0 += delta_fee0
-                        if delta_fee0 != 0.0:
-                            touched_lp_ids.add(pos.owner)
-                    else:
-                        pos.fees1 += share * fee_amt
+        for pos in bucket:
+            share = pos.L / total_L
+            if share <= 0.0:
+                continue
+            if token == "x":
+                delta_fee0 = share * fee_amt
+                pos.fees0 += delta_fee0
+                if delta_fee0 != 0.0:
+                    touched_lp_ids.add(pos.owner)
+            else:
+                pos.fees1 += share * fee_amt
+                if fee_amt != 0.0:
+                    touched_lp_ids.add(pos.owner)
         if touched_lp_ids:
             _rebalance_by_ids(touched_lp_ids, ref.m, pool.S)
 
@@ -395,89 +423,26 @@ def simulate(
         raw = int(math.floor(math.log(max(S, 1e-18) / pool.base_s, pool.g)))
         return pool._snap(raw)
 
-    def mint_lp(lp: LPAgent, width_ticks: int) -> None:
-        # Use an INTEGER number of spacing bands around the active band.
-        # Min total width = tick_spacing; all widths multiples of tick_spacing.
-        n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
-        
-
-        X = abs(np.random.normal(mint_mu, mint_sigma))
-        want = X * L_SCALE
-        cap_step = 0.25 * lp.L_budget
-        cap_left = max(0.0, lp.L_budget - lp.L_live)
-        L_new = max(0.0, min(want, cap_step, cap_left))
-        if L_new <= 0: 
-            return
-
-        # Center around the validated sqrt price snapshot (pre-mempool)
-        S_now = agent_S_ref
-        s = pool.tick_spacing
-        nb = n_bands
-        denom = (1.0 + (pool.g ** (nb * s + s)))
-        if denom <= 0.0:
-            denom = 1.0
-        lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-        lower = pool._snap(int(round(lower_real)))
-        upper = lower + nb * s
-        if upper <= lower:
-            upper = lower + pool.tick_spacing
-
-        sa, sb = pool.s_lower(lower), pool.s_upper(upper)
-        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
-
-        pos = Position(
-            owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
-            amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1,
-        )
-
-        assert abs(pos.PnL_y(agent_S_ref, cex_ref_for_agents)) <= 1e-9 * max(1.0, pos.hodl0_value_y), "Non-zero PnL at mint"
-
-        pool.add_liquidity_range(lower, upper, L_new)
-        pool.recompute_active_L()
-
-        if abs(pool.L_active) < EPS_LIQ2:
-            pool.L_active = 0.0
-
-        bidx.mark_dirty()
-        lp.positions.append(pos)
-
-        mint_steps.append(t)
-        mint_sizes.append(L_new)
-        mint_widths.append(upper - lower)
-        mint_is_passive.append(bool(lp.is_passive))
-
-        with open(verbose_log_path_str, "a") as f:
-            f.write(
-                f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | "
-                f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
-            )
-        lp.L_live = getattr(lp, "L_live", 0.0) + L_new
-        _rebalance_lp_to_target(lp, ref.m, pool.S)
-
     def burn_any(lp: LPAgent, idx: int) -> None:
         pos = lp.positions.pop(idx)
         # Realize PnL into LP wallet at burn time (fees + IL vs floating HODL)
         realized_y = pos.PnL_y(pool.S, ref.m)
         lp.wallet_y = getattr(lp, 'wallet_y', 0.0) + float(realized_y)
+        _unregister_position(pos)
         pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
-        pool.recompute_active_L()
+        bidx.mark_dirty()
 
-        if abs(pool.L_active) < EPS_LIQ2:
-            pool.L_active = 0.0
-        elif pool.L_active < 0.0:
-            # still materially negative => logic error rather than rounding
+        if pool.L_active < -EPS_LIQ2:
             raise AssertionError(f"L_active underflow after burn: {pool.L_active}")
 
-        bidx.mark_dirty()
         burn_steps.append(t)
         burn_sizes.append(pos.L)
         burn_is_passive.append(bool(lp.is_passive))
 
-        with open(verbose_log_path_str, "a") as f:
-            f.write(
-                f"[t={t:03d}] LP{lp.id} BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | "
-                f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
-            )
+        verbose_log.write(
+            f"[t={t:03d}] LP{lp.id} BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | "
+            f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+        )
 
         lp.cooldown = np.random.randint(3, 9)  # 3–8 steps of "hands off"
         lp.L_live = max(0.0, getattr(lp, "L_live", 0.0) - pos.L)
@@ -520,13 +485,13 @@ def simulate(
         pool.tick = tick_from_S(pool.S)
         return dx_pre, dy_out, fee_x
 
-    def swap_exact_to_target(target_price: float, direction: str, fee_cb: Optional[Callable[[str, float, int, float], None]] = None) -> Tuple[float, float, float, float, float]:
+    def swap_exact_to_target(target_price: float, direction: str, fee_cb: Optional[Callable[[str, float, int, float], None]] = None) -> Tuple[float, float, float]:
         target_S = math.sqrt(max(1e-18, target_price))
 
-        total_in = total_out = fee_x = fee_y = 0.0
+        total_in = total_out = 0.0
         L_first = 0.0
         if pool.L_active <= EPS_LIQ:
-            return 0.0, 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
         if direction == "up":
             while pool.L_active > 0 and pool.S < target_S - EPS_BOUNDARY:
@@ -539,13 +504,14 @@ def simulate(
                 # Per-span fee allocation (token Y)
                 if fee_cb and f > 0.0 and L_before > 0.0:
                     fee_cb("y", f, _tick_before, L_before)
-                fee_y += f; total_in += dy; total_out += dx
+                total_in += dy
+                total_out += dx
                 if pool.S >= target_S - EPS_BOUNDARY:
                     break
                 pool._cross_up_once()
                 if pool.L_active <= 0:
                     break
-            return total_in, total_out, fee_x, fee_y, L_first
+            return total_in, total_out, L_first
 
         else:  # "down"
             while pool.L_active > 0 and pool.S > target_S + EPS_BOUNDARY:
@@ -558,37 +524,37 @@ def simulate(
                 # Per-span fee allocation (token X)
                 if fee_cb and f > 0.0 and L_before > 0.0:
                     fee_cb("x", f, _tick_before, L_before)
-                fee_x += f; total_in += dx; total_out += dy
+                total_in += dx
+                total_out += dy
                 if pool.S <= target_S + EPS_BOUNDARY:
                     break
                 pool._cross_down_once()
                 if pool.L_active <= 0:
                     break
-            return total_in, total_out, fee_x, fee_y, L_first
+            return total_in, total_out, L_first
 
 
-    def arbitrage_to_target(arb_ref_m: float) -> Tuple[float, float, float, Optional[str], float, float, float]:
+    def arbitrage_to_target(arb_ref_m: float) -> Tuple[float, float, float, Optional[str], float]:
         """
         Returns:
         in_used        = total input amount into the DEX (dy for 'up', dx for 'down')
         x_out_from_dex = token A out from the DEX (dx_out for 'up'; 0.0 for 'down')
         y_out_from_dex = token B out from the DEX (0.0 for 'up'; dy_out for 'down')
         direction      = 'up' or 'down' or None
-        fee_x, fee_y
         L_first
         """
         P = pool.price
         r = pool.r
         lo, hi = arb_ref_m * r, arb_ref_m / r
         if P < lo * (1 - 1e-9):
-            # up: returns (dy_in, dx_out, fee_x=0, fee_y, L_first)
-            dy_in, dx_out, fx, fy, Lff = swap_exact_to_target(lo, "up", fee_cb=allocate_fees)
-            return dy_in, dx_out, 0.0, ("up" if dy_in > 0 else None), fx, fy, Lff
+            # up: returns (dy_in, dx_out, 0.0, direction, L_first)
+            dy_in, dx_out, Lff = swap_exact_to_target(lo, "up", fee_cb=allocate_fees)
+            return dy_in, dx_out, 0.0, ("up" if dy_in > 0 else None), Lff
         if P > hi * (1 + 1e-9):
-            # down: returns (dx_in, dy_out, fee_x, fee_y=0, L_first)
-            dx_in, dy_out, fx, fy, Lff = swap_exact_to_target(hi, "down", fee_cb=allocate_fees)
-            return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), fx, fy, Lff
-        return 0.0, 0.0, 0.0, None, 0.0, 0.0, 0.0
+            # down: returns (dx_in, 0.0, dy_out, direction, L_first)
+            dx_in, dy_out, Lff = swap_exact_to_target(hi, "down", fee_cb=allocate_fees)
+            return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), Lff
+        return 0.0, 0.0, 0.0, None, 0.0
 
     # Per-micro-step arrival probabilities (used directly)
     p_trade_micro = p_trade
@@ -603,7 +569,6 @@ def simulate(
     noise_swaps_x_to_y = 0
     noise_swaps_y_to_x = 0
     # Track the last validated DEX state (end of previous block)
-    validated_price = pool.price
     validated_S = pool.S
     validated_tick = pool.tick
     validated_cex = ref.m
@@ -828,7 +793,7 @@ def simulate(
 
                 # Handle LP intents (they don't have 'agent' or 'side')
                 if typ in ('lp_burn','lp_mint','lp_recenter'):
-                    lp = next((x for x in LPs if x.id == o.get('lp_id')), None)
+                    lp = lp_lookup.get(o.get('lp_id'))
                     if lp is None:
                         return
                     if typ == 'lp_burn':
@@ -850,11 +815,11 @@ def simulate(
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
                                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
                         pool.add_liquidity_range(lower, upper, L_new)
-                        pool.recompute_active_L(); bidx.mark_dirty()
+                        bidx.mark_dirty()
                         lp.positions.append(pos)
+                        _register_position(pos)
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
-                        with open(verbose_log_path_str, 'a') as f:
-                            f.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
+                        verbose_log.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
                         executed_lp_events += 1
@@ -874,11 +839,11 @@ def simulate(
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
                                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
                         pool.add_liquidity_range(lower, upper, L_new)
-                        pool.recompute_active_L(); bidx.mark_dirty()
+                        bidx.mark_dirty()
                         lp.positions.append(pos)
+                        _register_position(pos)
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
-                        with open(verbose_log_path_str, 'a') as f:
-                            f.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
+                        verbose_log.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
                         executed_lp_events += 1
                         return
@@ -888,7 +853,7 @@ def simulate(
                     arb_ref = float(o.get('arb_ref_m', ref.m))
                     price_before = pool.price
                     tick_before = pool.tick
-                    in_used, x_out_from_dex, y_out_from_dex, dir_arb, fee_x_arb, fee_y_arb, L_first = arbitrage_to_target(arb_ref)
+                    in_used, x_out_from_dex, y_out_from_dex, dir_arb, L_first = arbitrage_to_target(arb_ref)
                     delta_a_cex_this = 0.0
                     if in_used > 0 and dir_arb is not None:
                         L_pre_arb_eff_this = L_first
@@ -900,9 +865,8 @@ def simulate(
                             delta_a_cex_this = -x_out_from_dex
                             arb_y_this = +in_used
                             arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
-                            with open(verbose_log_path_str, 'a') as f:
-                                f.write(
-                                    f"[t={t:03d}] arb swap up dy_in={in_used:.6f} dx_out={x_out_from_dex:.6f} "
+                            verbose_log.write(
+                                f"[t={t:03d}] arb swap up dy_in={in_used:.6f} dx_out={x_out_from_dex:.6f} "
                                 f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                             )
                         else:
@@ -910,9 +874,8 @@ def simulate(
                             delta_a_cex_this = +in_used
                             arb_y_this = -pool.price * in_used
                             arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
-                            with open(verbose_log_path_str, 'a') as f:
-                                f.write(
-                                    f"[t={t:03d}] arb swap down dx_in={in_used:.6f} dy_out={y_out_from_dex:.6f} "
+                            verbose_log.write(
+                                f"[t={t:03d}] arb swap down dx_in={in_used:.6f} dy_out={y_out_from_dex:.6f} "
                                 f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                             )
                         _record_micro(price_before)
@@ -929,11 +892,10 @@ def simulate(
                                 total_smart_swaps_skipped += 1
                             elif agent == 'noise':
                                 total_noise_swaps_skipped += 1
-                            with open(verbose_log_path_str, 'a') as f:
-                                f.write(
-                                    f"[t={t:03d}] {agent or 'N/A'} swap X_to_Y SKIPPED (slippage). "
-                                    f"final_quote={final_quote:.4f} <= min_output={min_output:.4f} | tick={tick_before_exec}\n"
-                                )
+                            verbose_log.write(
+                                f"[t={t:03d}] {agent or 'N/A'} swap X_to_Y SKIPPED (slippage). "
+                                f"final_quote={final_quote:.4f} <= min_output={min_output:.4f} | tick={tick_before_exec}\n"
+                            )
                             return
                     if pool.L_active <= EPS_LIQ:
                         return
@@ -951,11 +913,10 @@ def simulate(
                         total_smart_swaps_executed += executed
                         smart_swaps_x_to_y += int(used_dx_pre > 0)
                         executed_smart_swaps += executed
-                        with open(verbose_log_path_str, 'a') as f:
-                            f.write(
-                                f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
-                                f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
-                            )
+                        verbose_log.write(
+                            f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
+                            f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
+                        )
                     elif agent == 'noise':
                         trader_steps.append(t); trader_dirs.append('down')
                         noise_acc.notional_y += -P_pre_exec * used_dx_pre
@@ -965,11 +926,10 @@ def simulate(
                         total_noise_swaps_executed += executed
                         noise_swaps_x_to_y += int(used_dx_pre > 0)
                         executed_noise_swaps += executed
-                        with open(verbose_log_path_str, 'a') as f:
-                            f.write(
-                                f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
-                                f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
-                            )
+                        verbose_log.write(
+                            f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
+                            f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
+                        )
                     _record_micro(P_pre_exec)
                 else:
                     min_output = o.get('min_output')
@@ -981,11 +941,10 @@ def simulate(
                                 total_smart_swaps_skipped += 1
                             elif agent == 'noise':
                                 total_noise_swaps_skipped += 1
-                            with open(verbose_log_path_str, 'a') as f:
-                                f.write(
-                                    f"[t={t:03d}] {agent or 'N/A'} swap Y_to_X SKIPPED (slippage). "
-                                    f"final_quote={final_quote:.4f} <= min_output={min_output:.4f} | tick={tick_before_exec}\n"
-                                )
+                            verbose_log.write(
+                                f"[t={t:03d}] {agent or 'N/A'} swap Y_to_X SKIPPED (slippage). "
+                                f"final_quote={final_quote:.4f} <= min_output={min_output:.4f} | tick={tick_before_exec}\n"
+                            )
                             return
                     if pool.L_active <= EPS_LIQ:
                         return
@@ -1003,11 +962,10 @@ def simulate(
                         total_smart_swaps_executed += executed
                         smart_swaps_y_to_x += int(used_dy_pre > 0)
                         executed_smart_swaps += executed
-                        with open(verbose_log_path_str, 'a') as f:
-                            f.write(
-                                f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
-                                f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
-                            )
+                        verbose_log.write(
+                            f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
+                            f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
+                        )
                     elif agent == 'noise':
                         trader_steps.append(t); trader_dirs.append('up')
                         noise_acc.notional_y += +used_dy_pre
@@ -1017,11 +975,10 @@ def simulate(
                         total_noise_swaps_executed += executed
                         noise_swaps_y_to_x += int(used_dy_pre > 0)
                         executed_noise_swaps += executed
-                        with open(verbose_log_path_str, 'a') as f:
-                            f.write(
-                                f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
-                                f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
-                            )
+                        verbose_log.write(
+                            f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
+                            f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
+                        )
                     _record_micro(P_pre_exec)
             order_book = list(mempool_orders)
             # Ensure arbitrage intents execute first, then shuffle the rest
@@ -1030,19 +987,17 @@ def simulate(
             random.shuffle(non_arb_orders)
             order_book = arb_orders + non_arb_orders
             tick_before_orders = pool.tick
-            with open(verbose_log_path_str, 'a') as f:
-                f.write(
-                    f"[t={t:03d}] MEMPOOL before P={P_pre_exec:.4f} | tick={tick_before_orders} | "
-                    f"n_orders={len(order_book)}\n"
-                )
+            verbose_log.write(
+                f"[t={t:03d}] MEMPOOL before P={P_pre_exec:.4f} | tick={tick_before_orders} | "
+                f"n_orders={len(order_book)}\n"
+            )
             for o in order_book:
                 _exec_one(o)
-            with open(verbose_log_path_str, 'a') as f:
-                f.write(
-                    f"[t={t:03d}] MEMPOOL after P={pool.price:.4f} | tick={pool.tick} | "
-                    f"smart_exec={executed_smart_swaps} | noise_exec={executed_noise_swaps} | "
-                    f"lp_events={executed_lp_events}\n"
-                )
+            verbose_log.write(
+                f"[t={t:03d}] MEMPOOL after P={pool.price:.4f} | tick={pool.tick} | "
+                f"smart_exec={executed_smart_swaps} | noise_exec={executed_noise_swaps} | "
+                f"lp_events={executed_lp_events}\n"
+            )
             mempool_orders.clear()
 
         def execute_trader(agent_label: str, probability: float, accumulator: TraderStepAccumulator, enforce_best_ex: bool, m_reference: float) -> None:
@@ -1082,11 +1037,10 @@ def simulate(
                         total_smart_swaps_skipped += 1
                     elif agent_label == "noise":
                         total_noise_swaps_skipped += 1
-                    with open(verbose_log_path_str, "a") as f:
-                        f.write(
-                            f"[t={t:03d}] {agent_label} swap X_to_Y SKIPPED (slippage). "
-                            f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
-                        )
+                    verbose_log.write(
+                        f"[t={t:03d}] {agent_label} swap X_to_Y SKIPPED (slippage). "
+                        f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
+                    )
                     return
 
                 if pool.L_active <= EPS_LIQ:
@@ -1112,20 +1066,18 @@ def simulate(
                     total_smart_swaps_executed += executed
                     smart_swaps_x_to_y += executed
                     if executed:
-                        with open(verbose_log_path_str, "a") as f:
-                            f.write(
-                                f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
-                                f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
-                            )
+                        verbose_log.write(
+                            f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
+                            f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                        )
                 elif agent_label == "noise":
                     total_noise_swaps_executed += executed
                     noise_swaps_x_to_y += executed
                     if executed:
-                        with open(verbose_log_path_str, "a") as f:
-                            f.write(
-                                f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
-                                f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
-                            )
+                        verbose_log.write(
+                            f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
+                            f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                        )
 
             else:
                 dy = _draw_trader_notional()
@@ -1146,11 +1098,10 @@ def simulate(
                         total_smart_swaps_skipped += 1
                     elif agent_label == "noise":
                         total_noise_swaps_skipped += 1
-                    with open(verbose_log_path_str, "a") as f:
-                        f.write(
-                            f"[t={t:03d}] {agent_label} swap Y_to_X SKIPPED (slippage). "
-                            f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
-                        )
+                    verbose_log.write(
+                        f"[t={t:03d}] {agent_label} swap Y_to_X SKIPPED (slippage). "
+                        f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
+                    )
                     return
 
                 if pool.L_active <= EPS_LIQ:
@@ -1175,20 +1126,18 @@ def simulate(
                     total_smart_swaps_executed += executed
                     smart_swaps_y_to_x += executed
                     if executed:
-                        with open(verbose_log_path_str, "a") as f:
-                            f.write(
-                                f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
-                                f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
-                            )
+                        verbose_log.write(
+                            f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
+                            f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                        )
                 elif agent_label == "noise":
                     total_noise_swaps_executed += executed
                     noise_swaps_y_to_x += executed
                     if executed:
-                        with open(verbose_log_path_str, "a") as f:
-                            f.write(
-                                f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
-                                f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
-                            )
+                        verbose_log.write(
+                            f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
+                            f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                        )
 
         # --- Actor routines (closures) ---
         def act_LPs():
@@ -1247,12 +1196,12 @@ def simulate(
                     pool.add_liquidity_range(lower, upper, L_same)
                     bidx.mark_dirty()
                     lp.positions.append(newpos)
+                    _register_position(newpos)
                     mint_steps.append(t); mint_sizes.append(L_same); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
-                    with open(verbose_log_path_str, "a") as f:
-                        f.write(
-                            f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | "
-                            f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
-                        )
+                    verbose_log.write(
+                        f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | "
+                        f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+                    )
 
             # ----- probabilistic mints (blocked during cooldown) -----
             for lp in LPs:
@@ -1293,7 +1242,6 @@ def simulate(
                     upper = lower + pool.tick_spacing
                 mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'L': L_new})
 
-            pool.recompute_active_L()
             if -1e-9 < pool.L_active < 0.0:
                 pool.L_active = 0.0
 
@@ -1308,7 +1256,7 @@ def simulate(
         def act_arbitrageur():
             nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
 
-            in_used, x_out_from_dex, y_out_from_dex, dir_arb, fee_x_arb, fee_y_arb, L_first = arbitrage_to_target(arb_ref_m)
+            in_used, x_out_from_dex, y_out_from_dex, dir_arb, L_first = arbitrage_to_target(arb_ref_m)
             delta_a_cex_this = 0.0
             if in_used > 0 and dir_arb is not None:
                 L_pre_arb_eff_this = L_first
@@ -1386,8 +1334,7 @@ def simulate(
         else:
             arb_ref_m_start = ref.m  # block-start CEX snapshot (diagnostic only; arb targets end-of-block)
             # prepare micro-time arrays (event-time logging)
-            with open(verbose_log_path_str, 'a') as f:
-                f.write(f"[t={t:03d}] BLOCK start m={arb_ref_m_start:.4f}\n")
+            verbose_log.write(f"[t={t:03d}] BLOCK start m={arb_ref_m_start:.4f}\n")
             micro_steps.append(micro_counter)
             P_micro.append(pool.price)
             M_micro.append(ref.m)
@@ -1683,13 +1630,11 @@ def simulate(
         f"traderY={trader_y_this:.2f} | arb_dir={dir_arb_this} arbY={arb_y_this:.2f} | "
         f"L={pool.L_active:.4f} | tick={pool.tick} | w_ticks={w_ticks}"
         )
-        with open(verbose_log_path_str, "a") as f:
-            f.write(log_line + "\n")
+        verbose_log.write(log_line + "\n")
 
         liq_history.append(dict(pool.liquidity_net))
         tick_history.append(pool.tick)
 
-        validated_price = pool.price
         validated_S = pool.S
         validated_tick = pool.tick
         validated_cex = ref.m
@@ -1709,6 +1654,8 @@ def simulate(
         "----------------------------------------------------------\n",
     ]
 
+    verbose_log.flush()
+    verbose_log.close()
     verbose_path = Path(verbose_log_path_str)
     try:
         original_text = verbose_path.read_text()
@@ -1766,33 +1713,20 @@ def simulate(
     M_series_v = M_series[s0:]
     X_active_end_v = X_active_end[s0:]
     Y_active_end_v = Y_active_end[s0:]
-    band_lo_pre_v = band_lo_pre[s0:]
-    band_hi_pre_v = band_hi_pre[s0:]
     band_lo_post_v = band_lo_post[s0:]
     band_hi_post_v = band_hi_post[s0:]
     L_end_v = L_end[s0:]
     L_pre_step_v = L_pre_step[s0:]
     L_pre_trader_v = L_pre_trader[s0:]
     L_pre_arb_eff_v = L_pre_arb_eff[s0:]
-    trader_pnl_steps_v = trader_pnl_steps[s0:]
-    arb_pnl_steps_v = arb_pnl_steps[s0:]
-    trader_pnl_cum_v = trader_pnl_cum[s0:]
     arb_pnl_cum_v = arb_pnl_cum[s0:]
     sr_pnl_cum_v = sr_pnl_cum[s0:]
     noise_pnl_cum_v = noise_pnl_cum[s0:]
-    lp_wealth_series_v = lp_wealth_series[s0:]
-    lp_wealth_active_series_v = lp_wealth_active_series[s0:]
-    lp_wealth_passive_series_v = lp_wealth_passive_series[s0:]
-    lp_pnl_total_series_v = lp_pnl_total_series[s0:]
     lp_pnl_active_series_v = lp_pnl_active_series[s0:]
     lp_pnl_passive_series_v = lp_pnl_passive_series[s0:]
-    lp_rebal_total_series_v = lp_rebal_total_series[s0:]
-    lp_rebal_active_series_v = lp_rebal_active_series[s0:]
-    lp_rebal_passive_series_v = lp_rebal_passive_series[s0:]
     fee_series_v = fee_series[s0:]
     fee_sigma_series_v = fee_sigma_series[s0:]
     fee_basis_ticks_series_v = fee_basis_ticks_series[s0:]
-    fee_imb_series_v = fee_imb_series[s0:]
     fee_signal_series_v = fee_signal_series[s0:]
     arb_y_v = np.array(arb_y_series)[s0:]
     sr_y_v = sr_y_series[s0:]
@@ -2333,15 +2267,15 @@ if __name__ == "__main__":
     save_plotly_figure(autocorr_fig, png_path, html_path, "autocorr")
 
     # make liquidity GIF
-    make_liquidity_gif(
-    liq_history=out["liq_history"],
-    tick_history=out["tick_history"],
-    base_s=out["grid_base_s"],
-    g=out["grid_g"],
-    out_path=f"abm_results/liquidity_evolution_{scenario_label}_{params['cex_sigma']}_{params['T']}.gif",
-    fps=20,
-    dpi=120,
-    pad_frac=0.05,
-    downsample_every=10,
-    center_line=True,
-    )
+    # make_liquidity_gif(
+    # liq_history=out["liq_history"],
+    # tick_history=out["tick_history"],
+    # base_s=out["grid_base_s"],
+    # g=out["grid_g"],
+    # out_path=f"abm_results/liquidity_evolution_{scenario_label}_{params['cex_sigma']}_{params['T']}.gif",
+    # fps=20,
+    # dpi=120,
+    # pad_frac=0.05,
+    # downsample_every=10,
+    # center_line=True,
+    # )

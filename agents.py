@@ -14,7 +14,6 @@ from utils import (
     EPS_LIQ2, EPS_LIQ, EPS_BOUNDARY, TITLE_FONT_SIZE, LABEL_FONT_SIZE,
     minted_amounts_at_S, ReferenceMarket
 )
-from uniswapv3_pool import V3Pool, BoundaryIndex
 
 
 # =============================================================================
@@ -75,6 +74,7 @@ class Position:
     fees0: float = 0.0
     fees1: float = 0.0
     hodl0_value_y: float = 0.0
+    tick_slots: Tuple[int, ...] = field(default_factory=tuple)
 
     def in_range(self, tick: int) -> bool:
         return self.lower <= tick < self.upper
@@ -217,39 +217,3 @@ def lp_wealth_y(lp: LPAgent, S: float, m: float) -> float:
 #             plt.tight_layout()
 
 #     return seed
-
-
-
-
-def bootstrap_initial_liquidity_as_lp(
-    pool: V3Pool,
-    ref: ReferenceMarket,
-    LPs: List[LPAgent],
-    hill: List[Tuple[int, float]],
-    seed_lp_id: int = 999,
-    seed_mint_prob: float = 0.0,
-) -> LPAgent:
-    """Bootstrap initial liquidity from a pre-defined hill specification."""
-    seed = LPAgent(id=seed_lp_id, mintProb=seed_mint_prob)
-    for width, L in hill:
-        lower, upper = pool._snap(pool.tick - width), pool._snap(pool.tick + width)
-        if upper <= lower:
-            upper = lower + pool.tick_spacing
-        sa, sb = pool.s_lower(lower), pool.s_upper(upper)
-        S_entry = pool.S
-        amt0, amt1 = minted_amounts_at_S(L, sa, sb, S_entry)
-
-        pos = Position(
-            owner=seed.id, lower=lower, upper=upper, L=L, sa=sa, sb=sb,
-            amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * ref.m + amt1
-        )
-        assert abs(pos.PnL_y(pool.S, ref.m)) <= 1e-9 * max(1.0, pos.hodl0_value_y), \
-            "Non-zero PnL at bootstrap mint"
-
-        pool.add_liquidity_range(lower, upper, L)
-        seed.positions.append(pos)
-
-    pool.recompute_active_L()
-    LPs.append(seed)
-    return seed
-

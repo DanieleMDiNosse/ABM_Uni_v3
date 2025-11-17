@@ -3,11 +3,11 @@ import copy
 import pytest
 
 from utils import build_empty_pool
-from uniswapv3_pool import V3Pool, BoundaryIndex
+from uniswapv3_pool import V3Pool
 from run import simulate
 
 
-def _prepare_pool() -> tuple[V3Pool, BoundaryIndex]:
+def _prepare_pool() -> V3Pool:
     pool, _ = build_empty_pool()
     # add symmetric liquidity around the active tick so quotes have depth
     L = 50_000.0
@@ -15,15 +15,14 @@ def _prepare_pool() -> tuple[V3Pool, BoundaryIndex]:
     upper = pool.tick + pool.tick_spacing * 2
     pool.add_liquidity_range(lower, upper, L)
     pool.recompute_active_L()
-    bidx = BoundaryIndex(pool.liquidity_net)
-    return pool, bidx
+    return pool
 
 
 def test_quote_x_to_y_matches_swap_result():
-    pool, bidx = _prepare_pool()
+    pool = _prepare_pool()
     dx_in = 1.0
 
-    quoted = pool.quote_x_to_y(dx_in, bidx)
+    quoted = pool.quote_x_to_y(dx_in)
 
     pool_for_swap = copy.deepcopy(pool)
     used_dx, dy_out, _ = pool_for_swap.swap_x_to_y(dx_in, fee_cb=None)
@@ -32,10 +31,10 @@ def test_quote_x_to_y_matches_swap_result():
 
 
 def test_quote_y_to_x_matches_swap_result():
-    pool, bidx = _prepare_pool()
+    pool = _prepare_pool()
     dy_in = 1.0
 
-    quoted = pool.quote_y_to_x(dy_in, bidx)
+    quoted = pool.quote_y_to_x(dy_in)
 
     pool_for_swap = copy.deepcopy(pool)
     used_dy, dx_out, _ = pool_for_swap.swap_y_to_x(dy_in, fee_cb=None)

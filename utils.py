@@ -172,48 +172,6 @@ def build_empty_pool():
     return pool, m0
 
 
-def add_static_binomial_hill(
-    pool,
-    N: int = 400,
-    L_total: float = 70_000.0,
-    min_L_per_tick: float = 1e-9,
-    plot: bool = False,
-    ax: Optional[plt.Axes] = None,
-    title: Optional[str] = None,
-) -> None:
-    """Add a static binomial hill of liquidity to the pool."""
-    center_tick = pool._snap(pool.tick)
-    ticks: List[int] = []
-    L_vals: List[float] = []
-    denom = float(2 ** N)
-    for k in range(N + 1):
-        w = math.comb(N, k) / denom
-        L_i = w * L_total
-        if L_i < min_L_per_tick:
-            continue
-        rel = k - (N // 2)
-        lower = center_tick + rel * pool.tick_spacing
-        upper = lower + pool.tick_spacing
-        pool.add_liquidity_range(lower, upper, L_i)
-        ticks.append(lower)
-        L_vals.append(L_i)
-
-    pool.recompute_active_L()
-
-    if plot and len(ticks) > 0:
-        created_fig = False
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(10, 3.5))
-            created_fig = True
-        ax.bar(ticks, L_vals, width=pool.tick_spacing, align="edge")
-        ax.set_xlabel("Tick", fontsize=LABEL_FONT_SIZE)
-        ax.set_ylabel("Liquidity per band (L)", fontsize=LABEL_FONT_SIZE)
-        ax.set_title(title or f"Initial binomial hill (N={N}, total L={L_total:,.0f})", fontsize=TITLE_FONT_SIZE)
-        ax.grid(True, axis="y", alpha=0.25)
-        if created_fig:
-            plt.tight_layout()
-
-
 def bootstrap_initial_binomial_hill_sharded(
     pool,
     ref: ReferenceMarket,

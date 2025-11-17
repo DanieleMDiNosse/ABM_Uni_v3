@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Optional, Callable
+from typing import Dict, Tuple, Optional, Callable, List
 from bisect import bisect_right, bisect_left
 
 from utils import EPS_LIQ, EPS_BOUNDARY, EPS_LIQ2
@@ -80,13 +80,15 @@ class V3Pool:
         self.tick = self._snap(self.tick)
         self.recompute_active_L()
 
+    def _clamp_active(self) -> None:
+        if abs(self.L_active) < EPS_LIQ2:
+            self.L_active = 0.0
+
     def recompute_active_L(self) -> None:
         # numerically robust accumulation of active liquidity up to current tick
         L = math.fsum(dL for t, dL in self.liquidity_net.items() if t <= self.tick)
-        # clamp tiny drift to zero
-        if abs(L) < EPS_LIQ2:
-            L = 0.0
         self.L_active = L
+        self._clamp_active()
 
     def add_liquidity_range(self, lower_tick: int, upper_tick: int, L: float) -> None:
         lower_tick = self._snap(lower_tick)
@@ -96,11 +98,9 @@ class V3Pool:
         self.liquidity_net[lower_tick] = self.liquidity_net.get(lower_tick, 0.0) + L
         self.liquidity_net[upper_tick] = self.liquidity_net.get(upper_tick, 0.0) - L
 
-        if lower_tick <= self.tick or upper_tick <= self.tick:
-            self.recompute_active_L()
-
-        if abs(self.L_active) < EPS_LIQ2:
-            self.L_active = 0.0
+        if lower_tick <= self.tick < upper_tick:
+            self.L_active += L
+            self._clamp_active()
 
     def _active_L_at_tick(self, tick_i: int) -> float:
         L = 0.0
@@ -111,11 +111,14 @@ class V3Pool:
 
     def _cross_up_once(self):
         self.tick += self.tick_spacing
-        self.recompute_active_L()
+        self.L_active += self.liquidity_net.get(self.tick, 0.0)
+        self._clamp_active()
 
     def _cross_down_once(self):
+        prev_tick = self.tick
         self.tick -= self.tick_spacing
-        self.recompute_active_L()
+        self.L_active -= self.liquidity_net.get(prev_tick, 0.0)
+        self._clamp_active()
 
     # ----- exact v3 swaps for the noise trader (spacing aware) -----
     def swap_x_to_y(self, dx_in: float, fee_cb: Optional[Callable[[str, float, int, float], None]] = None) -> Tuple[float, float, float]:
@@ -223,7 +226,7 @@ class V3Pool:
 
         tick_loc = self._snap(self.tick)
         S_loc = self.S
-        L_loc = self._active_L_at_tick(tick_loc)
+        L_loc = bidx.active_liquidity_at_tick(tick_loc)
 
         if L_loc <= EPS_LIQ:
             return 0.0
@@ -234,7 +237,7 @@ class V3Pool:
             if S_loc <= S_lo + EPS_BOUNDARY:
                 S_loc = S_lo
                 tick_loc -= self.tick_spacing
-                L_loc = self._active_L_at_tick(tick_loc)
+                L_loc = bidx.active_liquidity_at_tick(tick_loc)
                 continue
             dx_to = L_loc * (1.0 / S_lo - 1.0 / S_loc)
             if dx_eff < dx_to - EPS_BOUNDARY:
@@ -248,7 +251,7 @@ class V3Pool:
                 dx_eff -= dx_to
                 S_loc = S_lo
                 tick_loc -= self.tick_spacing
-                L_loc = self._active_L_at_tick(tick_loc)
+                L_loc = bidx.active_liquidity_at_tick(tick_loc)
         return max(0.0, dy_out)
 
     def quote_y_to_x(self, dy_in: float, bidx: "BoundaryIndex") -> float:
@@ -261,7 +264,7 @@ class V3Pool:
 
         tick_loc = self._snap(self.tick)
         S_loc = self.S
-        L_loc = self._active_L_at_tick(tick_loc)
+        L_loc = bidx.active_liquidity_at_tick(tick_loc)
 
         if L_loc <= EPS_LIQ:
             return 0.0
@@ -272,7 +275,7 @@ class V3Pool:
             if S_loc >= S_hi - EPS_BOUNDARY:
                 S_loc = S_hi
                 tick_loc += self.tick_spacing
-                L_loc = self._active_L_at_tick(tick_loc)
+                L_loc = bidx.active_liquidity_at_tick(tick_loc)
                 continue
             dy_to = L_loc * (S_hi - S_loc)
             if dy_eff < dy_to - EPS_BOUNDARY:
@@ -286,13 +289,14 @@ class V3Pool:
                 dy_eff -= dy_to
                 S_loc = S_hi
                 tick_loc += self.tick_spacing
-                L_loc = self._active_L_at_tick(tick_loc)
+                L_loc = bidx.active_liquidity_at_tick(tick_loc)
         return max(0.0, dx_out)
 
 
 # =============================================================================
 # Sparse boundary index (for fast next boundary lookups)
 # =============================================================================
+
 
 class BoundaryIndex:
     """
@@ -306,10 +310,12 @@ class BoundaryIndex:
     Contract:
       • Call `mark_dirty()` whenever `liquidity_net` changes; reads auto-refresh lazily.
     """
+
     def __init__(self, liquidity_net: Dict[int, float]):
         self.liq = liquidity_net
-        self.keys = sorted([k for k, v in liquidity_net.items() if abs(v) > EPS_LIQ])
-        self.dirty = False
+        self.keys: List[int] = []
+        self.prefix: List[float] = []
+        self.dirty = True
 
     def mark_dirty(self) -> None:
         self.dirty = True
@@ -317,6 +323,11 @@ class BoundaryIndex:
     def _ensure(self) -> None:
         if self.dirty:
             self.keys = sorted([k for k, v in self.liq.items() if abs(v) > EPS_LIQ])
+            running = 0.0
+            self.prefix = []
+            for k in self.keys:
+                running += self.liq.get(k, 0.0)
+                self.prefix.append(running)
             self.dirty = False
 
     def next_up(self, tick: int) -> Optional[int]:
@@ -328,4 +339,14 @@ class BoundaryIndex:
         self._ensure()
         i = bisect_left(self.keys, tick) - 1
         return self.keys[i] if i >= 0 else None
+
+    def active_liquidity_at_tick(self, tick: int) -> float:
+        self._ensure()
+        if not self.keys:
+            return 0.0
+        idx = bisect_right(self.keys, tick) - 1
+        if idx < 0:
+            return 0.0
+        return self.prefix[idx]
+
 
