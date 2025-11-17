@@ -1,5 +1,9 @@
 # ABM Uni v3 Simulation (ongoing)
 
+<p align="center">
+  <img src="abm_results/png/cex_dex_price.png" alt="Simulation example" width="500"/>
+</p>
+
 Agent-based market (ABM) simulator for a Uniswap v3 style pool that extends the Angeris et al. model (“An analysis of Uniswap markets”). The project focuses on **microstructure effects** such as block mempools, asynchronous LP management, dynamic fee schedules, and realistic arbitrage/trader interactions.
 
 The implementation lives in `run.py` and can be configured through YAML scenario files (for example `abm_mempool_config.yml`). Results, plots, and verbose logs are written to `abm_results/`.
