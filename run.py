@@ -106,7 +106,6 @@ def simulate(
     p_trade: float = 0.6, 
     noise_floor: float = 0.0,
     p_lp_narrow: float = 0.7,
-    p_lp_wide: float = 0.15,
     passive_lp_share: float = 0.0,
     passive_mint_prob: float = 0.1,
     passive_burn_prob: float = 0.05,
@@ -150,7 +149,6 @@ def simulate(
     fee_step_bps_min: float = 0.5, # do not change fee unless ≥ 0.5 bps move
     fee_step_bps_max: float = 5.0, # max step per update (bps)
     fee_cooldown: int = 1,         # blocks between fee changes (hysteresis)
-    active_wide_lp_enabled: bool = True,
 ):
     valid_fee_modes = {"static", "volatility", "toxicity"}
     if fee_mode not in valid_fee_modes:
@@ -172,10 +170,6 @@ def simulate(
     np.random.seed(seed)
     random.seed(seed)
     passive_share = max(0.0, min(1.0, passive_lp_share))
-    share_narrow_default = 0.7
-    share_narrow_eff = min(share_narrow_default, max(0.0, 1.0 - passive_share))
-    if not active_wide_lp_enabled:
-        share_narrow_eff = max(0.0, 1.0 - passive_share)
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
@@ -185,12 +179,8 @@ def simulate(
     for i in range(N_LP):
         r = random.random()
         is_passive = r < passive_share
-        is_narrow = False
-        if not is_passive and r < passive_share + share_narrow_eff:
-            is_narrow = True
-        if not active_wide_lp_enabled and not is_passive:
-            is_narrow = True
-        mintProb = passive_mint_prob if is_passive else (p_lp_narrow if is_narrow else p_lp_wide)
+        is_narrow = not is_passive
+        mintProb = passive_mint_prob if is_passive else p_lp_narrow
         LPs.append(
             LPAgent(
                 id=i,
@@ -220,7 +210,8 @@ def simulate(
         seed_lp_id_base=10_000,
         seed_mint_prob=0.0,
         tau=tau,
-        plot=False
+        plot=False,
+        seed_is_passive=True,
     )
 
     # ensure budgets exist for every LP, including the just-appended seed
@@ -266,11 +257,9 @@ def simulate(
     lp_pnl_total_series = []    # cumulative hedged PnL (fees - rebal) across all LPs
     lp_pnl_active_series = []   # cumulative hedged PnL for active (narrow) LPs
     lp_pnl_passive_series = []  # cumulative hedged PnL for passive LPs
-    lp_pnl_wide_series = []     # cumulative hedged PnL for active wide LPs
     lp_rebal_total_series = []  # cumulative rebalancing PnL (benchmark) across LPs
     lp_rebal_active_series = []
     lp_rebal_passive_series = []
-    lp_rebal_wide_series = []
     trader_exec_count = []
     arb_exec_count = []
 
@@ -298,10 +287,8 @@ def simulate(
     lp_wealth_series = []      # wallet + open PnL (token1)
     lp_wallet_active_series = []   # active narrow LPs
     lp_wallet_passive_series = []  # passive LPs
-    lp_wallet_wide_series = []     # active wide LPs
     lp_wealth_active_series = []
     lp_wealth_passive_series = []
-    lp_wealth_wide_series = []
     # --- Dynamic fee signal recorders (new) ---
     fee_sigma_series = []          # EWMA abs log-return (σ̂)
     fee_basis_ticks_series = []    # EWMA fee-adjusted basis, in ticks
@@ -1618,19 +1605,15 @@ def simulate(
         lp_total = 0.0             # cumulative hedged PnL (fees - rebal)
         lp_total_active = 0.0      # active narrow LPs
         lp_total_passive = 0.0     # passive LPs
-        lp_total_wide = 0.0        # active wide LPs
         lp_rebal_total = 0.0
         lp_rebal_active = 0.0
         lp_rebal_passive = 0.0
-        lp_rebal_wide = 0.0
         lp_wallet_total = 0.0
         lp_wallet_active = 0.0
         lp_wallet_passive = 0.0
-        lp_wallet_wide = 0.0
         lp_wealth_total = 0.0
         lp_wealth_active = 0.0
         lp_wealth_passive = 0.0
-        lp_wealth_wide = 0.0
         for lp in LPs:
             wallet_y = getattr(lp, 'wallet_y', 0.0)
             lp_wallet_total += wallet_y
@@ -1659,29 +1642,20 @@ def simulate(
                 lp_rebal_active += rb.cumulative_R
                 lp_wallet_active += wallet_y
                 lp_wealth_active += wealth_now
-            else:
-                lp_total_wide += rb.hedged_pnl_cum
-                lp_rebal_wide += rb.cumulative_R
-                lp_wallet_wide += wallet_y
-                lp_wealth_wide += wealth_now
         lp_pnl_total_series.append(lp_total)
         lp_pnl_active_series.append(lp_total_active)
         lp_pnl_passive_series.append(lp_total_passive)
-        lp_pnl_wide_series.append(lp_total_wide)
         lp_rebal_total_series.append(lp_rebal_total)
         lp_rebal_active_series.append(lp_rebal_active)
         lp_rebal_passive_series.append(lp_rebal_passive)
-        lp_rebal_wide_series.append(lp_rebal_wide)
 
         # Wealth accounting (wallet + open PnL)
         lp_wallet_series.append(lp_wallet_total)
         lp_wallet_active_series.append(lp_wallet_active)
         lp_wallet_passive_series.append(lp_wallet_passive)
-        lp_wallet_wide_series.append(lp_wallet_wide)
         lp_wealth_series.append(lp_wealth_total)
         lp_wealth_active_series.append(lp_wealth_active)
         lp_wealth_passive_series.append(lp_wealth_passive)
-        lp_wealth_wide_series.append(lp_wealth_wide)
         # store per-step trader/arb details (now that order is randomized)
         trader_y_series.append(trader_y_this)
         arb_y_series.append(arb_y_this)
@@ -1771,19 +1745,15 @@ def simulate(
     lp_pnl_total_series = np.array(lp_pnl_total_series)
     lp_pnl_active_series = np.array(lp_pnl_active_series)
     lp_pnl_passive_series = np.array(lp_pnl_passive_series)
-    lp_pnl_wide_series = np.array(lp_pnl_wide_series)
     lp_rebal_total_series = np.array(lp_rebal_total_series)
     lp_rebal_active_series = np.array(lp_rebal_active_series)
     lp_rebal_passive_series = np.array(lp_rebal_passive_series)
-    lp_rebal_wide_series = np.array(lp_rebal_wide_series)
     lp_wallet_series = np.array(lp_wallet_series)
     lp_wallet_active_series = np.array(lp_wallet_active_series)
     lp_wallet_passive_series = np.array(lp_wallet_passive_series)
-    lp_wallet_wide_series = np.array(lp_wallet_wide_series)
     lp_wealth_series = np.array(lp_wealth_series)
     lp_wealth_active_series = np.array(lp_wealth_active_series)
     lp_wealth_passive_series = np.array(lp_wealth_passive_series)
-    lp_wealth_wide_series = np.array(lp_wealth_wide_series)
     fee_sigma_series = np.array(fee_sigma_series)
     fee_basis_ticks_series = np.array(fee_basis_ticks_series)
     fee_imb_series = np.array(fee_imb_series)
@@ -1813,15 +1783,12 @@ def simulate(
     lp_wealth_series_v = lp_wealth_series[s0:]
     lp_wealth_active_series_v = lp_wealth_active_series[s0:]
     lp_wealth_passive_series_v = lp_wealth_passive_series[s0:]
-    lp_wealth_wide_series_v = lp_wealth_wide_series[s0:]
     lp_pnl_total_series_v = lp_pnl_total_series[s0:]
     lp_pnl_active_series_v = lp_pnl_active_series[s0:]
     lp_pnl_passive_series_v = lp_pnl_passive_series[s0:]
-    lp_pnl_wide_series_v = lp_pnl_wide_series[s0:]
     lp_rebal_total_series_v = lp_rebal_total_series[s0:]
     lp_rebal_active_series_v = lp_rebal_active_series[s0:]
     lp_rebal_passive_series_v = lp_rebal_passive_series[s0:]
-    lp_rebal_wide_series_v = lp_rebal_wide_series[s0:]
     fee_series_v = fee_series[s0:]
     fee_sigma_series_v = fee_sigma_series[s0:]
     fee_basis_ticks_series_v = fee_basis_ticks_series[s0:]
@@ -1864,11 +1831,14 @@ def simulate(
         _html_dir.mkdir(parents=True, exist_ok=True)
         _prefix = f"abm_fee_{fee_mode}_{cex_sigma}"
 
+        total_steps = max(1, len(steps) - s0)
+
         def _save_plotly(name: str, fig: go.Figure) -> None:
+            suffix = f"{name}_steps{total_steps}"
             save_plotly_figure(
                 fig,
-                _png_dir / f"{_prefix}_{name}.png",
-                _html_dir / f"{_prefix}_{name}.html",
+                _png_dir / f"{_prefix}_{suffix}.png",
+                _html_dir / f"{_prefix}_{suffix}.html",
                 "simulate",
             )
 
@@ -2190,16 +2160,6 @@ def simulate(
                 line=dict(dash="dash"),
             )
         )
-        if active_wide_lp_enabled and np.any(np.abs(lp_pnl_wide_series_v) > 1e-12):
-            fig6.add_trace(
-                go.Scatter(
-                    x=steps_list,
-                    y=lp_pnl_wide_series_v,
-                    mode="lines",
-                    name="Active wide LP Fee-LVR",
-                    line=dict(dash="dashdot"),
-                )
-            )
         fig6.add_trace(
             go.Scatter(
                 x=steps_list,
@@ -2299,11 +2259,9 @@ def simulate(
         "lp_pnl_total": lp_pnl_total_series.tolist(),
         "lp_pnl_active": lp_pnl_active_series.tolist(),
         "lp_pnl_passive": lp_pnl_passive_series.tolist(),
-        "lp_pnl_wide": lp_pnl_wide_series.tolist(),
         "lp_rebal_total_series": lp_rebal_total_series.tolist(),
         "lp_rebal_active_series": lp_rebal_active_series.tolist(),
         "lp_rebal_passive_series": lp_rebal_passive_series.tolist(),
-        "lp_rebal_wide_series": lp_rebal_wide_series.tolist(),
         "trader_exec_count": trader_exec_count,
         "fee_series": fee_series,
         "fee_mode": fee_mode,
@@ -2317,12 +2275,9 @@ def simulate(
         "lp_wealth_series": lp_wealth_series.tolist(),
         "lp_wallet_active_series": lp_wallet_active_series.tolist(),
         "lp_wallet_passive_series": lp_wallet_passive_series.tolist(),
-        "lp_wallet_wide_series": lp_wallet_wide_series.tolist(),
         "lp_wealth_active_series": lp_wealth_active_series.tolist(),
         "lp_wealth_passive_series": lp_wealth_passive_series.tolist(),
-        "lp_wealth_wide_series": lp_wealth_wide_series.tolist(),
         "arb_exec_count": arb_exec_count,
-        "active_wide_lp_enabled": active_wide_lp_enabled,
     }
 
 
@@ -2341,6 +2296,7 @@ if __name__ == "__main__":
 
     config_path = Path(args.config).expanduser().resolve()
     scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
+
 
     print(f"[config] {config_path}")
     print(f"[scenario] {scenario_label}")
@@ -2371,20 +2327,21 @@ if __name__ == "__main__":
     html_dir = results_root / "html"
     png_dir.mkdir(parents=True, exist_ok=True)
     html_dir.mkdir(parents=True, exist_ok=True)
-    png_path = png_dir / f"autocorr_{scenario_label}.png"
-    html_path = html_dir / f"autocorr_{scenario_label}.html"
+    total_steps = max(1, len(dex_prices))
+    png_path = png_dir / f"autocorr_{scenario_label}_steps{total_steps}.png"
+    html_path = html_dir / f"autocorr_{scenario_label}_steps{total_steps}.html"
     save_plotly_figure(autocorr_fig, png_path, html_path, "autocorr")
 
     # make liquidity GIF
-    # make_liquidity_gif(
-    # liq_history=out["liq_history"],
-    # tick_history=out["tick_history"],
-    # base_s=out["grid_base_s"],
-    # g=out["grid_g"],
-    # out_path=f"abm_results/liquidity_evolution_{scenario_label}.gif",
-    # fps=20,
-    # dpi=120,
-    # pad_frac=0.05,
-    # downsample_every=10,
-    # center_line=True,
-    # )
+    make_liquidity_gif(
+    liq_history=out["liq_history"],
+    tick_history=out["tick_history"],
+    base_s=out["grid_base_s"],
+    g=out["grid_g"],
+    out_path=f"abm_results/liquidity_evolution_{scenario_label}_{params['cex_sigma']}_{params['T']}.gif",
+    fps=20,
+    dpi=120,
+    pad_frac=0.05,
+    downsample_every=10,
+    center_line=True,
+    )

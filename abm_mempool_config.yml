@@ -5,7 +5,7 @@ simulate:
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 10
   # Total number of simulation blocks to execute
-  T: 1500
+  T: 1000
   # Random seed used for reproducibility across RNGs
   seed: 7
   # Drift of the reference CEX price process (per step)
@@ -16,18 +16,14 @@ simulate:
   p_trade: 0.1
   # Probability that a noise trader submits even when best execution fails. The expected total number of noise trades is noise_floor * block_time
   noise_floor: 0.1
-  # Mint probability for narrow, actively re-centering LPs per micro step. The expected number of active narrow LP mints per micro step is p_lp_narrow * (1 - passive_lp_share) * N_LP
-  p_lp_narrow: 0.5
-  # Mint probability for wide, less active LPs per micro step. The expected number of active wide LP mints per micro step is p_lp_narrow * (1 - passive_lp_share) * N_LP
-  p_lp_wide: 0.5
-  # Toggle active wide LP agents
-  active_wide_lp_enabled: false
+  # Mint probability for narrow, actively re-centering LPs per micro step. The expected number of narrow LP mints per micro step is p_lp_narrow * (1 - passive_lp_share) * N_LP
+  p_lp_narrow: 0.2
   # Fraction of LP agents designated as passive baseline providers
   passive_lp_share: 0.4
   # Probability per review that a passive LP mints when not already in the pool
-  passive_mint_prob: 0.45
+  passive_mint_prob: 0.2
   # Probability per review that a passive LP burns its existing position
-  passive_burn_prob: 0.05
+  passive_burn_prob: 0.1
   # Range width in ticks used for passive LP positions
   passive_width_ticks: 500 # 500 corresponds to ~10% of the initial price
   # Total number of LP agents instantiated in the simulation

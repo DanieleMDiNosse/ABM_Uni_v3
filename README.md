@@ -12,7 +12,7 @@ The implementation lives in `run.py` and can be configured through YAML scenario
   - **Smart router**: opportunistic trader enforcing best-execution vs. a reference CEX.
   - **Noise trader**: flow provider without valuation discipline, used to stress spreads/liquidity.
   - **Arbitrageur**: clears price discrepancies between the DEX and the CEX reference band; in block mode the arb executes **before** any mempool order (pre-trade CEX vs. DEX snapshot).
-  - **LPs**: passive baselines, active narrow, active wide. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
+  - **LPs**: passive baselines and active narrow LPs. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
 - **Block-aware mempool**:
   - `block_time == 1`: deterministic schedule `LP bucket A → smart+noise → LP bucket B → arb → LP bucket C`.
   - `block_time > 1`: (i) freeze the validated snapshot, (ii) run the arbitrage at that price, (iii) diffuse the CEX for each micro-step, (iv) enqueue LP/trader intents, and (v) execute the shuffled mempool to mimic intra-block ordering. When desired the block length itself can be re-drawn from a bounded Zipf(α) distribution.
@@ -52,7 +52,6 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 - **Classes**:
   - *Passive baselines* (`passive_lp_share`): wide default ranges, probabilistic mint/burn rules (`passive_mint_prob`, `passive_burn_prob`, `passive_width_ticks`).
   - *Active narrow LPS*: concentrate liquidity near the mid, recenter after `k_out` steps out of range, follow an EWMA-driven width rule with binomial noise. Recency decisions are computed from the validated DEX snapshot so all LPs “see” the same last confirmed price even while the mempool is in-flight.
-  <!-- - *Active wide LPS*: optional additional cohort (`active_wide_lp_enabled`), slower to react but still “active”. -->
 - **Scheduler**:
   - Each LP has a geometric review clock (`tau`) and a cooldown after burning.
   - When `block_time == 1`, due LPs are split into three buckets (A/B/C) to interleave deterministically with traders and the arbitrageur. When `block_time > 1`, all due LPs push intents into the shared mempool.
@@ -100,7 +99,6 @@ simulate:
   p_trade: 0.7
   noise_floor: 0.5
   p_lp_narrow: 0.95
-  p_lp_wide: 0.7
   passive_lp_share: 0.2
   passive_mint_prob: 0.3
   passive_burn_prob: 0.05

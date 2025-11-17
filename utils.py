@@ -228,10 +228,12 @@ def bootstrap_initial_binomial_hill_sharded(
     plot: bool = False,
     ax: Optional[plt.Axes] = None,
     title: Optional[str] = None,
+    seed_is_passive: bool = True,
 ) -> List:
     """
     Split the binomial hill across `num_seed_lps` seed LPs so burns are staggered.
-    Each seed LP has its own review clock; all have mintProb=0 and is_active_narrow=False.
+    Each seed LP has its own review clock; all have mintProb=0, is_active_narrow=False,
+    and optionally behave as passive LPs (seed_is_passive=True).
     """
     from agents import LPAgent, Position
     assert num_seed_lps >= 1
@@ -242,7 +244,7 @@ def bootstrap_initial_binomial_hill_sharded(
     seed_LPs: List[LPAgent] = []
     for j in range(num_seed_lps):
         sid = seed_lp_id_base + j
-        lp = LPAgent(id=sid, mintProb=seed_mint_prob, is_active_narrow=False)
+        lp = LPAgent(id=sid, mintProb=seed_mint_prob, is_active_narrow=False, is_passive=seed_is_passive)
         # async timing so they act at different steps
         lp.review_rate = 1.0 / max(1, tau)
         lp.next_review = int(np.random.geometric(lp.review_rate))
