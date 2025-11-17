@@ -226,14 +226,7 @@ class V3Pool:
         L_loc = self._active_L_at_tick(tick_loc)
 
         if L_loc <= EPS_LIQ:
-            pb = bidx.prev_down(tick_loc)
-            if pb is None:
-                return 0.0
-            tick_loc = self._snap(pb - self.tick_spacing)
-            S_loc = self.s_upper(tick_loc)
-            L_loc = self._active_L_at_tick(tick_loc)
-            if L_loc <= EPS_LIQ:
-                return 0.0
+            return 0.0
 
         dy_out = 0.0
         while dx_eff > EPS_LIQ and L_loc > EPS_LIQ:
@@ -271,14 +264,7 @@ class V3Pool:
         L_loc = self._active_L_at_tick(tick_loc)
 
         if L_loc <= EPS_LIQ:
-            nb = bidx.next_up(tick_loc)
-            if nb is None:
-                return 0.0
-            tick_loc = self._snap(nb)
-            S_loc = self.s_lower(tick_loc)
-            L_loc = self._active_L_at_tick(tick_loc)
-            if L_loc <= EPS_LIQ:
-                return 0.0
+            return 0.0
 
         dx_out = 0.0
         while dy_eff > EPS_LIQ and L_loc > EPS_LIQ:

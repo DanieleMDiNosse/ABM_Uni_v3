@@ -14,8 +14,8 @@ The implementation lives in `run.py` and can be configured through YAML scenario
   - **Arbitrageur**: clears price discrepancies between the DEX and the CEX reference band; in block mode the arb executes **before** any mempool order (pre-trade CEX vs. DEX snapshot).
   - **LPs**: passive baselines, active narrow, active wide. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
 - **Block-aware mempool**:
-  - `block_size == 1`: deterministic schedule `LP bucket A → smart+noise → LP bucket B → arb → LP bucket C`.
-  - `block_size > 1`: (i) freeze the validated snapshot, (ii) run the arbitrage at that price, (iii) diffuse the CEX for each micro-step, (iv) enqueue LP/trader intents, and (v) execute the shuffled mempool to mimic intra-block ordering. When desired the block length itself can be re-drawn from a bounded Zipf(α) distribution.
+  - `block_time == 1`: deterministic schedule `LP bucket A → smart+noise → LP bucket B → arb → LP bucket C`.
+  - `block_time > 1`: (i) freeze the validated snapshot, (ii) run the arbitrage at that price, (iii) diffuse the CEX for each micro-step, (iv) enqueue LP/trader intents, and (v) execute the shuffled mempool to mimic intra-block ordering. When desired the block length itself can be re-drawn from a bounded Zipf(α) distribution.
 - **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block all agents—LPs, smart/noise traders, and the arbitrageur—make decisions against this shared “last validated” snapshot, so order placement reflects the price that would be visible on-chain once the prior block finalizes.
 - **Dynamic fee controller** with three modes:
   - `static` fixes the fee at `f0`.
@@ -39,14 +39,14 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 - PnL is measured in token1 using the same settlement convention as other agents (CEX price after the block’s net impact).
 
 ### Smart Router
-- Samples swaps from log-normal size distributions (`trader_mean`, `trader_sigma`).
+- Samples **token1 notionals** from a log-normal distribution (`trader_mean`, `trader_sigma`) and converts them into dx/dy so that X→Y and Y→X trades have equal expected *value* even though they submit different tokens.
 - Enforces:
   - Best execution vs. the **validated** CEX snapshot (`theta_T` threshold). The router never chases intra-block diffusion; it compares DEX quotes to the last confirmed on-chain price.
   - Slippage tolerance (`slippage_tolerance`) against the live pool at the exact execution time.
 - Intents are routed into the mempool and executed if liquidity is available. Token flows are tracked and PnL is settled **after** the block settles on-chain (i.e., after the CEX applies impact from the arb).
 
 ### Noise Trader
-- Shares the same size distribution as the smart router but **skips** the best-execution check (only slippage is enforced). Useful for stress testing liquidity by supplying “uninformed” flow. Noise traders still quote against the frozen CEX snapshot to stay synchronized with the rest of the mempool.
+- Shares the same value-symmetric size process as the smart router (log-normal token1 notionals) but **skips** the best-execution check (only slippage is enforced). Useful for stress testing liquidity by supplying “uninformed” flow. Noise traders still quote against the frozen CEX snapshot to stay synchronized with the rest of the mempool.
 
 ### Liquidity Providers
 - **Classes**:
@@ -55,7 +55,7 @@ The implementation lives in `run.py` and can be configured through YAML scenario
   <!-- - *Active wide LPS*: optional additional cohort (`active_wide_lp_enabled`), slower to react but still “active”. -->
 - **Scheduler**:
   - Each LP has a geometric review clock (`tau`) and a cooldown after burning.
-  - When `block_size == 1`, due LPs are split into three buckets (A/B/C) to interleave deterministically with traders and the arbitrageur. When `block_size > 1`, all due LPs push intents into the shared mempool.
+  - When `block_time == 1`, due LPs are split into three buckets (A/B/C) to interleave deterministically with traders and the arbitrageur. When `block_time > 1`, all due LPs push intents into the shared mempool.
   - Regardless of how the intent is executed, LP logic references the frozen snapshot: `pos.in_range(agent_tick_ref)` for re-centering, `pos.PnL_y(agent_S_ref, validated_cex)` for TP/SL, and `minted_amounts_at_S(..., agent_S_ref)` plus `hodl0_value_y = amt0 * validated_cex + amt1` for new positions. The pool mutation still applies to the live pool state, but parameters are locked in when the LP observes the snapshot.
   <!-- - In single-step mode due LPs are split across three buckets to interleave with other actors deterministically. -->
 - **Budgets & bootstrap**:
@@ -75,7 +75,7 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 2. **Per step (block)**:
    - Copy the validated snapshot into agent-facing variables (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`).
    - Update/adapt reference CEX (diffusion + impact) and evolve EWMA signals.
-   - Randomize actor order depending on `block_size`. In block mode: arb at the snapshot price, diffuse micro-steps, enqueue intents (all referencing the snapshot), then replay the mempool against the live pool.
+   - Randomize actor order depending on `block_time`. In block mode: arb at the snapshot price, diffuse micro-steps, enqueue intents (all referencing the snapshot), then replay the mempool against the live pool.
    - Apply fees, update LP positions, and settle agent PnL at the post-impact CEX price.
    - Update the dynamic fee controller, log state, and finally capture the new validated snapshot (live DEX + CEX) for the next iteration.
 3. **Post-processing**:
@@ -92,7 +92,7 @@ Scenario YAML files follow the schema:
 ```yaml
 fee_mode: static            # scenario label + default fee mode
 simulate:
-  block_size: 5             # 1 => synchronous mode; >1 => mempool mode
+  block_time: 5             # 1 => synchronous mode; >1 => mempool mode
   T: 750                    # number of blocks
   seed: 7
   cex_mu: 0.0
@@ -150,6 +150,7 @@ Outputs:
 - `abm_results/png/` & `abm_results/html/`: figures summarizing prices, liquidity, agent PnLs, and fee path.
 - Optional `abm_results/liquidity_evolution_<fee_mode>.gif` if `make_liquidity_gif` is enabled.
 - JSON-like dict returned by `simulate` (see tail of `run.py` for exact keys).
+- Plots are rendered with Plotly; PNG export relies on Kaleido (which in turn needs Chrome available). HTML files are always written.
 
 ---
 

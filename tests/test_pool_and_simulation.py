@@ -44,10 +44,9 @@ def test_quote_y_to_x_matches_swap_result():
 
 
 def test_simulate_outputs_consistent_lengths():
-    out = simulate(T=5, block_size=1, visualize=False, seed=1)
+    out = simulate(T=5, block_time=1, visualize=False, seed=1)
 
     assert len(out['smart_router_pnl_steps']) == len(out['smart_router_notional_y'])
     assert len(out['noise_trader_pnl_steps']) == len(out['noise_trader_notional_y'])
     assert len(out['smart_router_exec_count']) == len(out['smart_router_pnl_steps'])
     assert len(out['noise_trader_exec_count']) == len(out['noise_trader_pnl_steps'])
-

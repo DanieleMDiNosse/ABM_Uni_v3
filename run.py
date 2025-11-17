@@ -1,5 +1,6 @@
 """
 Main simulation runner for the ABM model.
+X (token0) is like ETH and Y (token1) is like USDC.
 """
 from __future__ import annotations
 
@@ -12,25 +13,24 @@ from typing import Any, Dict, Tuple, List, Optional, Callable, Set
 from dataclasses import dataclass
 
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-try:
-    import mpld3  # type: ignore
-except ImportError:
-    mpld3 = None
-
-HTML_SAVE_WARNING_EMITTED = False
+PLOTLY_STATIC_WARNING_EMITTED = False
 
 
-def _save_html(fig: plt.Figure, html_path: Path, source: str) -> None:
-    """Save an interactive HTML version of a Matplotlib figure if mpld3 is available."""
-    global HTML_SAVE_WARNING_EMITTED
-    if mpld3 is not None:
-        html_path.parent.mkdir(parents=True, exist_ok=True)
-        mpld3.save_html(fig, str(html_path))
-    elif not HTML_SAVE_WARNING_EMITTED:
-        print(f"[{source}] mpld3 not installed; skipping interactive HTML exports.")
-        HTML_SAVE_WARNING_EMITTED = True
+def save_plotly_figure(fig: go.Figure, png_path: Path, html_path: Path, source: str = "plot") -> None:
+    global PLOTLY_STATIC_WARNING_EMITTED
+    """Persist a Plotly figure as both HTML and PNG (if Kaleido is available)."""
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    png_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(html_path), include_plotlyjs="cdn")
+    try:
+        fig.write_image(str(png_path))
+    except Exception as exc:  # pragma: no cover - depends on kaleido availability
+        if not PLOTLY_STATIC_WARNING_EMITTED:
+            print(f"[{source}] Warning: could not export Plotly PNGs ({exc})")
+            PLOTLY_STATIC_WARNING_EMITTED = True
 
 # Import from new module structure
 from utils import (
@@ -98,7 +98,7 @@ class TraderStepAccumulator:
         self.pnl = (self.dy_out - self.dy_in) + (self.dx_out - self.dx_in) * m_settle
 
 def simulate(
-    block_size: int = 10,
+    block_time: int = 10,
     T: int = 120,
     seed: int = 7,
     cex_mu: float = 0.0,
@@ -256,8 +256,10 @@ def simulate(
     delta_a_cex_series = []
     # --- Block-start target band (arb_ref_m) ---
     band_lo_target, band_hi_target = [], []
-    # --- Micro-time traces (for block_size > 1 visualization) ---
+    # --- Micro-time traces (for block_time > 1 visualization) ---
     micro_steps, M_micro, P_micro = [], [], []
+    micro_valid_steps, micro_valid_prices = [], []
+    micro_counter = 0
     # --- PnL recorders ---
     trader_pnl_steps = []       # realized per-step PnL (token1)
     arb_pnl_steps = []          # realized per-step PnL (token1)
@@ -406,38 +408,6 @@ def simulate(
         raw = int(math.floor(math.log(max(S, 1e-18) / pool.base_s, pool.g)))
         return pool._snap(raw)
 
-    def ensure_liquidity(direction: str) -> Tuple[bool, int, float, float]:
-        """
-        Non-mutating: given 'direction' ('up' or 'down'), return a candidate band
-        we could bridge into *without* touching pool state.
-
-        Returns: (ok, new_tick, new_S, L_at_band)
-        """
-        if pool.L_active > EPS_LIQ:
-            return True, pool.tick, pool.S, pool.L_active
-
-        curr_tick = tick_from_S(pool.S)
-
-        if direction == "up":
-            nb = bidx.next_up(curr_tick)
-            if nb is None:
-                return False, pool.tick, pool.S, 0.0
-            new_tick = pool._snap(nb)
-            new_S = pool.s_lower(new_tick)
-        else:
-            pb = bidx.prev_down(curr_tick)
-            if pb is None:
-                return False, pool.tick, pool.S, 0.0
-            new_tick = pool._snap(pb - pool.tick_spacing)
-            new_S = pool.s_upper(new_tick)
-
-        # compute L at that band without mutating pool
-        L = math.fsum(dL for k, dL in pool.liquidity_net.items() if k <= new_tick)
-        if abs(L) < EPS_LIQ:
-            return False, pool.tick, pool.S, 0.0
-        return True, new_tick, new_S, L
-
-
     def mint_lp(lp: LPAgent, width_ticks: int) -> None:
         # Use an INTEGER number of spacing bands around the active band.
         # Min total width = tick_spacing; all widths multiples of tick_spacing.
@@ -490,7 +460,10 @@ def simulate(
         mint_is_passive.append(bool(lp.is_passive))
 
         with open(verbose_log_path_str, "a") as f:
-            f.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
+            f.write(
+                f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | "
+                f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+            )
         lp.L_live = getattr(lp, "L_live", 0.0) + L_new
         _rebalance_lp_to_target(lp, ref.m, pool.S)
 
@@ -514,7 +487,10 @@ def simulate(
         burn_is_passive.append(bool(lp.is_passive))
 
         with open(verbose_log_path_str, "a") as f:
-            f.write(f"[t={t:03d}] LP{lp.id} BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | L_active={pool.L_active:.4f}\n")
+            f.write(
+                f"[t={t:03d}] LP{lp.id} BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | "
+                f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+            )
 
         lp.cooldown = np.random.randint(3, 9)  # 3–8 steps of "hands off"
         lp.L_live = max(0.0, getattr(lp, "L_live", 0.0) - pos.L)
@@ -560,19 +536,10 @@ def simulate(
     def swap_exact_to_target(target_price: float, direction: str, fee_cb: Optional[Callable[[str, float, int, float], None]] = None) -> Tuple[float, float, float, float, float]:
         target_S = math.sqrt(max(1e-18, target_price))
 
-        # --- Desert bridge (peek → optionally apply) ---
-        bridged = False
-        prev_tick, prev_S = pool.tick, pool.S
-        if pool.L_active <= EPS_LIQ:
-            ok, new_tick, new_S, _ = ensure_liquidity(direction)
-            if not ok:
-                return 0.0, 0.0, 0.0, 0.0, 0.0
-            pool.tick, pool.S = new_tick, new_S
-            pool.recompute_active_L()
-            bridged = True
-
         total_in = total_out = fee_x = fee_y = 0.0
         L_first = 0.0
+        if pool.L_active <= EPS_LIQ:
+            return 0.0, 0.0, 0.0, 0.0, 0.0
 
         if direction == "up":
             while pool.L_active > 0 and pool.S < target_S - EPS_BOUNDARY:
@@ -591,9 +558,6 @@ def simulate(
                 pool._cross_up_once()
                 if pool.L_active <= 0:
                     break
-            if total_in <= EPS_LIQ and bridged:
-                pool.tick, pool.S = prev_tick, prev_S
-                pool.recompute_active_L()
             return total_in, total_out, fee_x, fee_y, L_first
 
         else:  # "down"
@@ -613,9 +577,6 @@ def simulate(
                 pool._cross_down_once()
                 if pool.L_active <= 0:
                     break
-            if total_in <= EPS_LIQ and bridged:
-                pool.tick, pool.S = prev_tick, prev_S
-                pool.recompute_active_L()
             return total_in, total_out, fee_x, fee_y, L_first
 
 
@@ -631,14 +592,6 @@ def simulate(
         """
         P = pool.price
         r = pool.r
-        # Block-invariant arrival probabilities
-        if block_size > 1:
-            p_trade_micro = 1.0 - (1.0 - p_trade)**(1.0 / block_size)
-            noise_floor_micro = 1.0 - (1.0 - noise_floor)**(1.0 / block_size)
-        else:
-            p_trade_micro = p_trade
-            noise_floor_micro = noise_floor
-
         lo, hi = arb_ref_m * r, arb_ref_m / r
         if P < lo * (1 - 1e-9):
             # up: returns (dy_in, dx_out, fee_x=0, fee_y, L_first)
@@ -650,18 +603,18 @@ def simulate(
             return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), fx, fy, Lff
         return 0.0, 0.0, 0.0, None, 0.0, 0.0, 0.0
 
-    # Block-invariant arrival probabilities (computed once before loop)
-    if block_size > 1:
-        p_trade_micro = 1.0 - (1.0 - p_trade)**(1.0 / block_size)
-        noise_floor_micro = 1.0 - (1.0 - noise_floor)**(1.0 / block_size)
-    else:
-        p_trade_micro = p_trade
+    # Per-micro-step arrival probabilities (used directly)
+    p_trade_micro = p_trade
     noise_floor_micro = noise_floor
 
     total_noise_swaps_executed = 0
     total_noise_swaps_skipped = 0
     total_smart_swaps_executed = 0
     total_smart_swaps_skipped = 0
+    smart_swaps_x_to_y = 0
+    smart_swaps_y_to_x = 0
+    noise_swaps_x_to_y = 0
+    noise_swaps_y_to_x = 0
     # Track the last validated DEX state (end of previous block)
     validated_price = pool.price
     validated_S = pool.S
@@ -679,6 +632,10 @@ def simulate(
         if dy <= 0.0:
             return 0.0
         return (dy * pool.r) / max(pool.price, 1e-18)
+
+    def _draw_trader_notional() -> float:
+        """Sample a token1 notional for trader orders (shared across directions)."""
+        return float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
 
     # ------------------ Main loop ------------------
     for t in range(T):
@@ -754,7 +711,7 @@ def simulate(
         dir_arb_this: Optional[str] = None
 
         
-        # --- Mempool structures (for block_size > 1) ---
+        # --- Mempool structures (for block_time > 1) ---
         mempool_orders = []
         
         # ----- Non-mutating Uni v3 quotes (spacing-aware, can bridge deserts) -----
@@ -764,7 +721,11 @@ def simulate(
                 return
             side = random.choice(["X_to_Y", "Y_to_X"])
             if side == "X_to_Y":
-                dx = float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
+                notional_y = _draw_trader_notional()
+                if notional_y <= 0.0:
+                    return
+                price_snapshot = max(m_now, 1e-18)
+                dx = notional_y / price_snapshot
                 if dx <= 0.0:
                     return
                 initial_quote = pool.quote_x_to_y(dx, bidx)
@@ -785,7 +746,7 @@ def simulate(
                     'min_output': min_output,
                 })
             else:
-                dy = float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
+                dy = _draw_trader_notional()
                 if dy <= 0.0:
                     return
                 initial_quote = pool.quote_y_to_x(dy, bidx)
@@ -812,24 +773,27 @@ def simulate(
                 return
             side = random.choice(["X_to_Y", "Y_to_X"])
             if side == "X_to_Y":
-                dx = float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
-                if dx > 0.0:
-                    initial_quote = pool.quote_x_to_y(dx, bidx)
-                    if initial_quote <= 0.0:
-                        return
-                    baseline_quote = _baseline_quote_x_to_y(dx)
-                    min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
-                    mempool_orders.append({
-                        'type': 'swap',
-                        'agent': 'noise',
-                        'side': 'X_to_Y',
-                        'amount': dx,
-                        'unit': 'dx',
-                        'm_submit': m_now,
-                        'min_output': min_output,
-                    })
+                notional_y = _draw_trader_notional()
+                if notional_y > 0.0:
+                    price_snapshot = max(m_now, 1e-18)
+                    dx = notional_y / price_snapshot
+                    if dx > 0.0:
+                        initial_quote = pool.quote_x_to_y(dx, bidx)
+                        if initial_quote <= 0.0:
+                            return
+                        baseline_quote = _baseline_quote_x_to_y(dx)
+                        min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
+                        mempool_orders.append({
+                            'type': 'swap',
+                            'agent': 'noise',
+                            'side': 'X_to_Y',
+                            'amount': dx,
+                            'unit': 'dx',
+                            'm_submit': m_now,
+                            'min_output': min_output,
+                        })
             else:
-                dy = float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
+                dy = _draw_trader_notional()
                 if dy > 0.0:
                     initial_quote = pool.quote_y_to_x(dy, bidx)
                     if initial_quote <= 0.0:
@@ -850,14 +814,32 @@ def simulate(
             nonlocal trader_y_this, sr_acc, noise_acc
             nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
             nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
+            nonlocal micro_counter
             P_pre_exec = pool.price
+            executed_smart_swaps = 0
+            executed_noise_swaps = 0
+            executed_lp_events = 0
+
             def _exec_one(o):
                 nonlocal P_pre_exec, trader_y_this, sr_acc, noise_acc
                 nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
                 nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
+                nonlocal smart_swaps_x_to_y, smart_swaps_y_to_x
+                nonlocal noise_swaps_x_to_y, noise_swaps_y_to_x
+                nonlocal executed_smart_swaps, executed_noise_swaps, executed_lp_events
+                nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
                 P_pre_exec = pool.price
-                # Handle LP intents (they don't have 'agent' or 'side')
+                tick_before_exec = pool.tick
                 typ = o.get('type')
+                def _record_micro(price_before_local: float) -> None:
+                    nonlocal micro_counter
+                    if block_time > 1 and abs(pool.price - price_before_local) > EPS_PRICE_CHANGE:
+                        micro_steps.append(micro_counter)
+                        P_micro.append(pool.price)
+                        M_micro.append(ref.m)
+                        micro_counter += 1
+
+                # Handle LP intents (they don't have 'agent' or 'side')
                 if typ in ('lp_burn','lp_mint','lp_recenter'):
                     lp = next((x for x in LPs if x.id == o.get('lp_id')), None)
                     if lp is None:
@@ -870,6 +852,7 @@ def simulate(
                         if idx is None:
                             return
                         burn_any(lp, idx)
+                        executed_lp_events += 1
                         return
                     if typ == 'lp_mint':
                         lower = int(o.get('lower')); upper = int(o.get('upper')); L_new = float(o.get('L', 0.0))
@@ -884,9 +867,10 @@ def simulate(
                         lp.positions.append(pos)
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                         with open(verbose_log_path_str, 'a') as f:
-                            f.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
+                            f.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
+                        executed_lp_events += 1
                         return
                     if typ == 'lp_recenter':
                         idx = None
@@ -907,14 +891,52 @@ def simulate(
                         lp.positions.append(pos)
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                         with open(verbose_log_path_str, 'a') as f:
-                            f.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
+                            f.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
+                        executed_lp_events += 1
                         return
+
+                # Handle arbitrage intent (executes before other swaps in a block)
+                if typ == 'arb':
+                    arb_ref = float(o.get('arb_ref_m', ref.m))
+                    price_before = pool.price
+                    tick_before = pool.tick
+                    in_used, x_out_from_dex, y_out_from_dex, dir_arb, fee_x_arb, fee_y_arb, L_first = arbitrage_to_target(arb_ref)
+                    delta_a_cex_this = 0.0
+                    if in_used > 0 and dir_arb is not None:
+                        L_pre_arb_eff_this = L_first
+                        dir_arb_this = dir_arb
+                        arb_steps.append(t); arb_dirs.append(dir_arb)
+
+                        if dir_arb == "up":
+                            # DEX cheap: buy token0 on DEX, sell on CEX
+                            delta_a_cex_this = -x_out_from_dex
+                            arb_y_this = +in_used
+                            arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
+                            with open(verbose_log_path_str, 'a') as f:
+                                f.write(
+                                    f"[t={t:03d}] arb swap up dy_in={in_used:.6f} dx_out={x_out_from_dex:.6f} "
+                                f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                            )
+                        else:
+                            # DEX expensive: sell token0 on DEX, buy on CEX
+                            delta_a_cex_this = +in_used
+                            arb_y_this = -pool.price * in_used
+                            arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
+                            with open(verbose_log_path_str, 'a') as f:
+                                f.write(
+                                    f"[t={t:03d}] arb swap down dx_in={in_used:.6f} dy_out={y_out_from_dex:.6f} "
+                                f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                            )
+                        _record_micro(price_before)
+                        _arb_execs += int(in_used > 0)
+                    return
+
                 if o.get('side') == 'X_to_Y':
                     min_output = o.get('min_output')
                     if min_output is not None:
                         final_quote = pool.quote_x_to_y(o['amount'], bidx)
-                        if final_quote < min_output:
+                        if final_quote <= min_output:
                             agent = o.get('agent')
                             if agent == 'smart':
                                 total_smart_swaps_skipped += 1
@@ -923,23 +945,15 @@ def simulate(
                             with open(verbose_log_path_str, 'a') as f:
                                 f.write(
                                     f"[t={t:03d}] {agent or 'N/A'} swap X_to_Y SKIPPED (slippage). "
-                                    f"final_quote={final_quote:.4f} < min_output={min_output:.4f}\n"
+                                    f"final_quote={final_quote:.4f} <= min_output={min_output:.4f} | tick={tick_before_exec}\n"
                                 )
                             return
-                    prev_tick, prev_S = pool.tick, pool.S
-                    bridged = False
                     if pool.L_active <= EPS_LIQ:
-                        ok, new_tick, new_S, _ = ensure_liquidity('down')
-                        if not ok: return
-                        pool.tick, pool.S = new_tick, new_S
-                        pool.recompute_active_L()
-                        bridged = True
+                        return
                     used_dx_pre, dy_out_real, fee_x = pool.swap_x_to_y(o['amount'], fee_cb=allocate_fees)
                     if used_dx_pre <= EPS_LIQ:
-                        if bridged:
-                            pool.tick, pool.S = prev_tick, prev_S
-                            pool.recompute_active_L()
                         return
+                    executed = int(used_dx_pre > 0)
                     agent = o.get('agent')
                     if agent == 'smart':
                         trader_steps.append(t); trader_dirs.append('down')
@@ -947,19 +961,34 @@ def simulate(
                         trader_y_this += -P_pre_exec * used_dx_pre
                         sr_acc.record_swap(dx_in=used_dx_pre, dy_out=dy_out_real)
                         sr_acc.execs += int(used_dx_pre > 0)
-                        total_smart_swaps_executed += int(used_dx_pre > 0)
+                        total_smart_swaps_executed += executed
+                        smart_swaps_x_to_y += int(used_dx_pre > 0)
+                        executed_smart_swaps += executed
+                        with open(verbose_log_path_str, 'a') as f:
+                            f.write(
+                                f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
+                                f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
+                            )
                     elif agent == 'noise':
                         trader_steps.append(t); trader_dirs.append('down')
                         noise_acc.notional_y += -P_pre_exec * used_dx_pre
                         trader_y_this += -P_pre_exec * used_dx_pre
                         noise_acc.record_swap(dx_in=used_dx_pre, dy_out=dy_out_real)
                         noise_acc.execs += int(used_dx_pre > 0)
-                        total_noise_swaps_executed += int(used_dx_pre > 0)
+                        total_noise_swaps_executed += executed
+                        noise_swaps_x_to_y += int(used_dx_pre > 0)
+                        executed_noise_swaps += executed
+                        with open(verbose_log_path_str, 'a') as f:
+                            f.write(
+                                f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
+                                f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
+                            )
+                    _record_micro(P_pre_exec)
                 else:
                     min_output = o.get('min_output')
                     if min_output is not None:
                         final_quote = pool.quote_y_to_x(o['amount'], bidx)
-                        if final_quote < min_output:
+                        if final_quote <= min_output:
                             agent = o.get('agent')
                             if agent == 'smart':
                                 total_smart_swaps_skipped += 1
@@ -968,23 +997,15 @@ def simulate(
                             with open(verbose_log_path_str, 'a') as f:
                                 f.write(
                                     f"[t={t:03d}] {agent or 'N/A'} swap Y_to_X SKIPPED (slippage). "
-                                    f"final_quote={final_quote:.4f} < min_output={min_output:.4f}\n"
+                                    f"final_quote={final_quote:.4f} <= min_output={min_output:.4f} | tick={tick_before_exec}\n"
                                 )
                             return
-                    prev_tick, prev_S = pool.tick, pool.S
-                    bridged = False
                     if pool.L_active <= EPS_LIQ:
-                        ok, new_tick, new_S, _ = ensure_liquidity('up')
-                        if not ok: return
-                        pool.tick, pool.S = new_tick, new_S
-                        pool.recompute_active_L()
-                        bridged = True
+                        return
                     used_dy_pre, dx_out_real, fee_y = pool.swap_y_to_x(o['amount'], fee_cb=allocate_fees)
                     if used_dy_pre <= EPS_LIQ:
-                        if bridged:
-                            pool.tick, pool.S = prev_tick, prev_S
-                            pool.recompute_active_L()
                         return
+                    executed = int(used_dy_pre > 0)
                     agent = o.get('agent')
                     if agent == 'smart':
                         trader_steps.append(t); trader_dirs.append('up')
@@ -992,30 +1013,57 @@ def simulate(
                         trader_y_this += +used_dy_pre
                         sr_acc.record_swap(dy_in=used_dy_pre, dx_out=dx_out_real)
                         sr_acc.execs += int(used_dy_pre > 0)
-                        total_smart_swaps_executed += int(used_dy_pre > 0)
+                        total_smart_swaps_executed += executed
+                        smart_swaps_y_to_x += int(used_dy_pre > 0)
+                        executed_smart_swaps += executed
+                        with open(verbose_log_path_str, 'a') as f:
+                            f.write(
+                                f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
+                                f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
+                            )
                     elif agent == 'noise':
                         trader_steps.append(t); trader_dirs.append('up')
                         noise_acc.notional_y += +used_dy_pre
                         trader_y_this += +used_dy_pre
                         noise_acc.record_swap(dy_in=used_dy_pre, dx_out=dx_out_real)
                         noise_acc.execs += int(used_dy_pre > 0)
-                        total_noise_swaps_executed += int(used_dy_pre > 0)
-            n_noise = sum(1 for o in mempool_orders if o.get('agent')=='noise')
-            n_smart = sum(1 for o in mempool_orders if o.get('agent')=='smart')
+                        total_noise_swaps_executed += executed
+                        noise_swaps_y_to_x += int(used_dy_pre > 0)
+                        executed_noise_swaps += executed
+                        with open(verbose_log_path_str, 'a') as f:
+                            f.write(
+                                f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
+                                f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
+                            )
+                    _record_micro(P_pre_exec)
             order_book = list(mempool_orders)
-            random.shuffle(order_book)
+            # Ensure arbitrage intents execute first, then shuffle the rest
+            arb_orders = [o for o in order_book if o.get('type') == 'arb']
+            non_arb_orders = [o for o in order_book if o.get('type') != 'arb']
+            random.shuffle(non_arb_orders)
+            order_book = arb_orders + non_arb_orders
+            tick_before_orders = pool.tick
             with open(verbose_log_path_str, 'a') as f:
-                f.write(f"[t={t:03d}] MEMPOOL before P={P_pre_exec:.4f} | n_orders={len(order_book)} (smart={n_smart}, noise={n_noise})\n")
+                f.write(
+                    f"[t={t:03d}] MEMPOOL before P={P_pre_exec:.4f} | tick={tick_before_orders} | "
+                    f"n_orders={len(order_book)}\n"
+                )
             for o in order_book:
                 _exec_one(o)
             with open(verbose_log_path_str, 'a') as f:
-                f.write(f"[t={t:03d}] MEMPOOL after P={pool.price:.4f}\n")
+                f.write(
+                    f"[t={t:03d}] MEMPOOL after P={pool.price:.4f} | tick={pool.tick} | "
+                    f"smart_exec={executed_smart_swaps} | noise_exec={executed_noise_swaps} | "
+                    f"lp_events={executed_lp_events}\n"
+                )
             mempool_orders.clear()
 
         def execute_trader(agent_label: str, probability: float, accumulator: TraderStepAccumulator, enforce_best_ex: bool, m_reference: float) -> None:
             nonlocal L_pre_trader_this, trader_y_this, _trader_execs
             nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
             nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
+            nonlocal smart_swaps_x_to_y, smart_swaps_y_to_x
+            nonlocal noise_swaps_x_to_y, noise_swaps_y_to_x
 
             if random.random() >= probability:
                 return
@@ -1023,9 +1071,14 @@ def simulate(
             side = random.choice(["X_to_Y", "Y_to_X"])
             L_pre_trader_this = pool.L_active
             P_pre = pool.price
+            tick_before = pool.tick
 
             if side == "X_to_Y":
-                dx = np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma))
+                notional_y = _draw_trader_notional()
+                if notional_y <= 0.0:
+                    return
+                price_snapshot = max(m_reference, 1e-18)
+                dx = notional_y / price_snapshot
                 if dx <= 0.0:
                     return
                 initial_quote = pool.quote_x_to_y(dx, bidx)
@@ -1045,25 +1098,15 @@ def simulate(
                     with open(verbose_log_path_str, "a") as f:
                         f.write(
                             f"[t={t:03d}] {agent_label} swap X_to_Y SKIPPED (slippage). "
-                            f"final_quote={final_quote:.4f} < min_output={min_output:.4f}\n"
+                            f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
                         )
                     return
 
-                prev_tick, prev_S = pool.tick, pool.S
-                bridged = False
                 if pool.L_active <= EPS_LIQ:
-                    ok, new_tick, new_S, _ = ensure_liquidity("down")
-                    if not ok:
-                        return
-                    pool.tick, pool.S = new_tick, new_S
-                    pool.recompute_active_L()
-                    bridged = True
+                    return
 
                 used_dx_pre, dy_out_real, _ = pool.swap_x_to_y(dx, fee_cb=allocate_fees)
                 if used_dx_pre <= EPS_LIQ:
-                    if bridged:
-                        pool.tick, pool.S = prev_tick, prev_S
-                        pool.recompute_active_L()
                     return
 
                 trader_steps.append(t)
@@ -1080,11 +1123,25 @@ def simulate(
                 _trader_execs += executed
                 if agent_label == "smart":
                     total_smart_swaps_executed += executed
+                    smart_swaps_x_to_y += executed
+                    if executed:
+                        with open(verbose_log_path_str, "a") as f:
+                            f.write(
+                                f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
+                                f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                            )
                 elif agent_label == "noise":
                     total_noise_swaps_executed += executed
+                    noise_swaps_x_to_y += executed
+                    if executed:
+                        with open(verbose_log_path_str, "a") as f:
+                            f.write(
+                                f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
+                                f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                            )
 
             else:
-                dy = np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma))
+                dy = _draw_trader_notional()
                 if dy <= 0.0:
                     return
                 initial_quote = pool.quote_y_to_x(dy, bidx)
@@ -1105,25 +1162,15 @@ def simulate(
                     with open(verbose_log_path_str, "a") as f:
                         f.write(
                             f"[t={t:03d}] {agent_label} swap Y_to_X SKIPPED (slippage). "
-                            f"final_quote={final_quote:.4f} < min_output={min_output:.4f}\n"
+                            f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
                         )
                     return
 
-                prev_tick, prev_S = pool.tick, pool.S
-                bridged = False
                 if pool.L_active <= EPS_LIQ:
-                    ok, new_tick, new_S, _ = ensure_liquidity("up")
-                    if not ok:
-                        return
-                    pool.tick, pool.S = new_tick, new_S
-                    pool.recompute_active_L()
-                    bridged = True
+                    return
 
                 used_dy_pre, dx_out_real, _ = pool.swap_y_to_x(dy, fee_cb=allocate_fees)
                 if used_dy_pre <= EPS_LIQ:
-                    if bridged:
-                        pool.tick, pool.S = prev_tick, prev_S
-                        pool.recompute_active_L()
                     return
 
                 trader_steps.append(t)
@@ -1139,8 +1186,22 @@ def simulate(
                 _trader_execs += executed
                 if agent_label == "smart":
                     total_smart_swaps_executed += executed
+                    smart_swaps_y_to_x += executed
+                    if executed:
+                        with open(verbose_log_path_str, "a") as f:
+                            f.write(
+                                f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
+                                f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                            )
                 elif agent_label == "noise":
                     total_noise_swaps_executed += executed
+                    noise_swaps_y_to_x += executed
+                    if executed:
+                        with open(verbose_log_path_str, "a") as f:
+                            f.write(
+                                f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
+                                f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                            )
 
         # --- Actor routines (closures) ---
         def act_LPs():
@@ -1201,7 +1262,10 @@ def simulate(
                     lp.positions.append(newpos)
                     mint_steps.append(t); mint_sizes.append(L_same); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                     with open(verbose_log_path_str, "a") as f:
-                        f.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f}\n")
+                        f.write(
+                            f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | "
+                            f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+                        )
 
             # ----- probabilistic mints (blocked during cooldown) -----
             for lp in LPs:
@@ -1247,12 +1311,12 @@ def simulate(
                 pool.L_active = 0.0
 
         def act_smart_router():
-            for _ in range(max(0, int(N_smart_router))):
-                execute_trader("smart", p_trade_micro, sr_acc, True, cex_ref_for_agents)
+            # Single smart-router trader per step (probabilistic arrival)
+            execute_trader("smart", p_trade_micro, sr_acc, True, cex_ref_for_agents)
 
         def act_noise_trader():
-            for _ in range(max(0, int(N_noise))):
-                execute_trader("noise", noise_floor_micro, noise_acc, False, cex_ref_for_agents)
+            # Single noise trader per step (probabilistic arrival)
+            execute_trader("noise", noise_floor_micro, noise_acc, False, cex_ref_for_agents)
 
         def act_arbitrageur():
             nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
@@ -1309,14 +1373,14 @@ def simulate(
                 lp.can_act = (j in s)
 
         # ===================== BLOCK SCHEDULING & ORDER =====================
-        # Non-block mode (block_size == 1): A -> Smart+Noise -> B -> Arb -> C.
-        # Block mode (block_size > 1):
+        # Non-block mode (block_time == 1): A -> Smart+Noise -> B -> Arb -> C.
+        # Block mode (block_time > 1):
         #   - Snapshot CEX at block start: arb_ref_m
         #   - Micro-steps: diffuse-only; enqueue intents with p_trade_micro/noise_floor_micro
         #   - Boundary order (current): Arb -> (populate+execute mempool)  (LPs act via mempool)
         # =====================================================================
         # run the schedule
-        if block_size == 1:
+        if block_time == 1:
             # target band uses validated CEX snapshot in non-block mode
             target_band_m = cex_ref_for_agents
             band_lo_target.append(target_band_m * r)
@@ -1334,25 +1398,29 @@ def simulate(
             act_LPs()
         else:
             arb_ref_m_start = ref.m  # block-start CEX snapshot (diagnostic only; arb targets end-of-block)
-            # prepare micro-time arrays: keep DEX price stale within the block
-            _micro_start = len(P_micro)
+            # prepare micro-time arrays (event-time logging)
             with open(verbose_log_path_str, 'a') as f:
                 f.write(f"[t={t:03d}] BLOCK start m={arb_ref_m_start:.4f}\n")
-            P_micro.extend([pool.price] * block_size)
-            micro_steps.extend([t * block_size + k for k in range(block_size)])
-            for _k in range(block_size):
+            micro_steps.append(micro_counter)
+            P_micro.append(pool.price)
+            M_micro.append(ref.m)
+            micro_counter += 1
+            for _k in range(block_time):
                 maybe_enqueue_smart_router_intent(cex_ref_for_agents)
                 maybe_enqueue_noise_trader_intent(cex_ref_for_agents)
                 ref.diffuse_only()
                 _broadcast_price_move(ref.m)
+                micro_steps.append(micro_counter)
+                P_micro.append(pool.price)
                 M_micro.append(ref.m)
+                micro_counter += 1
 
-            # --- Arbitrage before mempool execution ---
+            # --- Arbitrage intent (executes first in mempool) ---
             arb_ref_m = cex_ref_for_agents  # snapshot from end of previous block
             target_band_m = cex_ref_for_agents
             band_lo_target.append(target_band_m * r)
             band_hi_target.append(target_band_m / r)
-            act_arbitrageur()
+            mempool_orders.append({'type': 'arb', 'arb_ref_m': arb_ref_m})
 
             # --- Include LP intents in the mempool (shuffled with traders) ---
             # Allow due LPs to act this block
@@ -1448,15 +1516,15 @@ def simulate(
             # Execute all mempool intents (traders + LPs) in random order
             L_pre_trader_this = pool.L_active
             execute_mempool_orders()
+            if block_time > 1 and micro_steps:
+                micro_valid_steps.append(micro_steps[-1])
+                micro_valid_prices.append(pool.price)
 
-            # update last micro-sample of DEX price to reflect mempool executions
-            if block_size > 1:
-                P_micro[_micro_start + block_size - 1] = pool.price
         # disable everyone for next step
         _enable([])
 
         # ---- CEX update  ----
-        if block_size == 1:
+        if block_time == 1:
             ref.step(delta_a_cex_this)
         else:
             ref.apply_impact_only(delta_a_cex_this)
@@ -1639,7 +1707,7 @@ def simulate(
         log_line = (
         f"[t={t:03d}] DEX={pool.price:.4f} | CEX={ref.m:.4f} | "
         f"traderY={trader_y_this:.2f} | arb_dir={dir_arb_this} arbY={arb_y_this:.2f} | "
-        f"L={pool.L_active:.4f} | w_ticks={w_ticks}"
+        f"L={pool.L_active:.4f} | tick={pool.tick} | w_ticks={w_ticks}"
         )
         with open(verbose_log_path_str, "a") as f:
             f.write(log_line + "\n")
@@ -1660,6 +1728,10 @@ def simulate(
         f"noise_trader_swaps_rejected_slippage = {total_noise_swaps_skipped}",
         f"total_smart_router_swaps = {total_smart_swaps_executed}",
         f"smart_router_swaps_rejected_slippage = {total_smart_swaps_skipped}",
+        f"smart_router_swaps_X_to_Y (price down) = {smart_swaps_x_to_y}",
+        f"smart_router_swaps_Y_to_X (price up) = {smart_swaps_y_to_x}",
+        f"noise_trader_swaps_X_to_Y (price down) = {noise_swaps_x_to_y}",
+        f"noise_trader_swaps_Y_to_X (price up) = {noise_swaps_y_to_x}",
         "----------------------------------------------------------\n",
     ]
 
@@ -1782,9 +1854,9 @@ def simulate(
         mint_step_sum_active_v = mint_step_sum_active[s0:]
         burn_step_sum_passive_v = burn_step_sum_passive[s0:]
         burn_step_sum_active_v = burn_step_sum_active[s0:]
-        
-        # ===== Separate figures instead of a single multi-subplot figure =====
+
         from pathlib import Path as _Path
+
         _out_dir = _Path("abm_results")
         _png_dir = _out_dir / "png"
         _html_dir = _out_dir / "html"
@@ -1792,358 +1864,397 @@ def simulate(
         _html_dir.mkdir(parents=True, exist_ok=True)
         _prefix = f"abm_fee_{fee_mode}_{cex_sigma}"
 
-        def _scale_marker_sizes(values: List[float], min_pts: float = 4.0, max_pts: float = 16.0) -> List[float]:
-            if not values:
-                return []
-            cleaned = [max(float(v), 0.0) for v in values]
-            if not any(cleaned):
-                return [min_pts] * len(cleaned)
-            # Dampen extremes with sqrt scaling
-            dampened = [math.sqrt(v) for v in cleaned]
-            max_dampened = max(dampened)
-            if max_dampened <= 0:
-                return [min_pts] * len(cleaned)
-            return [
-                min_pts + (max_pts - min_pts) * (dv / max_dampened)
-                for dv in dampened
-            ]
-
-        def _plot_variable_markers(
-            ax: plt.Axes,
-            xs: List[int],
-            ys: List[float],
-            values: List[float],
-            marker: str,
-            color: str,
-            label: Optional[str] = None,
-            facecolor: Optional[str] = None,
-            edgecolor: Optional[str] = None,
-            min_size: float = 1.0,
-            max_size: float = 4.0,
-        ) -> None:
-            if not xs:
-                return
-            sizes_pts = _scale_marker_sizes(values, min_size, max_size)
-            grouped: Dict[float, Tuple[List[int], List[float]]] = {}
-            for x_val, y_val, size in zip(xs, ys, sizes_pts):
-                size_key = round(size, 2)
-                if size_key not in grouped:
-                    grouped[size_key] = ([], [])
-                grouped[size_key][0].append(x_val)
-                grouped[size_key][1].append(y_val)
-            for idx, (size_key, (gx, gy)) in enumerate(grouped.items()):
-                use_label = label if idx == 0 else None
-                ax.plot(
-                    gx,
-                    gy,
-                    linestyle="None",
-                    marker=marker,
-                    markersize=size_key,
-                    markerfacecolor=facecolor if facecolor is not None else color,
-                    markeredgecolor=edgecolor if edgecolor is not None else color,
-                    label=use_label,
-                )
-
-        # Common helper to save + tidy
-        def _save_fig(fig, name):
-            fig.tight_layout()
-            png_path = _png_dir / f"{_prefix}_{name}.png"
-            fig.savefig(png_path, dpi=150)
-            html_path = _html_dir / f"{_prefix}_{name}.html"
-            _save_html(fig, html_path, "simulate")
-            plt.close(fig)
-        
-        # ----- 1) Price panel -----
-        fig1, ax = plt.subplots(figsize=(15, 4.5))
-        ax.fill_between(steps_v, band_lo_post_v, band_hi_post_v, color="lightgray", alpha=0.35, label="No-arb fee band")
-        ax.plot(steps_v, band_lo_post_v, color="#888", linestyle=":", linewidth=1.2)
-        ax.plot(steps_v, band_hi_post_v, color="#888", linestyle=":", linewidth=1.2)
-        ax.plot(steps_v, P_series_v, label="DEX price P_t", linewidth=2)
-        ax.plot(steps_v, M_series_v, "--", label="CEX price m_t", linewidth=1.6)
-
-        # --- Vertical-only offsets to avoid marker overlap ---
-        s0 = max(0, int(skip_step))
-        off_y = (50 / 1e4) * P_series   # baseline: ~50 bps of price
-
-        # Arbitrage markers (triangles)
-        up = [s for s, d in zip(arb_steps, arb_dirs) if d == "up" and s >= s0]
-        dn = [s for s, d in zip(arb_steps, arb_dirs) if d == "down" and s >= s0]
-        if len(arb_steps) > 0:
-            arb_abs = np.array([abs(arb_y_series[s]) for s in arb_steps])
-            max_abs = float(max(1e-12, np.max(arb_abs)))
-            _scale = lambda a: 30 + 120 * (a / max_abs)
-        else:
-            _scale = lambda a: 30
-        if up:
-            arr = np.array(up, dtype=int)
-            up_vals = [abs(arb_y_series[s]) for s in up]
-            up_xs = arr.tolist()
-            up_ys = [P_series[s] + 1.00 * off_y[s] for s in up]
-            _plot_variable_markers(
-                ax,
-                up_xs,
-                up_ys,
-                up_vals,
-                marker="^",
-                color="green",
-                label="Arb (↑ to target)",
-                min_size=1.0,
-                max_size=4.0,
-            )
-        if dn:
-            arr = np.array(dn, dtype=int)
-            dn_vals = [abs(arb_y_series[s]) for s in dn]
-            dn_xs = arr.tolist()
-            dn_ys = [P_series[s] + 1.60 * off_y[s] for s in dn]
-            _plot_variable_markers(
-                ax,
-                dn_xs,
-                dn_ys,
-                dn_vals,
-                marker="v",
-                color="red",
-                label="Arb (↓ to target)",
-                min_size=1.0,
-                max_size=4.0,
+        def _save_plotly(name: str, fig: go.Figure) -> None:
+            save_plotly_figure(
+                fig,
+                _png_dir / f"{_prefix}_{name}.png",
+                _html_dir / f"{_prefix}_{name}.html",
+                "simulate",
             )
 
-        # LP markers (circles/crosses), stacked higher than arb
-        if len(mint_steps) + len(burn_steps) > 0:
-            if mint_steps:
-                mint_points = [(step, size) for step, size in zip(mint_steps, mint_sizes) if step >= s0]
-                if mint_points:
-                    mint_xs = [step for step, _ in mint_points]
-                    mint_vals = [size for _, size in mint_points]
-                    mint_ys = [P_series[step] + 2.40 * off_y[step] for step in mint_xs]
-                    _plot_variable_markers(
-                        ax,
-                        mint_xs,
-                        mint_ys,
-                        mint_vals,
-                        marker="o",
-                        color="#6a0dad",
-                        facecolor="none",
-                        edgecolor="#6a0dad",
-                        label="LP mint/center",
-                        min_size=1.0,
-                        max_size=4.0,
-                    )
-            if burn_steps:
-                burn_points = [(step, size) for step, size in zip(burn_steps, burn_sizes) if step >= s0]
-                if burn_points:
-                    burn_xs = [step for step, _ in burn_points]
-                    burn_vals = [size for _, size in burn_points]
-                    burn_ys = [P_series[step] + 3.20 * off_y[step] for step in burn_xs]
-                    _plot_variable_markers(
-                        ax,
-                        burn_xs,
-                        burn_ys,
-                        burn_vals,
-                        marker="x",
-                        color="#ff8c00",
-                        label="LP burn",
-                        min_size=1.0,
-                        max_size=4.0,
-                    )
-
-        ax.set_xlim(steps_v[0]-0.5, steps_v[-1]+0.5)
-        ax.set_ylabel("Price (token1 per token0)", fontsize=LABEL_FONT_SIZE)
-        ax.set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
-        ax.set_title("CEX vs DEX Price", fontsize=TITLE_FONT_SIZE)
-        ax.grid(True, alpha=0.3)
-        # Show target band (start-of-block) as dotted lines so you can see what arb targets
         band_lo_target_v = np.array(band_lo_target)[s0:]
         band_hi_target_v = np.array(band_hi_target)[s0:]
-        ax.plot(steps_v, band_lo_target_v, linestyle='--', linewidth=1.0, alpha=0.6,
-                label='Target band (end-of-block) lo')
-        ax.plot(steps_v, band_hi_target_v, linestyle='--', linewidth=1.0, alpha=0.6,
-                label='Target band (end-of-block) hi')
-        ax.legend(ncol=2, fontsize=LEGEND_FONT_SIZE)
-        ax.margins(y=0.14)
-        _save_fig(fig1, "1_price")
+        steps_list = steps_v.tolist()
 
-        # ----- 1b) Micro-time price panel (only meaningful if block_size>1) -----
-        if block_size > 1 and len(M_micro) == len(P_micro) == len(micro_steps) and len(micro_steps) > 0:
-            fig1b, ax = plt.subplots(figsize=(15, 3.2))
-            ax.plot(micro_steps, P_micro, label="DEX price (micro)", linewidth=1.2)
-            ax.plot(micro_steps, M_micro, "--", label="CEX price (micro)", linewidth=1.0)
-            ax.set_title("Micro-time CEX vs DEX (within blocks)", fontsize=TITLE_FONT_SIZE-2)
-            ax.set_xlabel("Micro step", fontsize=LABEL_FONT_SIZE-1)
-            ax.set_ylabel("Price", fontsize=LABEL_FONT_SIZE-1)
-            ax.grid(True, alpha=0.3)
-            ax.legend(fontsize=LEGEND_FONT_SIZE-1)
-            _save_fig(fig1b, "1b_price_micro")
+        # ----- 1) Price panel -----
+        fig1 = go.Figure()
+        fig1.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=band_lo_post_v,
+                mode="lines",
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        fig1.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=band_hi_post_v,
+                mode="lines",
+                fill="tonexty",
+                fillcolor="rgba(180,180,180,0.35)",
+                line=dict(width=0),
+                name="No-arb fee band",
+                hoverinfo="skip",
+            )
+        )
+        fig1.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=P_series_v,
+                mode="lines",
+                name="DEX price Pₜ",
+                line=dict(width=2),
+            )
+        )
+        fig1.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=M_series_v,
+                mode="lines",
+                name="CEX price mₜ",
+                line=dict(width=1.6, dash="dash"),
+            )
+        )
+        fig1.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=band_lo_target_v,
+                mode="lines",
+                name="Target band lo",
+                line=dict(width=1, dash="dot"),
+            )
+        )
+        fig1.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=band_hi_target_v,
+                mode="lines",
+                name="Target band hi",
+                line=dict(width=1, dash="dot"),
+            )
+        )
+        fig1.update_layout(
+            template="plotly_white",
+            title="CEX vs DEX Price",
+            xaxis_title="Step",
+            yaxis_title="Price (token1 per token0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        )
+        _save_plotly("1_price", fig1)
+
+        # ----- 1b) Micro-time price panel -----
+        if block_time > 1 and len(M_micro) == len(P_micro) == len(micro_steps) and len(micro_steps) > 0:
+            fig1b = go.Figure()
+            fig1b.add_trace(
+                go.Scatter(x=micro_steps, y=P_micro, mode="lines", name="DEX price (micro)", line=dict(width=1.2))
+            )
+            fig1b.add_trace(
+                go.Scatter(
+                    x=micro_steps,
+                    y=M_micro,
+                    mode="lines",
+                    name="CEX price (micro)",
+                    line=dict(width=1.0, dash="dash"),
+                )
+            )
+            if micro_valid_steps:
+                fig1b.add_trace(
+                    go.Scatter(
+                        x=micro_valid_steps,
+                        y=micro_valid_prices,
+                        mode="markers",
+                        name="Validated DEX price",
+                        marker=dict(color="#d62728", size=6),
+                    )
+                )
+            fig1b.update_layout(
+                template="plotly_white",
+                title="Micro-time CEX vs DEX (within blocks)",
+                xaxis_title="Event time",
+                yaxis_title="Price",
+            )
+            _save_plotly("1b_price_micro", fig1b)
+
         # ----- 2) Notionals -----
-        fig2, ax = plt.subplots(figsize=(15, 3.6))
-        ax.axhline(0.0, color="k", lw=1.0, alpha=0.3)
-        ax.plot(steps_v, sr_y_v, lw=1.8, label="Smart router notional (token1, signed)")
-        ax.plot(steps_v, noise_y_v, lw=1.8, linestyle="--", label="Noise trader notional (token1, signed)")
-        ax.plot(steps_v, arb_y_v, lw=1.8, linestyle="-.", label="Arbitrageur notional (token1, signed)")
-        ax.set_ylabel("Notional (token1, signed)", fontsize=LABEL_FONT_SIZE)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
-        _save_fig(fig2, "2_notional")
+        fig2 = go.Figure()
+        fig2.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"))
+        fig2.add_trace(go.Scatter(x=steps_list, y=sr_y_v, mode="lines", name="Smart router (token1)"))
+        fig2.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=noise_y_v,
+                mode="lines",
+                name="Noise trader (token1)",
+                line=dict(dash="dash"),
+            )
+        )
+        fig2.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=arb_y_v,
+                mode="lines",
+                name="Arbitrageur (token1)",
+                line=dict(dash="dot"),
+            )
+        )
+        fig2.update_layout(
+            template="plotly_white",
+            title="Trader Notionals",
+            xaxis_title="Step",
+            yaxis_title="Notional (token1, signed)",
+        )
+        _save_plotly("2_notional", fig2)
+
+        # helper for zero-liquidity shading
+        def _zero_liquidity_shapes():
+            shapes = []
+            for s_idx, L_val in zip(steps_v, L_end_v):
+                if L_val <= 1e-9:
+                    shapes.append(
+                        dict(
+                            type="rect",
+                            x0=float(s_idx) - 0.5,
+                            x1=float(s_idx) + 0.5,
+                            y0=0,
+                            y1=1,
+                            yref="paper",
+                            fillcolor="rgba(255,0,0,0.06)",
+                            line=dict(width=0),
+                        )
+                    )
+            return shapes
 
         # ----- 3) Liquidity traces -----
-        fig3, ax = plt.subplots(figsize=(15, 3.6))
-        ax.plot(steps_v, L_end_v, lw=1.8, label="Active L (end of step)")
-        ax.plot(steps_v, L_pre_step_v, lw=1.0, ls="--", label="Active L (start of step)")
-        ax.plot(steps_v, L_pre_trader_v, lw=1.0, ls=":", label="Active L (before trader)")
-        ax.plot(steps_v, L_pre_arb_eff_v, lw=1.2, ls="-.", label="Active L (before arb, effective)")
-        ax.set_ylabel("Active L", fontsize=LABEL_FONT_SIZE)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
-        for s_idx, L in zip(steps_v, L_end_v):
-            if L <= 1e-9:
-                ax.axvspan(s_idx - 0.5, s_idx + 0.5, color="red", alpha=0.05, lw=0)
-        _save_fig(fig3, "3_activeL")
+        fig3 = go.Figure()
+        fig3.add_trace(go.Scatter(x=steps_list, y=L_end_v, mode="lines", name="Active L (end of step)", line=dict(width=1.8)))
+        fig3.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=L_pre_step_v,
+                mode="lines",
+                name="Active L (start of step)",
+                line=dict(width=1.0, dash="dash"),
+            )
+        )
+        fig3.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=L_pre_trader_v,
+                mode="lines",
+                name="Active L (before trader)",
+                line=dict(width=1.0, dash="dot"),
+            )
+        )
+        fig3.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=L_pre_arb_eff_v,
+                mode="lines",
+                name="Active L (before arb)",
+                line=dict(width=1.2, dash="dashdot"),
+            )
+        )
+        fig3.update_layout(
+            template="plotly_white",
+            title="Active Liquidity",
+            xaxis_title="Step",
+            yaxis_title="Active L",
+            shapes=_zero_liquidity_shapes(),
+        )
+        _save_plotly("3_activeL", fig3)
 
         # ----- 4) L per step (passive vs active) -----
-        fig4, axes = plt.subplots(2, 1, figsize=(15, 6.5), sharex=True)
-        panel_specs = [
-            ("Passive LPs", mint_step_sum_passive_v, burn_step_sum_passive_v),
-            ("Active LPs", mint_step_sum_active_v, burn_step_sum_active_v),
-        ]
-        for idx, (ax, (title, mint_vals, burn_vals)) in enumerate(zip(axes, panel_specs)):
-            ax.axhline(0.0, color="k", lw=1.0, alpha=0.25)
-            ax.bar(steps_v, mint_vals, width=0.8, alpha=0.65, label="Mint / recenter L", color="#6a0dad")
-            ax.bar(steps_v, -burn_vals, width=0.8, alpha=0.65, label="Burn L", color="#ff8c00")
-            ax.set_ylabel("ΔL per step", fontsize=LABEL_FONT_SIZE)
-            ax.set_title(f"{title}", fontsize=LABEL_FONT_SIZE)
-            ax.grid(True, alpha=0.3)
-            if idx == 0:
-                ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
-        axes[-1].set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
-        _save_fig(fig4, "4_L_per_step")
+        fig4 = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("Passive LPs", "Active LPs"))
+        fig4.add_trace(
+            go.Bar(x=steps_list, y=mint_step_sum_passive_v, name="Mint / recenter L", marker_color="#6a0dad"),
+            row=1,
+            col=1,
+        )
+        fig4.add_trace(
+            go.Bar(x=steps_list, y=-burn_step_sum_passive_v, name="Burn L", marker_color="#ff8c00"),
+            row=1,
+            col=1,
+        )
+        fig4.add_trace(
+            go.Bar(x=steps_list, y=mint_step_sum_active_v, showlegend=False, marker_color="#6a0dad"),
+            row=2,
+            col=1,
+        )
+        fig4.add_trace(
+            go.Bar(x=steps_list, y=-burn_step_sum_active_v, showlegend=False, marker_color="#ff8c00"),
+            row=2,
+            col=1,
+        )
+        fig4.update_layout(
+            template="plotly_white",
+            title="ΔL per Step",
+            barmode="relative",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        )
+        fig4.update_yaxes(title_text="ΔL per step", row=1, col=1)
+        fig4.update_yaxes(title_text="ΔL per step", row=2, col=1)
+        fig4.update_xaxes(title_text="Step", row=2, col=1)
+        _save_plotly("4_L_per_step", fig4)
 
         # ----- 5) Active-band reserves -----
-        fig5, ax = plt.subplots(figsize=(15, 3.6))
-        ax.plot(steps_v, X_active_end_v * P_series_v, lw=1.8, label="token0 value in active band (≈ token1 units)")
-        ax.plot(steps_v, Y_active_end_v, lw=1.8, label="token1 in active band (Y)")
-        ax.set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
-        ax.set_ylabel("Active-band reserves", fontsize=LABEL_FONT_SIZE)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
-        for s_idx, L in zip(steps_v, L_end_v):
-            if L <= 1e-9:
-                ax.axvspan(s_idx - 0.5, s_idx + 0.5, color="red", alpha=0.05, lw=0)
-        _save_fig(fig5, "5_active_reserves")
+        fig5 = go.Figure()
+        fig5.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=X_active_end_v * P_series_v,
+                mode="lines",
+                name="token0 value in active band",
+                line=dict(width=1.8),
+            )
+        )
+        fig5.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=Y_active_end_v,
+                mode="lines",
+                name="token1 in active band",
+                line=dict(width=1.8),
+            )
+        )
+        fig5.update_layout(
+            template="plotly_white",
+            title="Active-band Reserves",
+            xaxis_title="Step",
+            yaxis_title="Token1 units",
+            shapes=_zero_liquidity_shapes(),
+        )
+        _save_plotly("5_active_reserves", fig5)
 
         # ----- 6b) LP mint width signal -----
         if len(w_ticks_series_v) > 0:
-            fig6b, ax = plt.subplots(figsize=(15, 3.6))
             width_baseline_v = w_unclipped_series_v - w_noise_series_v
-            ax.plot(steps_v, width_baseline_v, lw=1.5, label="Baseline width (min + EWMA basis)")
-            ax.plot(steps_v, w_unclipped_series_v, lw=1.2, ls="--", label="Baseline + binomial noise")
-            ax.plot(steps_v, w_ticks_series_v, lw=1.8, ls="-.", label="Final width (rounded/clamped)")
-            ax.set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
-            ax.set_ylabel("Width (ticks)", fontsize=LABEL_FONT_SIZE)
-            ax.set_title("LP mint width signal", fontsize=TITLE_FONT_SIZE)
-            ax.grid(True, alpha=0.3)
-            ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
-            _save_fig(fig6b, "6b_mint_width_signal")
+            fig6b = go.Figure()
+            fig6b.add_trace(
+                go.Scatter(
+                    x=steps_list,
+                    y=width_baseline_v,
+                    mode="lines",
+                    name="Baseline width",
+                    line=dict(width=1.4),
+                )
+            )
+            fig6b.add_trace(
+                go.Scatter(
+                    x=steps_list,
+                    y=w_unclipped_series_v,
+                    mode="lines",
+                    name="Baseline + noise",
+                    line=dict(width=1.2, dash="dash"),
+                )
+            )
+            fig6b.add_trace(
+                go.Scatter(
+                    x=steps_list,
+                    y=w_ticks_series_v,
+                    mode="lines",
+                    name="Final width",
+                    line=dict(width=1.6, dash="dashdot"),
+                )
+            )
+            fig6b.update_layout(
+                template="plotly_white",
+                title="LP Mint Width Signal",
+                xaxis_title="Step",
+                yaxis_title="Width (ticks)",
+            )
+            _save_plotly("6b_mint_width_signal", fig6b)
 
         # ----- 7) PnL panel -----
-        fig6, ax = plt.subplots(figsize=(15, 3.6))
-        ax.axhline(0.0, color="k", lw=1.0, alpha=0.3)
-        ax.plot(steps_v, sr_pnl_cum_v, lw=1.8, label="Smart Router cumulative PnL (token1)")
-        ax.plot(
-            steps_v,
-            noise_pnl_cum_v,
-            lw=1.5,
-            linestyle="--",
-            color="#2ca02c",
-            label="Noise trader cumulative PnL (token1)",
+        fig6 = go.Figure()
+        fig6.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"))
+        fig6.add_trace(go.Scatter(x=steps_list, y=sr_pnl_cum_v, mode="lines", name="Smart router PnL"))
+        fig6.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=noise_pnl_cum_v,
+                mode="lines",
+                name="Noise trader PnL",
+                line=dict(dash="dash"),
+            )
         )
-        ax.plot(steps_v, arb_pnl_cum_v, lw=1.8, label="Arbitrageur cumulative PnL (token1)")
-        # ax.plot(
-        #     steps_v,
-        #     lp_pnl_total_series_v,
-        #     lw=1.8,
-        #     color="#8c564b",
-        #     label="LP cumulative hedged PnL (token1)",
-        # )
-        # ax.plot(
-        #     steps_v,
-        #     lp_rebal_total_series_v,
-        #     lw=1.2,
-        #     linestyle="--",
-        #     color="#bcbd22",
-        #     label="LP cumulative rebal PnL (token1)",
-        # )
-        ax.plot(
-            steps_v,
-            lp_pnl_active_series_v,
-            lw=1.5,
-            linestyle="--",
-            color="#8c564b",
-            label="Active narrow LP Fee-LVR",
+        fig6.add_trace(go.Scatter(x=steps_list, y=arb_pnl_cum_v, mode="lines", name="Arbitrageur PnL"))
+        fig6.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=lp_pnl_active_series_v,
+                mode="lines",
+                name="Active narrow LP Fee-LVR",
+                line=dict(dash="dash"),
+            )
         )
         if active_wide_lp_enabled and np.any(np.abs(lp_pnl_wide_series_v) > 1e-12):
-            ax.plot(
-                steps_v,
-                lp_pnl_wide_series_v,
-                lw=1.5,
-                linestyle="-.",
-                color="#bcbd22",
-                label="Active wide LP Fee-LVR",
+            fig6.add_trace(
+                go.Scatter(
+                    x=steps_list,
+                    y=lp_pnl_wide_series_v,
+                    mode="lines",
+                    name="Active wide LP Fee-LVR",
+                    line=dict(dash="dashdot"),
+                )
             )
-        ax.plot(
-            steps_v,
-            lp_pnl_passive_series_v,
-            lw=1.5,
-            linestyle=":",
-            color="#9467bd",
-            label="Passive LP Fee-LVR",
+        fig6.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=lp_pnl_passive_series_v,
+                mode="lines",
+                name="Passive LP Fee-LVR",
+                line=dict(dash="dot"),
+            )
         )
-        # ax.plot(
-        #     steps_v,
-        #     lp_wealth_active_series_v,
-        #     lw=1.5,
-        #     linestyle="--",
-        #     label="Active narrow LP wealth (wallet+open)",
-        # )
-        # if active_wide_lp_enabled and np.any(np.abs(lp_wealth_wide_series_v) > 1e-12):
-        #     ax.plot(
-        #         steps_v,
-        #         lp_wealth_wide_series_v,
-        #         lw=1.5,
-        #         linestyle="-.",
-        #         label="Active wide LP wealth (wallet+open)",
-        #     )
-        # ax.plot(
-        #     steps_v,
-        #     lp_wealth_passive_series_v,
-        #     lw=1.5,
-        #     linestyle=":",
-        #     label="Passive LP wealth (wallet+open)",
-        # )
-        ax.set_ylabel("Token1 value", fontsize=LABEL_FONT_SIZE)
-        ax.set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=LEGEND_FONT_SIZE, loc="upper left")
-        _save_fig(fig6, "6_pnl")
+        fig6.update_layout(
+            template="plotly_white",
+            title="Agent PnL (token1)",
+            xaxis_title="Step",
+            yaxis_title="Token1 value",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        )
+        _save_plotly("6_pnl", fig6)
 
-        # ----- 7) Fee panel + twin signal -----
-        fig7, ax = plt.subplots(figsize=(15, 3.6))
-        ax2b = ax.twinx()
-        ax.plot(steps_v, fee_series_v, lw=1.8, label="Fee")
-        ax.set_ylabel("Fee", fontsize=LABEL_FONT_SIZE)
-        ax.set_xlabel("Step", fontsize=LABEL_FONT_SIZE)
-        ax.grid(True, alpha=0.3)
+        # ----- 8) Fee panel + controller signal -----
+        fig7 = make_subplots(rows=1, cols=1, specs=[[{"secondary_y": True}]])
+        fig7.add_trace(
+            go.Scatter(x=steps_list, y=fee_series_v, mode="lines", name="Fee", line=dict(width=1.8)),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
         if fee_mode == "volatility":
-            ax2b.plot(steps_v, fee_sigma_series_v, lw=1.2, linestyle="--", label="σ̂ (abs log-return)")
-            ax2b.set_ylabel("σ̂", fontsize=LABEL_FONT_SIZE)
+            secondary_vals = fee_sigma_series_v
+            secondary_label = "σ̂ (abs log-return)"
         elif fee_mode == "toxicity":
-            ax2b.plot(steps_v, fee_basis_ticks_series_v, lw=1.2, linestyle="--", label="Basis (ticks)")
-            ax2b.set_ylabel("Basis (ticks)", fontsize=LABEL_FONT_SIZE)
+            secondary_vals = fee_basis_ticks_series_v
+            secondary_label = "Basis (ticks)"
         else:
-            ax2b.plot(steps_v, fee_signal_series_v, lw=1.2, linestyle="--", label="Controller signal")
-            ax2b.set_ylabel("Signal", fontsize=LABEL_FONT_SIZE)
-        h1, l1 = ax.get_legend_handles_labels()
-        h2, l2 = ax2b.get_legend_handles_labels()
-        ax.legend(h1 + h2, l1 + l2, fontsize=LEGEND_FONT_SIZE, loc="upper left")
-        _save_fig(fig7, "7_fee")
+            secondary_vals = fee_signal_series_v
+            secondary_label = "Controller signal"
+        fig7.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=secondary_vals,
+                mode="lines",
+                name=secondary_label,
+                line=dict(width=1.2, dash="dash"),
+            ),
+            row=1,
+            col=1,
+            secondary_y=True,
+        )
+        fig7.update_layout(
+            template="plotly_white",
+            title="Fee & Controller Signal",
+            xaxis_title="Step",
+        )
+        fig7.update_yaxes(title_text="Fee", secondary_y=False)
+        fig7.update_yaxes(title_text=secondary_label, secondary_y=True)
+        _save_plotly("7_fee", fig7)
 
     return {
         "DEX_price": P_series,
@@ -2245,37 +2356,35 @@ if __name__ == "__main__":
 
     # Plot autocorrelation of DEX log-returns
     lags = np.arange(1, max_lag + 1)
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.bar(lags, autocorr, width=0.6, color="#1f77b4")
-    ax.axhline(0.0, color="black", linewidth=1.0, alpha=0.7)
-    ax.set_xlabel("Lag")
-    ax.set_ylabel("Autocorrelation")
-    ax.set_title("DEX Log-Return Autocorrelation")
-    ax.set_xticks(lags)
-    ax.grid(True, axis="y", alpha=0.3)
+    autocorr_fig = go.Figure()
+    autocorr_fig.add_trace(go.Bar(x=lags, y=autocorr, name="Autocorr"))
+    autocorr_fig.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dash"))
+    autocorr_fig.update_layout(
+        template="plotly_white",
+        title="DEX Log-Return Autocorrelation",
+        xaxis_title="Lag",
+        yaxis_title="Autocorrelation",
+    )
 
     results_root = Path("abm_results")
     png_dir = results_root / "png"
     html_dir = results_root / "html"
     png_dir.mkdir(parents=True, exist_ok=True)
     html_dir.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
     png_path = png_dir / f"autocorr_{scenario_label}.png"
-    fig.savefig(png_path, dpi=150)
     html_path = html_dir / f"autocorr_{scenario_label}.html"
-    _save_html(fig, html_path, "autocorr")
-    plt.close(fig)
+    save_plotly_figure(autocorr_fig, png_path, html_path, "autocorr")
 
     # make liquidity GIF
-    make_liquidity_gif(
-    liq_history=out["liq_history"],
-    tick_history=out["tick_history"],
-    base_s=out["grid_base_s"],
-    g=out["grid_g"],
-    out_path=f"abm_results/liquidity_evolution_{scenario_label}.gif",
-    fps=20,
-    dpi=120,
-    pad_frac=0.05,
-    downsample_every=10,
-    center_line=True,
-    )
+    # make_liquidity_gif(
+    # liq_history=out["liq_history"],
+    # tick_history=out["tick_history"],
+    # base_s=out["grid_base_s"],
+    # g=out["grid_g"],
+    # out_path=f"abm_results/liquidity_evolution_{scenario_label}.gif",
+    # fps=20,
+    # dpi=120,
+    # pad_frac=0.05,
+    # downsample_every=10,
+    # center_line=True,
+    # )
