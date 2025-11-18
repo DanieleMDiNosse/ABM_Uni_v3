@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import inspect
 from pathlib import Path
@@ -19,14 +20,23 @@ from plotly.subplots import make_subplots
 PLOTLY_STATIC_WARNING_EMITTED = False
 
 
-def save_plotly_figure(fig: go.Figure, png_path: Path, html_path: Path, source: str = "plot") -> None:
+def save_plotly_figure(
+    fig: go.Figure,
+    png_path: Path,
+    html_path: Path,
+    source: str = "plot",
+    *,
+    width: int = 1400,
+    height: int = 900,
+    scale: float = 1.0,
+) -> None:
     global PLOTLY_STATIC_WARNING_EMITTED
     """Persist a Plotly figure as both HTML and PNG (if Kaleido is available)."""
     html_path.parent.mkdir(parents=True, exist_ok=True)
     png_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(html_path), include_plotlyjs="cdn")
     try:
-        fig.write_image(str(png_path))
+        fig.write_image(str(png_path), width=width, height=height, scale=scale)
     except Exception as exc:  # pragma: no cover - depends on kaleido availability
         if not PLOTLY_STATIC_WARNING_EMITTED:
             print(f"[{source}] Warning: could not export Plotly PNGs ({exc})")
@@ -248,6 +258,48 @@ def simulate(
                 positions_by_tick.pop(tick_val, None)
         pos.tick_slots = tuple()
 
+    def _assert_active_liquidity_state(label: str) -> None:
+        """Runtime guard to ensure pool.L_active agrees with liquidity_net."""
+        prefix_L = bidx.active_liquidity_at_tick(pool.tick)
+
+        # If both representations are numerically tiny, snap to zero and skip.
+        if abs(pool.L_active) <= EPS_LIQ2 and abs(prefix_L) <= EPS_LIQ2:
+            pool.L_active = 0.0
+            return
+
+        # Treat significantly negative active liquidity as a real bug.
+        underflow_tol = 100.0 * EPS_LIQ2
+        if pool.L_active < -underflow_tol:
+            raise AssertionError(
+                f"L_active underflow ({label}): {pool.L_active}"
+            )
+
+        # Require close agreement between cached and prefix-sum views.
+        tolerance = max(
+            underflow_tol,
+            1e-9 * max(1.0, abs(prefix_L), abs(pool.L_active)),
+        )
+        if abs(prefix_L - pool.L_active) > tolerance:
+            raise AssertionError(
+                f"L_active mismatch ({label}) tick={pool.tick} active={pool.L_active} prefix={prefix_L}"
+            )
+
+        # If we have meaningful active liquidity, ensure price lies inside the band.
+        if pool.L_active > EPS_LIQ:
+            sa = pool.s_lower()
+            sb = pool.s_upper()
+            band_scale = max(1.0, abs(sa), abs(sb), abs(pool.S))
+            boundary_tol = EPS_BOUNDARY * band_scale
+            if pool.S < sa - boundary_tol or pool.S > sb + boundary_tol:
+                raise AssertionError(
+                    f"Price S={pool.S} outside active band during {label}: tick={pool.tick} band=[{sa},{sb}]"
+                )
+            # Snap tiny floating-point drift so pool.S stays on the boundary.
+            if pool.S < sa:
+                pool.S = sa
+            elif pool.S > sb:
+                pool.S = sb
+
     for lp in LPs:
         for pos in lp.positions:
             _register_position(pos)
@@ -299,7 +351,8 @@ def simulate(
     noise_y_series = []
 
     # Determine verbose log file path for this run
-    verbose_log_path = next_numbered_path(Path(f"abm_results/verbose_steps_{fee_mode}"))
+    os.makedirs("abm_results/logs", exist_ok=True)
+    verbose_log_path = next_numbered_path(Path(f"abm_results/logs/verbose_steps_{fee_mode}"))
     verbose_log_path_str = str(verbose_log_path)
 
     verbose_log = open(verbose_log_path_str, "a")
@@ -419,10 +472,6 @@ def simulate(
         if touched_lp_ids:
             _rebalance_by_ids(touched_lp_ids, ref.m, pool.S)
 
-    def tick_from_S(S: float) -> int:
-        raw = int(math.floor(math.log(max(S, 1e-18) / pool.base_s, pool.g)))
-        return pool._snap(raw)
-
     def burn_any(lp: LPAgent, idx: int) -> None:
         pos = lp.positions.pop(idx)
         # Realize PnL into LP wallet at burn time (fees + IL vs floating HODL)
@@ -431,9 +480,7 @@ def simulate(
         _unregister_position(pos)
         pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
         bidx.mark_dirty()
-
-        if pool.L_active < -EPS_LIQ2:
-            raise AssertionError(f"L_active underflow after burn: {pool.L_active}")
+        _assert_active_liquidity_state("lp_burn")
 
         burn_steps.append(t)
         burn_sizes.append(pos.L)
@@ -469,7 +516,6 @@ def simulate(
         dx_out = L * (1 / S0 - 1 / S1)
         fee_y = dy_pre - dy_eff
         pool.S = S1
-        pool.tick = tick_from_S(pool.S)
         return dy_pre, dx_out, fee_y
 
     def fast_span_down(to_S: float, target_S: float) -> Tuple[float, float, float]:
@@ -482,7 +528,6 @@ def simulate(
         dy_out = L * (S0 - S1)
         fee_x = dx_pre - dx_eff
         pool.S = S1
-        pool.tick = tick_from_S(pool.S)
         return dx_pre, dy_out, fee_x
 
     def swap_exact_to_target(target_price: float, direction: str, fee_cb: Optional[Callable[[str, float, int, float], None]] = None) -> Tuple[float, float, float]:
@@ -509,8 +554,10 @@ def simulate(
                 if pool.S >= target_S - EPS_BOUNDARY:
                     break
                 pool._cross_up_once()
+                _assert_active_liquidity_state("swap_exact_to_target:cross_up")
                 if pool.L_active <= 0:
                     break
+            _assert_active_liquidity_state("swap_exact_to_target:up_end")
             return total_in, total_out, L_first
 
         else:  # "down"
@@ -529,8 +576,10 @@ def simulate(
                 if pool.S <= target_S + EPS_BOUNDARY:
                     break
                 pool._cross_down_once()
+                _assert_active_liquidity_state("swap_exact_to_target:cross_down")
                 if pool.L_active <= 0:
                     break
+            _assert_active_liquidity_state("swap_exact_to_target:down_end")
             return total_in, total_out, L_first
 
 
@@ -818,6 +867,7 @@ def simulate(
                         bidx.mark_dirty()
                         lp.positions.append(pos)
                         _register_position(pos)
+                        _assert_active_liquidity_state("lp_mint_mempool")
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                         verbose_log.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
@@ -842,6 +892,7 @@ def simulate(
                         bidx.mark_dirty()
                         lp.positions.append(pos)
                         _register_position(pos)
+                        _assert_active_liquidity_state("lp_recenter_mempool")
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                         verbose_log.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
@@ -900,6 +951,7 @@ def simulate(
                     if pool.L_active <= EPS_LIQ:
                         return
                     used_dx_pre, dy_out_real, fee_x = pool.swap_x_to_y(o['amount'], fee_cb=allocate_fees)
+                    _assert_active_liquidity_state("mempool_swap_x_to_y")
                     if used_dx_pre <= EPS_LIQ:
                         return
                     executed = int(used_dx_pre > 0)
@@ -949,6 +1001,7 @@ def simulate(
                     if pool.L_active <= EPS_LIQ:
                         return
                     used_dy_pre, dx_out_real, fee_y = pool.swap_y_to_x(o['amount'], fee_cb=allocate_fees)
+                    _assert_active_liquidity_state("mempool_swap_y_to_x")
                     if used_dy_pre <= EPS_LIQ:
                         return
                     executed = int(used_dy_pre > 0)
@@ -1047,6 +1100,7 @@ def simulate(
                     return
 
                 used_dx_pre, dy_out_real, _ = pool.swap_x_to_y(dx, fee_cb=allocate_fees)
+                _assert_active_liquidity_state("trader_swap_x_to_y")
                 if used_dx_pre <= EPS_LIQ:
                     return
 
@@ -1108,6 +1162,7 @@ def simulate(
                     return
 
                 used_dy_pre, dx_out_real, _ = pool.swap_y_to_x(dy, fee_cb=allocate_fees)
+                _assert_active_liquidity_state("trader_swap_y_to_x")
                 if used_dy_pre <= EPS_LIQ:
                     return
 
@@ -1147,7 +1202,8 @@ def simulate(
                     continue
                 if lp.is_passive:
                     if lp.positions and random.random() < passive_burn_prob:
-                        burn_any(lp, len(lp.positions) - 1)
+                        burn_idx = random.randrange(len(lp.positions))
+                        burn_any(lp, burn_idx)
                     continue
                 to_burn = []
                 for i, pos in enumerate(lp.positions):
@@ -1197,6 +1253,7 @@ def simulate(
                     bidx.mark_dirty()
                     lp.positions.append(newpos)
                     _register_position(newpos)
+                    _assert_active_liquidity_state("lp_recenter_active")
                     mint_steps.append(t); mint_sizes.append(L_same); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
                     verbose_log.write(
                         f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | "
@@ -1210,7 +1267,7 @@ def simulate(
                 if getattr(lp, "cooldown", 0) > 0:
                     continue
                 if lp.is_passive:
-                    if lp.positions or random.random() >= passive_mint_prob:
+                    if random.random() >= passive_mint_prob:
                         continue
                     width_ticks = max(passive_width_ticks, pool.tick_spacing)
                     n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
@@ -1366,7 +1423,7 @@ def simulate(
                     continue
                 if lp.is_passive:
                     if lp.positions and random.random() < passive_burn_prob:
-                        pos = lp.positions[-1]
+                        pos = random.choice(lp.positions)
                         mempool_orders.append({'type':'lp_burn','lp_id': lp.id,'lower': pos.lower,'upper': pos.upper,'L': pos.L})
                     continue
                 to_burn = []
@@ -1415,7 +1472,7 @@ def simulate(
                 if not lp.can_act or getattr(lp, "cooldown", 0) > 0:
                     continue
                 if lp.is_passive:
-                    if lp.positions or random.random() >= passive_mint_prob:
+                    if random.random() >= passive_mint_prob:
                         continue
                     width_ticks = max(passive_width_ticks, pool.tick_spacing)
                     n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))

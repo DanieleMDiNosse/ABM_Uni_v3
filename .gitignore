@@ -201,3 +201,6 @@ personal.ipynb
 
 # Zone.Identifiers
 *:Zone.Identifier
+
+# test config
+abm_mempool_config.yml
