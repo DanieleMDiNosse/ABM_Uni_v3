@@ -12,7 +12,7 @@ simulate:
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.00
   # Volatility of the reference CEX price process (per step)
-  cex_sigma: 0.0005
+  cex_sigma: 0.00005
 
   ##### TRADERS #####
   # Probability that a smart-router trade intent arrives in each micro step. The expected total number of smart router trades is p_trade * block_time

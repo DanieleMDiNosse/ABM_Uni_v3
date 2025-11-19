@@ -9,6 +9,7 @@ import math
 import os
 import random
 import inspect
+from tqdm import tqdm
 from pathlib import Path
 from typing import Any, Dict, Tuple, List, Optional, Callable, Set
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 PLOTLY_STATIC_WARNING_EMITTED = False
+_DEFAULT_GRID_STYLE = dict(showgrid=True, gridcolor="#e1e1e1", gridwidth=1)
 
 
 def save_plotly_figure(
@@ -32,6 +34,8 @@ def save_plotly_figure(
 ) -> None:
     global PLOTLY_STATIC_WARNING_EMITTED
     """Persist a Plotly figure as both HTML and PNG (if Kaleido is available)."""
+    fig.update_xaxes(**_DEFAULT_GRID_STYLE)
+    fig.update_yaxes(**_DEFAULT_GRID_STYLE)
     html_path.parent.mkdir(parents=True, exist_ok=True)
     png_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(html_path), include_plotlyjs="cdn")
@@ -356,10 +360,26 @@ def simulate(
     verbose_log_path_str = str(verbose_log_path)
 
     verbose_log = open(verbose_log_path_str, "a")
-    verbose_log.write("# Simulation parameters\n")
+    LOG_BUFFER_LIMIT = 10_000
+    log_buffer: List[str] = []
+
+    def buffer_log(msg: str) -> None:
+        """Accumulate log lines before flushing to disk."""
+        log_buffer.append(msg)
+        if len(log_buffer) >= LOG_BUFFER_LIMIT:
+            verbose_log.write("".join(log_buffer))
+            log_buffer.clear()
+
+    def flush_log_buffer() -> None:
+        """Write the buffered log entries to disk."""
+        if log_buffer:
+            verbose_log.write("".join(log_buffer))
+            log_buffer.clear()
+
+    buffer_log("# Simulation parameters\n")
     for key in sorted(initial_params):
-        verbose_log.write(f"{key} = {initial_params[key]}\n")
-    verbose_log.write("\n")
+        buffer_log(f"{key} = {initial_params[key]}\n")
+    buffer_log("\n")
 
 
     # --- LP wealth recorders (new) ---
@@ -486,7 +506,7 @@ def simulate(
         burn_sizes.append(pos.L)
         burn_is_passive.append(bool(lp.is_passive))
 
-        verbose_log.write(
+        buffer_log(
             f"[t={t:03d}] LP{lp.id} BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | "
             f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
         )
@@ -639,7 +659,7 @@ def simulate(
         return float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
 
     # ------------------ Main loop ------------------
-    for t in range(T):
+    for t in tqdm(range(T), desc="Simulating ABM", unit=" step"):
         agent_S_ref = validated_S
         agent_tick_ref = validated_tick
         cex_ref_for_agents = validated_cex
@@ -869,7 +889,7 @@ def simulate(
                         _register_position(pos)
                         _assert_active_liquidity_state("lp_mint_mempool")
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
-                        verbose_log.write(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
+                        buffer_log(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
                         executed_lp_events += 1
@@ -894,7 +914,7 @@ def simulate(
                         _register_position(pos)
                         _assert_active_liquidity_state("lp_recenter_mempool")
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
-                        verbose_log.write(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
+                        buffer_log(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
                         executed_lp_events += 1
                         return
@@ -916,7 +936,7 @@ def simulate(
                             delta_a_cex_this = -x_out_from_dex
                             arb_y_this = +in_used
                             arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
-                            verbose_log.write(
+                            buffer_log(
                                 f"[t={t:03d}] arb swap up dy_in={in_used:.6f} dx_out={x_out_from_dex:.6f} "
                                 f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                             )
@@ -925,7 +945,7 @@ def simulate(
                             delta_a_cex_this = +in_used
                             arb_y_this = -pool.price * in_used
                             arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
-                            verbose_log.write(
+                            buffer_log(
                                 f"[t={t:03d}] arb swap down dx_in={in_used:.6f} dy_out={y_out_from_dex:.6f} "
                                 f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                             )
@@ -943,7 +963,7 @@ def simulate(
                                 total_smart_swaps_skipped += 1
                             elif agent == 'noise':
                                 total_noise_swaps_skipped += 1
-                            verbose_log.write(
+                            buffer_log(
                                 f"[t={t:03d}] {agent or 'N/A'} swap X_to_Y SKIPPED (slippage). "
                                 f"final_quote={final_quote:.4f} <= min_output={min_output:.4f} | tick={tick_before_exec}\n"
                             )
@@ -965,7 +985,7 @@ def simulate(
                         total_smart_swaps_executed += executed
                         smart_swaps_x_to_y += int(used_dx_pre > 0)
                         executed_smart_swaps += executed
-                        verbose_log.write(
+                        buffer_log(
                             f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
                             f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
                         )
@@ -978,7 +998,7 @@ def simulate(
                         total_noise_swaps_executed += executed
                         noise_swaps_x_to_y += int(used_dx_pre > 0)
                         executed_noise_swaps += executed
-                        verbose_log.write(
+                        buffer_log(
                             f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
                             f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
                         )
@@ -993,7 +1013,7 @@ def simulate(
                                 total_smart_swaps_skipped += 1
                             elif agent == 'noise':
                                 total_noise_swaps_skipped += 1
-                            verbose_log.write(
+                            buffer_log(
                                 f"[t={t:03d}] {agent or 'N/A'} swap Y_to_X SKIPPED (slippage). "
                                 f"final_quote={final_quote:.4f} <= min_output={min_output:.4f} | tick={tick_before_exec}\n"
                             )
@@ -1015,7 +1035,7 @@ def simulate(
                         total_smart_swaps_executed += executed
                         smart_swaps_y_to_x += int(used_dy_pre > 0)
                         executed_smart_swaps += executed
-                        verbose_log.write(
+                        buffer_log(
                             f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
                             f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
                         )
@@ -1028,7 +1048,7 @@ def simulate(
                         total_noise_swaps_executed += executed
                         noise_swaps_y_to_x += int(used_dy_pre > 0)
                         executed_noise_swaps += executed
-                        verbose_log.write(
+                        buffer_log(
                             f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
                             f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
                         )
@@ -1040,13 +1060,13 @@ def simulate(
             random.shuffle(non_arb_orders)
             order_book = arb_orders + non_arb_orders
             tick_before_orders = pool.tick
-            verbose_log.write(
+            buffer_log(
                 f"[t={t:03d}] MEMPOOL before P={P_pre_exec:.4f} | tick={tick_before_orders} | "
                 f"n_orders={len(order_book)}\n"
             )
             for o in order_book:
                 _exec_one(o)
-            verbose_log.write(
+            buffer_log(
                 f"[t={t:03d}] MEMPOOL after P={pool.price:.4f} | tick={pool.tick} | "
                 f"smart_exec={executed_smart_swaps} | noise_exec={executed_noise_swaps} | "
                 f"lp_events={executed_lp_events}\n"
@@ -1090,7 +1110,7 @@ def simulate(
                         total_smart_swaps_skipped += 1
                     elif agent_label == "noise":
                         total_noise_swaps_skipped += 1
-                    verbose_log.write(
+                    buffer_log(
                         f"[t={t:03d}] {agent_label} swap X_to_Y SKIPPED (slippage). "
                         f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
                     )
@@ -1120,7 +1140,7 @@ def simulate(
                     total_smart_swaps_executed += executed
                     smart_swaps_x_to_y += executed
                     if executed:
-                        verbose_log.write(
+                        buffer_log(
                             f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
                             f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                         )
@@ -1128,7 +1148,7 @@ def simulate(
                     total_noise_swaps_executed += executed
                     noise_swaps_x_to_y += executed
                     if executed:
-                        verbose_log.write(
+                        buffer_log(
                             f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
                             f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                         )
@@ -1152,7 +1172,7 @@ def simulate(
                         total_smart_swaps_skipped += 1
                     elif agent_label == "noise":
                         total_noise_swaps_skipped += 1
-                    verbose_log.write(
+                    buffer_log(
                         f"[t={t:03d}] {agent_label} swap Y_to_X SKIPPED (slippage). "
                         f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
                     )
@@ -1181,7 +1201,7 @@ def simulate(
                     total_smart_swaps_executed += executed
                     smart_swaps_y_to_x += executed
                     if executed:
-                        verbose_log.write(
+                        buffer_log(
                             f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
                             f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                         )
@@ -1189,7 +1209,7 @@ def simulate(
                     total_noise_swaps_executed += executed
                     noise_swaps_y_to_x += executed
                     if executed:
-                        verbose_log.write(
+                        buffer_log(
                             f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
                             f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                         )
@@ -1255,7 +1275,7 @@ def simulate(
                     _register_position(newpos)
                     _assert_active_liquidity_state("lp_recenter_active")
                     mint_steps.append(t); mint_sizes.append(L_same); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
-                    verbose_log.write(
+                    buffer_log(
                         f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | "
                         f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
                     )
@@ -1391,7 +1411,7 @@ def simulate(
         else:
             arb_ref_m_start = ref.m  # block-start CEX snapshot (diagnostic only; arb targets end-of-block)
             # prepare micro-time arrays (event-time logging)
-            verbose_log.write(f"[t={t:03d}] BLOCK start m={arb_ref_m_start:.4f}\n")
+            buffer_log(f"[t={t:03d}] BLOCK start m={arb_ref_m_start:.4f} due_lp={len(due)}\n")
             micro_steps.append(micro_counter)
             P_micro.append(pool.price)
             M_micro.append(ref.m)
@@ -1687,7 +1707,7 @@ def simulate(
         f"traderY={trader_y_this:.2f} | arb_dir={dir_arb_this} arbY={arb_y_this:.2f} | "
         f"L={pool.L_active:.4f} | tick={pool.tick} | w_ticks={w_ticks}"
         )
-        verbose_log.write(log_line + "\n")
+        buffer_log(log_line + "\n")
 
         liq_history.append(dict(pool.liquidity_net))
         tick_history.append(pool.tick)
@@ -1711,6 +1731,7 @@ def simulate(
         "----------------------------------------------------------\n",
     ]
 
+    flush_log_buffer()
     verbose_log.flush()
     verbose_log.close()
     verbose_path = Path(verbose_log_path_str)
