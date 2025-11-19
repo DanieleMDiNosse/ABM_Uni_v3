@@ -57,14 +57,14 @@ class ReferenceMarket:
 
     def diffuse_only(self) -> float:
         z = np.random.normal()
-        self.m *= math.exp(self.mu - 0.5 * self.sigma + self.sigma * z)
+        self.m *= math.exp(self.mu - 0.5 * self.sigma**2 + self.sigma * z)
 ```
 
 If we denote the price at (discrete) time step \( t \) by \( m_t \), then
 
 \[
 \log m_{t+1} - \log m_t
-  = \mu - \tfrac{1}{2}\sigma + \sigma Z_t, \quad Z_t \sim \mathcal{N}(0,1)
+  = \mu - \tfrac{1}{2}\sigma^2 + \sigma Z_t, \quad Z_t \sim \mathcal{N}(0,1)
 \]
 
 where:

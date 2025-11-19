@@ -75,7 +75,7 @@ from agents import (
 )
 from collections import defaultdict
 
-from uniswapv3_pool import V3Pool, BoundaryIndex
+from uniswapv3_pool import V3Pool
 
 
 # =============================================================================
@@ -114,57 +114,57 @@ class TraderStepAccumulator:
         self.pnl = (self.dy_out - self.dy_in) + (self.dx_out - self.dx_in) * m_settle
 
 def simulate(
-    block_time: int = 10,
-    T: int = 120,
-    seed: int = 7,
-    cex_mu: float = 0.0,
-    cex_sigma: float = 0.02,
-    p_trade: float = 0.6, 
-    noise_floor: float = 0.0,
-    p_lp_narrow: float = 0.7,
-    passive_lp_share: float = 0.0,
-    passive_mint_prob: float = 0.1,
-    passive_burn_prob: float = 0.05,
-    passive_width_ticks: int = 500,
-    N_LP: int = 12,
-    tau: int = 20,
+    block_time: int,
+    T: int,
+    seed: int,
+    cex_mu: float,
+    cex_sigma: float,
+    p_trade: float, 
+    noise_floor: float,
+    p_lp_narrow: float,
+    passive_lp_share: float,
+    passive_mint_prob: float,
+    passive_burn_prob: float,
+    passive_width_ticks: int,
+    N_LP: int,
+    tau: int,
     # --- LP width via EWMA(B_t) + binomial noise ---
-    w_min_ticks: int = 25,
-    w_max_ticks: int = 5000,
-    basis_half_life: int = 60,   # steps
-    slope_s: float = 1.0,        # ticks per (basis-in-ticks)
+    w_min_ticks: int,
+    w_max_ticks: int,
+    basis_half_life: int,   # steps
+    slope_s: float,        # ticks per (basis-in-ticks)
     # --- binomial noise parameters (already present; now used) ---
-    binom_n: int = 8,
-    binom_p: float = 0.5,
+    binom_n: int,
+    binom_p: float,
     # --- lognormal noise parameters (new; not yet used) ---
-    trader_mean: float = -2.0,
-    trader_sigma: float = 1.0,
-    theta_T: float = 1.0,
+    trader_mean: float,
+    trader_sigma: float,
+    theta_T: float,
     # --- slippage ---
-    slippage_tolerance: float = 0.01,
+    slippage_tolerance: float,
     # --- other params ---
-    mint_mu: float = 0.01,
-    mint_sigma: float = 0.02,
-    theta_TP: float = 0.003,
-    theta_SL: float = 0.01,
-    initial_binom_N: int = 400,
-    initial_total_L: float = 70_000.0,
-    k_out_min: int = 2,
-    k_out_max: int = 2,
-    visualize: bool = True,
-    skip_step: int = 0,
+    mint_mu: float,
+    mint_sigma: float,
+    theta_TP: float,
+    theta_SL: float,
+    initial_binom_N: int,
+    initial_total_L: float,
+    k_out_min: int,
+    k_out_max: int,
+    visualize: bool,
+    skip_step: int,
     # --- Dynamic fee controller (new) ---
-    fee_mode: str = "volatility",      # "static" | "volatility" 
-    f0: float = 0.003,             # baseline fee (e.g., 30 bps)
-    f_min: float = 0.0005,         # 5 bps
-    f_max: float = 0.02,           # 200 bps safety cap
-    fee_half_life: int = 20,       # EWMA half-life (steps) for signals
-    k_sigma: float = 0.02,         # adds ~k_sigma * EWMA(|logret|) to fee
-    k_basis: float = 2e-5,         # fee per tick of dislocation (basis in ticks)
+    fee_mode: str,      # "static" | "volatility" 
+    f0: float,             # baseline fee (e.g., 30 bps)
+    f_min: float,         # 5 bps
+    f_max: float,           # 200 bps safety cap
+    fee_half_life: int,       # EWMA half-life (steps) for signals
+    k_sigma: float,         # adds ~k_sigma * EWMA(|logret|) to fee
+    k_basis: float,         # fee per tick of dislocation (basis in ticks)
     # k_imb: float = 0.002,          # fee += k_imb * |imbalance|, imbalance in [0,1]
-    fee_step_bps_min: float = 0.5, # do not change fee unless ≥ 0.5 bps move
-    fee_step_bps_max: float = 5.0, # max step per update (bps)
-    fee_cooldown: int = 1,         # blocks between fee changes (hysteresis)
+    fee_step_bps_min: float, # do not change fee unless ≥ 0.5 bps move
+    fee_step_bps_max: float, # max step per update (bps)
+    fee_cooldown: int,         # blocks between fee changes (hysteresis)
 ):
     valid_fee_modes = {"static", "volatility", "toxicity"}
     if fee_mode not in valid_fee_modes:
@@ -240,7 +240,6 @@ def simulate(
             lp.k_out_threshold = random.randint(k_out_min, k_out_max)
 
     lp_lookup: Dict[int, LPAgent] = {lp.id: lp for lp in LPs}
-    bidx = BoundaryIndex(pool.liquidity_net)
     positions_by_tick: Dict[int, List[Position]] = defaultdict(list)
 
     def _register_position(pos: Position) -> None:
@@ -264,7 +263,7 @@ def simulate(
 
     def _assert_active_liquidity_state(label: str) -> None:
         """Runtime guard to ensure pool.L_active agrees with liquidity_net."""
-        prefix_L = bidx.active_liquidity_at_tick(pool.tick)
+        prefix_L = pool.bidx.active_liquidity_at_tick(pool.tick)
 
         # If both representations are numerically tiny, snap to zero and skip.
         if abs(pool.L_active) <= EPS_LIQ2 and abs(prefix_L) <= EPS_LIQ2:
@@ -499,7 +498,6 @@ def simulate(
         lp.wallet_y = getattr(lp, 'wallet_y', 0.0) + float(realized_y)
         _unregister_position(pos)
         pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
-        bidx.mark_dirty()
         _assert_active_liquidity_state("lp_burn")
 
         burn_steps.append(t)
@@ -749,7 +747,7 @@ def simulate(
                 dx = notional_y / price_snapshot
                 if dx <= 0.0:
                     return
-                initial_quote = pool.quote_x_to_y(dx, bidx)
+                initial_quote = pool.quote_x_to_y(dx)
                 if initial_quote <= 0.0:
                     return
                 # best-ex vs CEX: compare dy_out to dx * m_now (value in token1)
@@ -770,7 +768,7 @@ def simulate(
                 dy = _draw_trader_notional()
                 if dy <= 0.0:
                     return
-                initial_quote = pool.quote_y_to_x(dy, bidx)
+                initial_quote = pool.quote_y_to_x(dy)
                 if initial_quote <= 0.0:
                     return
                 # best-ex vs CEX: compare dx_out to dy / m_now (value in token0)
@@ -799,7 +797,7 @@ def simulate(
                     price_snapshot = max(m_now, 1e-18)
                     dx = notional_y / price_snapshot
                     if dx > 0.0:
-                        initial_quote = pool.quote_x_to_y(dx, bidx)
+                        initial_quote = pool.quote_x_to_y(dx)
                         if initial_quote <= 0.0:
                             return
                         baseline_quote = _baseline_quote_x_to_y(dx)
@@ -816,7 +814,7 @@ def simulate(
             else:
                 dy = _draw_trader_notional()
                 if dy > 0.0:
-                    initial_quote = pool.quote_y_to_x(dy, bidx)
+                    initial_quote = pool.quote_y_to_x(dy)
                     if initial_quote <= 0.0:
                         return
                     baseline_quote = _baseline_quote_y_to_x(dy)
@@ -884,7 +882,6 @@ def simulate(
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
                                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
                         pool.add_liquidity_range(lower, upper, L_new)
-                        bidx.mark_dirty()
                         lp.positions.append(pos)
                         _register_position(pos)
                         _assert_active_liquidity_state("lp_mint_mempool")
@@ -909,7 +906,6 @@ def simulate(
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
                                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
                         pool.add_liquidity_range(lower, upper, L_new)
-                        bidx.mark_dirty()
                         lp.positions.append(pos)
                         _register_position(pos)
                         _assert_active_liquidity_state("lp_recenter_mempool")
@@ -956,7 +952,7 @@ def simulate(
                 if o.get('side') == 'X_to_Y':
                     min_output = o.get('min_output')
                     if min_output is not None:
-                        final_quote = pool.quote_x_to_y(o['amount'], bidx)
+                        final_quote = pool.quote_x_to_y(o['amount'])
                         if final_quote <= min_output:
                             agent = o.get('agent')
                             if agent == 'smart':
@@ -1006,7 +1002,7 @@ def simulate(
                 else:
                     min_output = o.get('min_output')
                     if min_output is not None:
-                        final_quote = pool.quote_y_to_x(o['amount'], bidx)
+                        final_quote = pool.quote_y_to_x(o['amount'])
                         if final_quote <= min_output:
                             agent = o.get('agent')
                             if agent == 'smart':
@@ -1096,7 +1092,7 @@ def simulate(
                 dx = notional_y / price_snapshot
                 if dx <= 0.0:
                     return
-                initial_quote = pool.quote_x_to_y(dx, bidx)
+                initial_quote = pool.quote_x_to_y(dx)
                 if initial_quote <= 0.0:
                     return
                 if enforce_best_ex:
@@ -1104,7 +1100,7 @@ def simulate(
                         return
                 baseline_quote = _baseline_quote_x_to_y(dx)
                 min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
-                final_quote = pool.quote_x_to_y(dx, bidx)
+                final_quote = pool.quote_x_to_y(dx)
                 if final_quote < min_output:
                     if agent_label == "smart":
                         total_smart_swaps_skipped += 1
@@ -1157,7 +1153,7 @@ def simulate(
                 dy = _draw_trader_notional()
                 if dy <= 0.0:
                     return
-                initial_quote = pool.quote_y_to_x(dy, bidx)
+                initial_quote = pool.quote_y_to_x(dy)
                 if initial_quote <= 0.0:
                     return
                 if enforce_best_ex:
@@ -1166,7 +1162,7 @@ def simulate(
                         return
                 baseline_quote = _baseline_quote_y_to_x(dy)
                 min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
-                final_quote = pool.quote_y_to_x(dy, bidx)
+                final_quote = pool.quote_y_to_x(dy)
                 if final_quote < min_output:
                     if agent_label == "smart":
                         total_smart_swaps_skipped += 1
@@ -1270,7 +1266,6 @@ def simulate(
                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1,
                     )
                     pool.add_liquidity_range(lower, upper, L_same)
-                    bidx.mark_dirty()
                     lp.positions.append(newpos)
                     _register_position(newpos)
                     _assert_active_liquidity_state("lp_recenter_active")

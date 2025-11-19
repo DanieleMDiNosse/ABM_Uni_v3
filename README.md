@@ -37,7 +37,7 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 - Implemented as `ReferenceMarket` in `utils.py`.
 - Modeled as a GBM over the CEX mid-price with drift `cex_mu` and volatility `cex_sigma`, plus a permanent impact term of the form
   `impact = kappa * sign(Δa) * |Δa|^{1+xi}` applied to the CEX price in token1 units per token0.
-- The diffusion step uses `m ← m · exp(cex_mu - 0.5 · cex_sigma + cex_sigma · z)` with `z ~ N(0,1)`, so `cex_sigma` is interpreted directly as the per-microstep volatility (no squaring).
+- The diffusion step uses `m ← m · exp(cex_mu - 0.5 · cex_sigma^2 + cex_sigma · z)` with `z ~ N(0,1)`, so `cex_sigma` is interpreted directly as the per-microstep volatility (no squaring).
 - In non-block mode (`block_time == 1`), each simulation step calls `ref.step(Δa_cex)`, which first applies impact from the net arbitrage flow and then diffuses via GBM.
 - In block mode (`block_time > 1`), the CEX only diffuses during intra-block micro-steps (`ref.diffuse_only()`), while impact from the arbitrage is applied once at the end via `ref.apply_impact_only(Δa_cex)`. This decouples diffusion from impact and matches the code in `run.py`.
 
@@ -128,6 +128,7 @@ simulate:
   basis_half_life: 20
   slope_s: 0.15
   binom_n: 10
+  binom_p: 0.5
   trader_mean: 1.0
   trader_sigma: 0.6
   theta_T: 0.95
@@ -138,7 +139,8 @@ simulate:
   theta_SL: 0.25
   initial_binom_N: 450
   initial_total_L: 500000.0
-  k_out: 5
+  k_out_min: 3
+  k_out_max: 8
   visualize: true
   skip_step: 300
   f0: 0.003

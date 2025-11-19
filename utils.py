@@ -136,7 +136,7 @@ class ReferenceMarket:
     def diffuse_only(self) -> float:
         """Diffuse the reference price via GBM without additional impact."""
         z = np.random.normal()
-        self.m *= math.exp(self.mu - 0.5 * self.sigma + self.sigma * z)
+        self.m *= math.exp(self.mu - 0.5 * self.sigma**2 + self.sigma * z)
         self.m = max(1e-12, self.m)
         return self.m
 

@@ -12,6 +12,63 @@ from utils import EPS_LIQ, EPS_BOUNDARY, EPS_LIQ2
 
 
 # =============================================================================
+# Sparse boundary index (for fast next boundary lookups)
+# =============================================================================
+
+
+class BoundaryIndex:
+    """
+    Sparse index over boundaries with non-zero `liquidity_net` entries.
+
+    Purpose:
+      • O(log B) lookup for the next initialized boundary upward/downward from a tick.
+      • Used by non-mutating quotes and by the "desert-bridging" logic so we can find
+        the next band that actually has liquidity without touching pool state.
+
+    Contract:
+      • Call `mark_dirty()` whenever `liquidity_net` changes; reads auto-refresh lazily.
+    """
+
+    def __init__(self, liquidity_net: Dict[int, float]):
+        self.liq = liquidity_net
+        self.keys: List[int] = []
+        self.prefix: List[float] = []
+        self.dirty = True
+
+    def mark_dirty(self) -> None:
+        self.dirty = True
+
+    def _ensure(self) -> None:
+        if self.dirty:
+            self.keys = sorted([k for k, v in self.liq.items() if abs(v) > EPS_LIQ])
+            running = 0.0
+            self.prefix = []
+            for k in self.keys:
+                running += self.liq.get(k, 0.0)
+                self.prefix.append(running)
+            self.dirty = False
+
+    def next_up(self, tick: int) -> Optional[int]:
+        self._ensure()
+        i = bisect_right(self.keys, tick)
+        return self.keys[i] if i < len(self.keys) else None
+
+    def prev_down(self, tick: int) -> Optional[int]:
+        self._ensure()
+        i = bisect_left(self.keys, tick) - 1
+        return self.keys[i] if i >= 0 else None
+
+    def active_liquidity_at_tick(self, tick: int) -> float:
+        self._ensure()
+        if not self.keys:
+            return 0.0
+        idx = bisect_right(self.keys, tick) - 1
+        if idx < 0:
+            return 0.0
+        return self.prefix[idx]
+
+
+# =============================================================================
 # Pool (Uniswap v3–style, spacing-aware)
 # =============================================================================
 
@@ -51,6 +108,7 @@ class V3Pool:
     liquidity_net: Dict[int, float] = field(default_factory=dict)
     L_active: float = 0.0
     tick_spacing: int = 5  # 5 bps pool default
+    bidx: BoundaryIndex = field(init=False)
 
     # ----- derived properties -----
     @property
@@ -78,6 +136,7 @@ class V3Pool:
     # ----- core state maintenance -----
     def __post_init__(self) -> None:
         self.tick = self._snap(self.tick)
+        self.bidx = BoundaryIndex(self.liquidity_net)
         self.recompute_active_L()
 
     def _clamp_active(self) -> None:
@@ -97,6 +156,7 @@ class V3Pool:
 
         self.liquidity_net[lower_tick] = self.liquidity_net.get(lower_tick, 0.0) + L
         self.liquidity_net[upper_tick] = self.liquidity_net.get(upper_tick, 0.0) - L
+        self.bidx.mark_dirty()
 
         if lower_tick <= self.tick < upper_tick:
             self.L_active += L
@@ -216,7 +276,7 @@ class V3Pool:
         fee_y = dy_pre - dy_used
         return dy_pre, dx_out, fee_y
 
-    def quote_x_to_y(self, dx_in: float, bidx: "BoundaryIndex") -> float:
+    def quote_x_to_y(self, dx_in: float) -> float:
         """Return the expected token1 out for an X→Y swap without mutating state."""
         if dx_in <= 0:
             return 0.0
@@ -226,7 +286,7 @@ class V3Pool:
 
         tick_loc = self._snap(self.tick)
         S_loc = self.S
-        L_loc = bidx.active_liquidity_at_tick(tick_loc)
+        L_loc = self.bidx.active_liquidity_at_tick(tick_loc)
 
         if L_loc <= EPS_LIQ:
             return 0.0
@@ -237,7 +297,7 @@ class V3Pool:
             if S_loc <= S_lo + EPS_BOUNDARY:
                 S_loc = S_lo
                 tick_loc -= self.tick_spacing
-                L_loc = bidx.active_liquidity_at_tick(tick_loc)
+                L_loc = self.bidx.active_liquidity_at_tick(tick_loc)
                 continue
             dx_to = L_loc * (1.0 / S_lo - 1.0 / S_loc)
             if dx_eff < dx_to - EPS_BOUNDARY:
@@ -251,10 +311,10 @@ class V3Pool:
                 dx_eff -= dx_to
                 S_loc = S_lo
                 tick_loc -= self.tick_spacing
-                L_loc = bidx.active_liquidity_at_tick(tick_loc)
+                L_loc = self.bidx.active_liquidity_at_tick(tick_loc)
         return max(0.0, dy_out)
 
-    def quote_y_to_x(self, dy_in: float, bidx: "BoundaryIndex") -> float:
+    def quote_y_to_x(self, dy_in: float) -> float:
         """Return the expected token0 out for a Y→X swap without mutating state."""
         if dy_in <= 0:
             return 0.0
@@ -264,7 +324,7 @@ class V3Pool:
 
         tick_loc = self._snap(self.tick)
         S_loc = self.S
-        L_loc = bidx.active_liquidity_at_tick(tick_loc)
+        L_loc = self.bidx.active_liquidity_at_tick(tick_loc)
 
         if L_loc <= EPS_LIQ:
             return 0.0
@@ -275,7 +335,7 @@ class V3Pool:
             if S_loc >= S_hi - EPS_BOUNDARY:
                 S_loc = S_hi
                 tick_loc += self.tick_spacing
-                L_loc = bidx.active_liquidity_at_tick(tick_loc)
+                L_loc = self.bidx.active_liquidity_at_tick(tick_loc)
                 continue
             dy_to = L_loc * (S_hi - S_loc)
             if dy_eff < dy_to - EPS_BOUNDARY:
@@ -289,64 +349,5 @@ class V3Pool:
                 dy_eff -= dy_to
                 S_loc = S_hi
                 tick_loc += self.tick_spacing
-                L_loc = bidx.active_liquidity_at_tick(tick_loc)
+                L_loc = self.bidx.active_liquidity_at_tick(tick_loc)
         return max(0.0, dx_out)
-
-
-# =============================================================================
-# Sparse boundary index (for fast next boundary lookups)
-# =============================================================================
-
-
-class BoundaryIndex:
-    """
-    Sparse index over boundaries with non-zero `liquidity_net` entries.
-
-    Purpose:
-      • O(log B) lookup for the next initialized boundary upward/downward from a tick.
-      • Used by non-mutating quotes and by the "desert-bridging" logic so we can find
-        the next band that actually has liquidity without touching pool state.
-
-    Contract:
-      • Call `mark_dirty()` whenever `liquidity_net` changes; reads auto-refresh lazily.
-    """
-
-    def __init__(self, liquidity_net: Dict[int, float]):
-        self.liq = liquidity_net
-        self.keys: List[int] = []
-        self.prefix: List[float] = []
-        self.dirty = True
-
-    def mark_dirty(self) -> None:
-        self.dirty = True
-
-    def _ensure(self) -> None:
-        if self.dirty:
-            self.keys = sorted([k for k, v in self.liq.items() if abs(v) > EPS_LIQ])
-            running = 0.0
-            self.prefix = []
-            for k in self.keys:
-                running += self.liq.get(k, 0.0)
-                self.prefix.append(running)
-            self.dirty = False
-
-    def next_up(self, tick: int) -> Optional[int]:
-        self._ensure()
-        i = bisect_right(self.keys, tick)
-        return self.keys[i] if i < len(self.keys) else None
-
-    def prev_down(self, tick: int) -> Optional[int]:
-        self._ensure()
-        i = bisect_left(self.keys, tick) - 1
-        return self.keys[i] if i >= 0 else None
-
-    def active_liquidity_at_tick(self, tick: int) -> float:
-        self._ensure()
-        if not self.keys:
-            return 0.0
-        idx = bisect_right(self.keys, tick) - 1
-        if idx < 0:
-            return 0.0
-        return self.prefix[idx]
-
-
