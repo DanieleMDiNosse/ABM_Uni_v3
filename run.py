@@ -187,6 +187,14 @@ def simulate(
     random.seed(seed)
     passive_share = max(0.0, min(1.0, passive_lp_share))
 
+    # --- Log Annualized Volatility for Clarity ---
+    # cex_sigma is per-micro-step (1 second).
+    # Annualized Volatility = cex_sigma * sqrt(seconds_in_year)
+    seconds_per_year = 365 * 24 * 60 * 60
+    sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
+    print(f"\\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
+    print(f"[CONFIG] Fee: {initial_params.get('f0', 0.0005)*10000:.1f} bps\\n")
+
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
     ref = ReferenceMarket(m=m0, mu=cex_mu, sigma=cex_sigma, kappa=1e-3)
@@ -1290,7 +1298,7 @@ def simulate(
                     if random.random() >= lp.mintProb:
                         continue
                     n_bands = max(1, int(round(w_ticks / pool.tick_spacing)))
-                X = abs(np.random.normal(mint_mu, mint_sigma))
+                X = np.random.lognormal(mint_mu, mint_sigma)
                 try:
                     _L_SCALE = L_SCALE
                 except NameError:
@@ -1495,7 +1503,7 @@ def simulate(
                     if random.random() >= lp.mintProb:
                         continue
                     n_bands = max(1, int(round(w_ticks / pool.tick_spacing)))
-                X = abs(np.random.normal(mint_mu, mint_sigma))
+                X = np.random.lognormal(mint_mu, mint_sigma)
                 try:
                     _L_SCALE = L_SCALE
                 except NameError:
@@ -2007,33 +2015,33 @@ def simulate(
         # ----- 3) Liquidity traces -----
         fig3 = go.Figure()
         fig3.add_trace(go.Scatter(x=steps_list, y=L_end_v, mode="lines", name="Active L (end of step)", line=dict(width=1.8)))
-        fig3.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=L_pre_step_v,
-                mode="lines",
-                name="Active L (start of step)",
-                line=dict(width=1.0, dash="dash"),
-            )
-        )
-        fig3.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=L_pre_trader_v,
-                mode="lines",
-                name="Active L (before trader)",
-                line=dict(width=1.0, dash="dot"),
-            )
-        )
-        fig3.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=L_pre_arb_eff_v,
-                mode="lines",
-                name="Active L (before arb)",
-                line=dict(width=1.2, dash="dashdot"),
-            )
-        )
+        # fig3.add_trace(
+        #     go.Scatter(
+        #         x=steps_list,
+        #         y=L_pre_step_v,
+        #         mode="lines",
+        #         name="Active L (start of step)",
+        #         line=dict(width=1.0, dash="dash"),
+        #     )
+        # )
+        # fig3.add_trace(
+        #     go.Scatter(
+        #         x=steps_list,
+        #         y=L_pre_trader_v,
+        #         mode="lines",
+        #         name="Active L (before trader)",
+        #         line=dict(width=1.0, dash="dot"),
+        #     )
+        # )
+        # fig3.add_trace(
+        #     go.Scatter(
+        #         x=steps_list,
+        #         y=L_pre_arb_eff_v,
+        #         mode="lines",
+        #         name="Active L (before arb)",
+        #         line=dict(width=1.2, dash="dashdot"),
+        #     )
+        # )
         fig3.update_layout(
             template="plotly_white",
             title="Active Liquidity",
@@ -2109,24 +2117,24 @@ def simulate(
         if len(w_ticks_series_v) > 0:
             width_baseline_v = w_unclipped_series_v - w_noise_series_v
             fig6b = go.Figure()
-            fig6b.add_trace(
-                go.Scatter(
-                    x=steps_list,
-                    y=width_baseline_v,
-                    mode="lines",
-                    name="Baseline width",
-                    line=dict(width=1.4),
-                )
-            )
-            fig6b.add_trace(
-                go.Scatter(
-                    x=steps_list,
-                    y=w_unclipped_series_v,
-                    mode="lines",
-                    name="Baseline + noise",
-                    line=dict(width=1.2, dash="dash"),
-                )
-            )
+            # fig6b.add_trace(
+            #     go.Scatter(
+            #         x=steps_list,
+            #         y=width_baseline_v,
+            #         mode="lines",
+            #         name="Baseline width",
+            #         line=dict(width=1.4),
+            #     )
+            # )
+            # fig6b.add_trace(
+            #     go.Scatter(
+            #         x=steps_list,
+            #         y=w_unclipped_series_v,
+            #         mode="lines",
+            #         name="Baseline + noise",
+            #         line=dict(width=1.2, dash="dash"),
+            #     )
+            # )
             fig6b.add_trace(
                 go.Scatter(
                     x=steps_list,
@@ -2136,12 +2144,12 @@ def simulate(
                     line=dict(width=1.6, dash="dashdot"),
                 )
             )
-            fig6b.update_layout(
-                template="plotly_white",
-                title="LP Mint Width Signal",
-                xaxis_title="Step",
-                yaxis_title="Width (ticks)",
-            )
+            # fig6b.update_layout(
+            #     template="plotly_white",
+            #     title="LP Mint Width Signal",
+            #     xaxis_title="Step",
+            #     yaxis_title="Width (ticks)",
+            # )
             _save_plotly("6b_mint_width_signal", fig6b)
 
         # ----- 7) PnL panel -----
