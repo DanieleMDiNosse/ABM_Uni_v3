@@ -68,10 +68,11 @@ def next_numbered_path(base: Path, extension: str = ".txt") -> Path:
 
 
 # Numerical epsilons (tuned to the scale of this toy model)
-EPS_LIQ = 1e-12        # active liquidity ~ zero for swaps
+# Treat extremely small active liquidity as zero to avoid desert bridging/instability.
+EPS_LIQ = 1e-4         # active liquidity ~ zero for swaps
 EPS_PRICE_CHANGE = 1e-10
 EPS_BOUNDARY = 1e-12
-EPS_LIQ2 = 1e-12       # active liquidity ~ zero for LP
+EPS_LIQ2 = 1e-4        # active liquidity ~ zero for LP
 
 # log(1 tick) for Uniswap v3 tick ratio 1.0001 on price P (since ticks are on sqrt-price, P ticks use ln(1.0001))
 TICK_LN = math.log(1.0001)

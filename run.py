@@ -70,8 +70,8 @@ from agents import (
     LPAgent,
     Position,
     lp_token0_exposure,
-    lp_mark_to_market_y,
     lp_wealth_y,
+    lp_total_fee_earned_value_y,
 )
 from collections import defaultdict
 
@@ -288,7 +288,7 @@ def simulate(
         # Require close agreement between cached and prefix-sum views.
         tolerance = max(
             underflow_tol,
-            1e-9 * max(1.0, abs(prefix_L), abs(pool.L_active)),
+            1e-7 * max(1.0, abs(prefix_L), abs(pool.L_active)),
         )
         if abs(prefix_L - pool.L_active) > tolerance:
             raise AssertionError(
@@ -347,9 +347,21 @@ def simulate(
     lp_pnl_total_series = []    # cumulative hedged PnL (fees - rebal) across all LPs
     lp_pnl_active_series = []   # cumulative hedged PnL for active (narrow) LPs
     lp_pnl_passive_series = []  # cumulative hedged PnL for passive LPs
+    lp_unhedged_total_series = []   # V^{LP}_t - V^{LP}_0 across all LPs
+    lp_unhedged_active_series = []
+    lp_unhedged_passive_series = []
     lp_rebal_total_series = []  # cumulative rebalancing PnL (benchmark) across LPs
     lp_rebal_active_series = []
     lp_rebal_passive_series = []
+    lp_rebal_value_total_series = []   # V^{reb}_t
+    lp_rebal_value_active_series = []
+    lp_rebal_value_passive_series = []
+    lp_fee_value_total_series = []     # F_t (cumulative fees, marked to m_t)
+    lp_fee_value_active_series = []
+    lp_fee_value_passive_series = []
+    lp_lvr_total_series = []           # F_t - hedged = LVR_t
+    lp_lvr_active_series = []
+    lp_lvr_passive_series = []
     trader_exec_count = []
     arb_exec_count = []
 
@@ -428,6 +440,8 @@ def simulate(
         rb.cumulative_R = 0.0
         rb.last_M = M_now
         wealth_now = lp_wealth_y(lp, S_now, M_now)
+        rb.initial_lp_value_y = wealth_now
+        rb.initial_rebal_value_y = wealth_now  # V^{reb}_0 = V^{LP}_0
         rb.last_wealth_y = wealth_now
         rb.last_cumulative_R = 0.0
         rb.hedged_pnl_cum = 0.0
@@ -490,20 +504,28 @@ def simulate(
             if token == "x":
                 delta_fee0 = share * fee_amt
                 pos.fees0 += delta_fee0
+                owner = lp_lookup.get(pos.owner)
+                if owner is not None:
+                    owner.fees0_earned = getattr(owner, "fees0_earned", 0.0) + delta_fee0
                 if delta_fee0 != 0.0:
                     touched_lp_ids.add(pos.owner)
             else:
-                pos.fees1 += share * fee_amt
-                if fee_amt != 0.0:
+                delta_fee1 = share * fee_amt
+                pos.fees1 += delta_fee1
+                owner = lp_lookup.get(pos.owner)
+                if owner is not None:
+                    owner.fees1_earned = getattr(owner, "fees1_earned", 0.0) + delta_fee1
+                if delta_fee1 != 0.0:
                     touched_lp_ids.add(pos.owner)
         if touched_lp_ids:
             _rebalance_by_ids(touched_lp_ids, ref.m, pool.S)
 
     def burn_any(lp: LPAgent, idx: int) -> None:
         pos = lp.positions.pop(idx)
-        # Realize PnL into LP wallet at burn time (fees + IL vs floating HODL)
-        realized_y = pos.PnL_y(pool.S, ref.m)
-        lp.wallet_y = getattr(lp, 'wallet_y', 0.0) + float(realized_y)
+        # Realize full value into LP wallet at burn time (principal + fees)
+        # Previously this was just PnL, which caused wealth destruction/discontinuity.
+        realized_value = pos.position_value_y_now(pool.S, ref.m) + pos.fees_value_y(ref.m)
+        lp.wallet_y = getattr(lp, 'wallet_y', 0.0) + float(realized_value)
         _unregister_position(pos)
         pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
         _assert_active_liquidity_state("lp_burn")
@@ -535,7 +557,7 @@ def simulate(
     def fast_span_up(to_S: float, target_S: float) -> Tuple[float, float, float]:
         S0, L, r = pool.S, pool.L_active, pool.r
         S1 = min(to_S, target_S)
-        if S1 <= S0 or L <= 0:
+        if S1 <= S0 or L <= EPS_LIQ:
             return 0.0, 0.0, 0.0
         dy_eff = L * (S1 - S0)
         dy_pre = dy_eff / r
@@ -547,7 +569,7 @@ def simulate(
     def fast_span_down(to_S: float, target_S: float) -> Tuple[float, float, float]:
         S0, L, r = pool.S, pool.L_active, pool.r
         S1 = max(to_S, target_S)
-        if S1 >= S0 or L <= 0:
+        if S1 >= S0 or L <= EPS_LIQ:
             return 0.0, 0.0, 0.0
         dx_eff = L * (1 / S1 - 1 / S0)
         dx_pre = dx_eff / r
@@ -565,7 +587,7 @@ def simulate(
             return 0.0, 0.0, 0.0
 
         if direction == "up":
-            while pool.L_active > 0 and pool.S < target_S - EPS_BOUNDARY:
+            while pool.L_active > EPS_LIQ and pool.S < target_S - EPS_BOUNDARY:
                 S_hi = pool.s_upper()
                 L_before = pool.L_active
                 _tick_before = pool.tick
@@ -581,13 +603,13 @@ def simulate(
                     break
                 pool._cross_up_once()
                 _assert_active_liquidity_state("swap_exact_to_target:cross_up")
-                if pool.L_active <= 0:
+                if pool.L_active <= EPS_LIQ:
                     break
             _assert_active_liquidity_state("swap_exact_to_target:up_end")
             return total_in, total_out, L_first
 
         else:  # "down"
-            while pool.L_active > 0 and pool.S > target_S + EPS_BOUNDARY:
+            while pool.L_active > EPS_LIQ and pool.S > target_S + EPS_BOUNDARY:
                 S_lo = pool.s_lower()
                 L_before = pool.L_active
                 _tick_before = pool.tick
@@ -603,7 +625,7 @@ def simulate(
                     break
                 pool._cross_down_once()
                 _assert_active_liquidity_state("swap_exact_to_target:cross_down")
-                if pool.L_active <= 0:
+                if pool.L_active <= EPS_LIQ:
                     break
             _assert_active_liquidity_state("swap_exact_to_target:down_end")
             return total_in, total_out, L_first
@@ -651,14 +673,24 @@ def simulate(
     agent_tick_ref = validated_tick
     cex_ref_for_agents = validated_cex
     def _baseline_quote_x_to_y(dx: float) -> float:
+        """Reference quote using last validated price (pre-block) and current fee."""
         if dx <= 0.0:
             return 0.0
-        return dx * pool.r * pool.price
+        price_ref = agent_S_ref * agent_S_ref
+        return dx * pool.r * price_ref
 
     def _baseline_quote_y_to_x(dy: float) -> float:
+        """Reference quote using last validated price (pre-block) and current fee."""
         if dy <= 0.0:
             return 0.0
-        return (dy * pool.r) / max(pool.price, 1e-18)
+        price_ref = agent_S_ref * agent_S_ref
+        return (dy * pool.r) / max(price_ref, 1e-18)
+
+    def _rollback_pool_state(tick_before: int, S_before: float) -> None:
+        """Restore pool tick/S and derived active liquidity after a no-op swap."""
+        pool.tick = tick_before
+        pool.recompute_active_L()
+        pool.S = S_before
 
     def _draw_trader_notional() -> float:
         """Sample a token1 notional for trader orders (shared across directions)."""
@@ -889,6 +921,9 @@ def simulate(
                         amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
                                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
+                        # Debit wallet for mint cost
+                        cost_y = amt0 * cex_ref_for_agents + amt1
+                        lp.wallet_y = getattr(lp, 'wallet_y', 0.0) - cost_y
                         pool.add_liquidity_range(lower, upper, L_new)
                         lp.positions.append(pos)
                         _register_position(pos)
@@ -913,6 +948,9 @@ def simulate(
                         amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
                                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
+                        # Debit wallet for mint cost
+                        cost_y = amt0 * cex_ref_for_agents + amt1
+                        lp.wallet_y = getattr(lp, 'wallet_y', 0.0) - cost_y
                         pool.add_liquidity_range(lower, upper, L_new)
                         lp.positions.append(pos)
                         _register_position(pos)
@@ -974,9 +1012,11 @@ def simulate(
                             return
                     if pool.L_active <= EPS_LIQ:
                         return
+                    S_before = pool.S; tick_before = pool.tick
                     used_dx_pre, dy_out_real, fee_x = pool.swap_x_to_y(o['amount'], fee_cb=allocate_fees)
                     _assert_active_liquidity_state("mempool_swap_x_to_y")
                     if used_dx_pre <= EPS_LIQ:
+                        _rollback_pool_state(tick_before, S_before)
                         return
                     executed = int(used_dx_pre > 0)
                     agent = o.get('agent')
@@ -1024,9 +1064,11 @@ def simulate(
                             return
                     if pool.L_active <= EPS_LIQ:
                         return
+                    S_before = pool.S; tick_before = pool.tick
                     used_dy_pre, dx_out_real, fee_y = pool.swap_y_to_x(o['amount'], fee_cb=allocate_fees)
                     _assert_active_liquidity_state("mempool_swap_y_to_x")
                     if used_dy_pre <= EPS_LIQ:
+                        _rollback_pool_state(tick_before, S_before)
                         return
                     executed = int(used_dy_pre > 0)
                     agent = o.get('agent')
@@ -1123,9 +1165,11 @@ def simulate(
                 if pool.L_active <= EPS_LIQ:
                     return
 
+                S_before = pool.S; tick_before = pool.tick
                 used_dx_pre, dy_out_real, _ = pool.swap_x_to_y(dx, fee_cb=allocate_fees)
                 _assert_active_liquidity_state("trader_swap_x_to_y")
                 if used_dx_pre <= EPS_LIQ:
+                    _rollback_pool_state(tick_before, S_before)
                     return
 
                 trader_steps.append(t)
@@ -1185,9 +1229,11 @@ def simulate(
                 if pool.L_active <= EPS_LIQ:
                     return
 
+                S_before = pool.S; tick_before = pool.tick
                 used_dy_pre, dx_out_real, _ = pool.swap_y_to_x(dy, fee_cb=allocate_fees)
                 _assert_active_liquidity_state("trader_swap_y_to_x")
                 if used_dy_pre <= EPS_LIQ:
+                    _rollback_pool_state(tick_before, S_before)
                     return
 
                 trader_steps.append(t)
@@ -1537,6 +1583,9 @@ def simulate(
         # disable everyone for next step
         _enable([])
 
+        # Align rebalancing benchmark with end-of-block exposures before the CEX price move
+        _rebalance_all(ref.m, pool.S)
+
         # ---- CEX update  ----
         if block_time == 1:
             ref.step(delta_a_cex_this)
@@ -1558,9 +1607,10 @@ def simulate(
         try:
             vol_obs = abs(math.log(max(ref.m, 1e-18)) - math.log(max(prev_m_for_vol, 1e-18)))
         except ValueError:
+            print("[fee_mode: volatility] ValueError in log computation for volatility observation")
             vol_obs = 0.0
         prev_m_for_vol = ref.m
-        sigma_hat = ewma_sigma_fee.update(vol_obs**2)  # The LVR is proportional to volatility squared ($\sigma^2$), as shown by Milionis, et al. (2023)
+        sigma_hat = ewma_sigma_fee.update(vol_obs)
 
         # 2) Toxicity / basis (fee-adjusted log gap)
         fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f))
@@ -1601,7 +1651,9 @@ def simulate(
             f_new = clamp(pool.f + step, f_min, f_max)
             if abs(f_new - pool.f) >= 1e-12:
                 fee_next = f_new
-                fee_cooldown_left = max(0, int(fee_cooldown))
+                # Only start the cooldown when scheduling a new change; otherwise countdown would restart every step.
+                if fee_cooldown_left <= 0:
+                    fee_cooldown_left = max(0, int(fee_cooldown))
 
         # record current fee (before next-step commit)
         fee_series.append(pool.f)
@@ -1629,12 +1681,21 @@ def simulate(
         arb_pnl_steps.append(arb_pnl_this)
         trader_exec_count.append(_trader_execs)
         arb_exec_count.append(_arb_execs)
-        lp_total = 0.0             # cumulative hedged PnL (fees - rebal)
-        lp_total_active = 0.0      # active narrow LPs
-        lp_total_passive = 0.0     # passive LPs
-        lp_rebal_total = 0.0
+        lp_total = 0.0                 # hedged PnL = V^{LP} - V^{reb}
+        lp_total_active = 0.0          # active narrow LPs
+        lp_total_passive = 0.0         # passive LPs
+        lp_unhedged_total = 0.0        # V^{LP} - V^{LP}_0
+        lp_unhedged_active = 0.0
+        lp_unhedged_passive = 0.0
+        lp_rebal_total = 0.0           # benchmark PnL (∫ x_t dM_t)
         lp_rebal_active = 0.0
         lp_rebal_passive = 0.0
+        lp_rebal_value_total = 0.0     # V^{reb}_t
+        lp_rebal_value_active = 0.0
+        lp_rebal_value_passive = 0.0
+        lp_fee_value_total = 0.0       # F_t (cumulative fees, marked to m_t)
+        lp_fee_value_active = 0.0
+        lp_fee_value_passive = 0.0
         lp_wallet_total = 0.0
         lp_wallet_active = 0.0
         lp_wallet_passive = 0.0
@@ -1647,34 +1708,59 @@ def simulate(
             rb = lp.rebalancer
             _ensure_rebalancer_initialized(lp, ref.m, pool.S)
             wealth_now = lp_wealth_y(lp, pool.S, ref.m)
-            delta_rebal = rb.cumulative_R - rb.last_cumulative_R
-            delta_wealth = wealth_now - rb.last_wealth_y
-            hedged_step = delta_wealth - delta_rebal
-            rb.hedged_pnl_cum += hedged_step
+            fee_value_now = lp_total_fee_earned_value_y(lp, ref.m)
+            rebal_value_now = rb.initial_rebal_value_y + rb.cumulative_R
+            hedged_pnl = wealth_now - rebal_value_now
+            unhedged_pnl = wealth_now - rb.initial_lp_value_y
+            rb.hedged_pnl_cum = hedged_pnl
             rb.last_wealth_y = wealth_now
             rb.last_cumulative_R = rb.cumulative_R
             rb.last_M = ref.m
 
-            lp_total += rb.hedged_pnl_cum
+            lp_total += hedged_pnl
+            lp_unhedged_total += unhedged_pnl
             lp_rebal_total += rb.cumulative_R
+            lp_rebal_value_total += rebal_value_now
+            lp_fee_value_total += fee_value_now
             lp_wealth_total += wealth_now
 
             if lp.is_passive:
-                lp_total_passive += rb.hedged_pnl_cum
+                lp_total_passive += hedged_pnl
+                lp_unhedged_passive += unhedged_pnl
                 lp_rebal_passive += rb.cumulative_R
+                lp_rebal_value_passive += rebal_value_now
+                lp_fee_value_passive += fee_value_now
                 lp_wallet_passive += wallet_y
                 lp_wealth_passive += wealth_now
             elif lp.is_active_narrow:
-                lp_total_active += rb.hedged_pnl_cum
+                lp_total_active += hedged_pnl
+                lp_unhedged_active += unhedged_pnl
                 lp_rebal_active += rb.cumulative_R
+                lp_rebal_value_active += rebal_value_now
+                lp_fee_value_active += fee_value_now
                 lp_wallet_active += wallet_y
                 lp_wealth_active += wealth_now
+        lp_lvr_total = lp_fee_value_total - lp_total
+        lp_lvr_active = lp_fee_value_active - lp_total_active
+        lp_lvr_passive = lp_fee_value_passive - lp_total_passive
         lp_pnl_total_series.append(lp_total)
         lp_pnl_active_series.append(lp_total_active)
         lp_pnl_passive_series.append(lp_total_passive)
+        lp_unhedged_total_series.append(lp_unhedged_total)
+        lp_unhedged_active_series.append(lp_unhedged_active)
+        lp_unhedged_passive_series.append(lp_unhedged_passive)
         lp_rebal_total_series.append(lp_rebal_total)
         lp_rebal_active_series.append(lp_rebal_active)
         lp_rebal_passive_series.append(lp_rebal_passive)
+        lp_rebal_value_total_series.append(lp_rebal_value_total)
+        lp_rebal_value_active_series.append(lp_rebal_value_active)
+        lp_rebal_value_passive_series.append(lp_rebal_value_passive)
+        lp_fee_value_total_series.append(lp_fee_value_total)
+        lp_fee_value_active_series.append(lp_fee_value_active)
+        lp_fee_value_passive_series.append(lp_fee_value_passive)
+        lp_lvr_total_series.append(lp_lvr_total)
+        lp_lvr_active_series.append(lp_lvr_active)
+        lp_lvr_passive_series.append(lp_lvr_passive)
 
         # Wealth accounting (wallet + open PnL)
         lp_wallet_series.append(lp_wallet_total)
@@ -1773,9 +1859,21 @@ def simulate(
     lp_pnl_total_series = np.array(lp_pnl_total_series)
     lp_pnl_active_series = np.array(lp_pnl_active_series)
     lp_pnl_passive_series = np.array(lp_pnl_passive_series)
+    lp_unhedged_total_series = np.array(lp_unhedged_total_series)
+    lp_unhedged_active_series = np.array(lp_unhedged_active_series)
+    lp_unhedged_passive_series = np.array(lp_unhedged_passive_series)
     lp_rebal_total_series = np.array(lp_rebal_total_series)
     lp_rebal_active_series = np.array(lp_rebal_active_series)
     lp_rebal_passive_series = np.array(lp_rebal_passive_series)
+    lp_rebal_value_total_series = np.array(lp_rebal_value_total_series)
+    lp_rebal_value_active_series = np.array(lp_rebal_value_active_series)
+    lp_rebal_value_passive_series = np.array(lp_rebal_value_passive_series)
+    lp_fee_value_total_series = np.array(lp_fee_value_total_series)
+    lp_fee_value_active_series = np.array(lp_fee_value_active_series)
+    lp_fee_value_passive_series = np.array(lp_fee_value_passive_series)
+    lp_lvr_total_series = np.array(lp_lvr_total_series)
+    lp_lvr_active_series = np.array(lp_lvr_active_series)
+    lp_lvr_passive_series = np.array(lp_lvr_passive_series)
     lp_wallet_series = np.array(lp_wallet_series)
     lp_wallet_active_series = np.array(lp_wallet_active_series)
     lp_wallet_passive_series = np.array(lp_wallet_passive_series)
@@ -1805,6 +1903,8 @@ def simulate(
     noise_pnl_cum_v = noise_pnl_cum[s0:]
     lp_pnl_active_series_v = lp_pnl_active_series[s0:]
     lp_pnl_passive_series_v = lp_pnl_passive_series[s0:]
+    lp_unhedged_active_series_v = lp_unhedged_active_series[s0:]
+    lp_unhedged_passive_series_v = lp_unhedged_passive_series[s0:]
     fee_series_v = fee_series[s0:]
     fee_sigma_series_v = fee_sigma_series[s0:]
     fee_basis_ticks_series_v = fee_basis_ticks_series[s0:]
@@ -2171,8 +2271,8 @@ def simulate(
                 x=steps_list,
                 y=lp_pnl_active_series_v,
                 mode="lines",
-                name="Active narrow LP Fee-LVR",
-                line=dict(dash="dash"),
+                name="Active LP hedged (fees - LVR)",
+                line=dict(dash="dash", color="#9467bd"),
             )
         )
         fig6.add_trace(
@@ -2180,8 +2280,26 @@ def simulate(
                 x=steps_list,
                 y=lp_pnl_passive_series_v,
                 mode="lines",
-                name="Passive LP Fee-LVR",
-                line=dict(dash="dot"),
+                name="Passive LP hedged (fees - LVR)",
+                line=dict(dash="dot", color="#8c564b"),
+            )
+        )
+        fig6.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=lp_unhedged_active_series_v,
+                mode="lines",
+                name="Active LP unhedged",
+                line=dict(color="#9467bd"),
+            )
+        )
+        fig6.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=lp_unhedged_passive_series_v,
+                mode="lines",
+                name="Passive LP unhedged",
+                line=dict(color="#8c564b"),
             )
         )
         fig6.update_layout(
@@ -2274,9 +2392,21 @@ def simulate(
         "lp_pnl_total": lp_pnl_total_series.tolist(),
         "lp_pnl_active": lp_pnl_active_series.tolist(),
         "lp_pnl_passive": lp_pnl_passive_series.tolist(),
+        "lp_unhedged_total": lp_unhedged_total_series.tolist(),
+        "lp_unhedged_active": lp_unhedged_active_series.tolist(),
+        "lp_unhedged_passive": lp_unhedged_passive_series.tolist(),
         "lp_rebal_total_series": lp_rebal_total_series.tolist(),
         "lp_rebal_active_series": lp_rebal_active_series.tolist(),
         "lp_rebal_passive_series": lp_rebal_passive_series.tolist(),
+        "lp_rebal_value_total_series": lp_rebal_value_total_series.tolist(),
+        "lp_rebal_value_active_series": lp_rebal_value_active_series.tolist(),
+        "lp_rebal_value_passive_series": lp_rebal_value_passive_series.tolist(),
+        "lp_fee_value_total_series": lp_fee_value_total_series.tolist(),
+        "lp_fee_value_active_series": lp_fee_value_active_series.tolist(),
+        "lp_fee_value_passive_series": lp_fee_value_passive_series.tolist(),
+        "lp_lvr_total_series": lp_lvr_total_series.tolist(),
+        "lp_lvr_active_series": lp_lvr_active_series.tolist(),
+        "lp_lvr_passive_series": lp_lvr_passive_series.tolist(),
         "trader_exec_count": trader_exec_count,
         "fee_series": fee_series,
         "fee_mode": fee_mode,

@@ -1,12 +1,12 @@
 # Fee mode (also used as the scenario label)
-fee_mode: toxicity
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 12
   # Total number of simulation blocks to execute
-  T: 5000
+  T: 10000
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 1000
   # Random seed used for reproducibility across RNGs

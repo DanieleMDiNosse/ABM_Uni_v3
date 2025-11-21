@@ -34,6 +34,8 @@ class RebalancerState:
     last_wealth_y: float = 0.0   # LP wealth snapshot (wallet + mark-to-market) at last update
     last_cumulative_R: float = 0.0  # snapshot of cumulative_R at last wealth observation
     hedged_pnl_cum: float = 0.0  # cumulative hedged PnL = wealth - rebal benchmark
+    initial_lp_value_y: float = 0.0   # V^{LP}_0 at init
+    initial_rebal_value_y: float = 0.0  # V^{reb}_0 (set equal to V^{LP}_0)
     initialized: bool = False
 
     def reset(self) -> None:
@@ -44,6 +46,8 @@ class RebalancerState:
         self.last_wealth_y = 0.0
         self.last_cumulative_R = 0.0
         self.hedged_pnl_cum = 0.0
+        self.initial_lp_value_y = 0.0
+        self.initial_rebal_value_y = 0.0
         self.initialized = False
 
 
@@ -119,27 +123,75 @@ class LPAgent:
     L_live: float = 0.0
     wallet_y: float = 0.0
     rebalancer: RebalancerState = field(default_factory=RebalancerState)
+    fees0_earned: float = 0.0
+    fees1_earned: float = 0.0
 
 
 def lp_token0_exposure(lp: LPAgent, S: float) -> float:
     """
-    Aggregate token0 exposure for an LP at sqrt-price S, including uncollected token0 fees.
+    Aggregate token0 exposure for an LP at sqrt-price S, **excluding** uncollected fees.
     """
     total = 0.0
     for pos in lp.positions:
         amt0, _ = pos.current_amounts(S)
-        total += amt0 + pos.fees0
+        total += amt0
     return total
+
+
+def lp_principal_amounts(lp: LPAgent, S: float) -> Tuple[float, float]:
+    """
+    Current principal token amounts (excludes fee balances).
+    """
+    total0 = 0.0
+    total1 = 0.0
+    for pos in lp.positions:
+        amt0, amt1 = pos.current_amounts(S)
+        total0 += amt0
+        total1 += amt1
+    return total0, total1
+
+
+def lp_principal_value_y(lp: LPAgent, S: float, m: float) -> float:
+    """
+    Mark-to-market value (token1) of principal liquidity only.
+    """
+    amt0, amt1 = lp_principal_amounts(lp, S)
+    return amt0 * m + amt1
+
+
+def lp_fee_value_y(lp: LPAgent, m: float) -> float:
+    """
+    Mark-to-market value (token1) of accumulated fees (uncollected).
+    """
+    total0 = 0.0
+    total1 = 0.0
+    for pos in lp.positions:
+        total0 += pos.fees0
+        total1 += pos.fees1
+    return total0 * m + total1
+
+
+def lp_total_position_value_y(lp: LPAgent, S: float, m: float) -> float:
+    """
+    Total open-position value (token1) = principal + fees (uncollected).
+    """
+    return lp_principal_value_y(lp, S, m) + lp_fee_value_y(lp, m)
+
+
+def lp_total_fee_earned_value_y(lp: LPAgent, m: float) -> float:
+    """
+    Mark-to-market value (token1) of cumulative fees earned (realized + uncollected).
+    """
+    fees0 = getattr(lp, "fees0_earned", 0.0)
+    fees1 = getattr(lp, "fees1_earned", 0.0)
+    return fees0 * m + fees1
 
 
 def lp_mark_to_market_y(lp: LPAgent, S: float, m: float) -> float:
     """
     Mark-to-market value (token1) of all open positions including uncollected fees.
     """
-    total = 0.0
-    for pos in lp.positions:
-        total += pos.position_value_y_now(S, m) + pos.fees_value_y(m)
-    return total
+    return lp_total_position_value_y(lp, S, m)
 
 
 def lp_wealth_y(lp: LPAgent, S: float, m: float) -> float:
@@ -147,7 +199,7 @@ def lp_wealth_y(lp: LPAgent, S: float, m: float) -> float:
     Total LP wealth (token1) = wallet holdings + mark-to-market open value.
     """
     wallet = getattr(lp, "wallet_y", 0.0)
-    return wallet + lp_mark_to_market_y(lp, S, m)
+    return wallet + lp_total_position_value_y(lp, S, m)
 
 
 # =============================================================================

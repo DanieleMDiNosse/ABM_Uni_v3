@@ -22,8 +22,10 @@ SERIES_DEFS: Tuple[SeriesDef, ...] = (
     ("smart_router_pnl_cum", "Smart router PnL", "#1f77b4"),
     ("noise_trader_pnl_cum", "Noise trader PnL", "#ff7f0e"),
     ("arb_pnl_cum", "Arbitrageur PnL", "#2ca02c"),
-    ("lp_pnl_active", "Active narrow LP Fee-LVR", "#9467bd"),
-    ("lp_pnl_passive", "Passive LP Fee-LVR", "#8c564b"),
+    ("lp_pnl_active", "Active LP hedged (fees - LVR)", "#9467bd"),
+    ("lp_pnl_passive", "Passive LP hedged (fees - LVR)", "#8c564b"),
+    ("lp_unhedged_active", "Active LP unhedged", "#c5b0d5"),
+    ("lp_unhedged_passive", "Passive LP unhedged", "#c49c94"),
 )
 
 

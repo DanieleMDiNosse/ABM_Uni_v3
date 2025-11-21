@@ -3,12 +3,16 @@ Uniswap v3 pool implementation with spacing-aware tick management.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Dict, Tuple, Optional, Callable, List
 from bisect import bisect_right, bisect_left
 
 from utils import EPS_LIQ, EPS_BOUNDARY, EPS_LIQ2
+
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -143,6 +147,21 @@ class V3Pool:
         if abs(self.L_active) < EPS_LIQ2:
             self.L_active = 0.0
 
+    def _maybe_heal_active(self, context: str) -> None:
+        if self.L_active < -EPS_LIQ2:
+            neg_val = self.L_active
+            self.recompute_active_L()
+            healed_val = self.L_active
+            if self.L_active < 0.0:
+                self.L_active = 0.0
+            logger.warning(
+                "Self-healed negative L_active=%g at tick=%d during %s (recomputed=%g)",
+                neg_val,
+                self.tick,
+                context,
+                healed_val,
+            )
+
     def recompute_active_L(self) -> None:
         # numerically robust accumulation of active liquidity up to current tick
         L = math.fsum(dL for t, dL in self.liquidity_net.items() if t <= self.tick)
@@ -172,12 +191,14 @@ class V3Pool:
     def _cross_up_once(self):
         self.tick += self.tick_spacing
         self.L_active += self.liquidity_net.get(self.tick, 0.0)
+        self._maybe_heal_active("cross_up")
         self._clamp_active()
 
     def _cross_down_once(self):
         prev_tick = self.tick
         self.tick -= self.tick_spacing
         self.L_active -= self.liquidity_net.get(prev_tick, 0.0)
+        self._maybe_heal_active("cross_down")
         self._clamp_active()
 
     # ----- exact v3 swaps for the noise trader (spacing aware) -----
@@ -189,7 +210,7 @@ class V3Pool:
         dx_used = 0.0
         dy_out = 0.0
 
-        while dx_eff > EPS_LIQ and self.L_active > 0:
+        while dx_eff > EPS_LIQ and self.L_active > EPS_LIQ:
             S_lo = self.s_lower()
             if self.S <= S_lo + EPS_BOUNDARY:
                 self.S = S_lo
@@ -237,7 +258,7 @@ class V3Pool:
         dy_used = 0.0
         dx_out = 0.0
 
-        while dy_eff > EPS_LIQ and self.L_active > 0:
+        while dy_eff > EPS_LIQ and self.L_active > EPS_LIQ:
             S_hi = self.s_upper()
             if self.S >= S_hi - EPS_BOUNDARY:
                 self.S = S_hi

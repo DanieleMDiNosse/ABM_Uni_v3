@@ -1,12 +1,12 @@
 # Fee mode (also used as the scenario label)
-fee_mode: toxicity
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 12
   # Total number of simulation blocks to execute
-  T: 5000
+  T: 10000
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 1000
   # Random seed used for reproducibility across RNGs
@@ -15,7 +15,7 @@ simulate:
   cex_mu: 0.00
   # Volatility of the reference CEX price process (per step/second)
   # 1e-4 ~= 56% annualized; 1e-5 ~= 5.6% annualized; 2e-4 ~= 112% annualized
-  cex_sigma: 0.0001
+  cex_sigma: 0.002
 
   ##### TRADERS #####
   # Probability that a smart-router trade intent arrives in each micro step. The expected total number of smart router trades is p_trade * block_time
