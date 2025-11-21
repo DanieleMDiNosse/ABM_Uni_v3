@@ -1626,7 +1626,7 @@ def simulate(
         # Select controller
         f_raw = pool.f
         if fee_mode == "volatility":
-            f_raw = f0 + k_sigma * sigma_hat
+            f_raw = f0 + k_sigma * sigma_hat * np.sqrt(block_time)
         elif fee_mode == "toxicity":
             f_raw = f0 + k_basis * basis_ticks
         else:

@@ -51,14 +51,14 @@ FEE_MODE_CONFIG = {
     },
     "volatility": {
         "param_name": "k_sigma",
-        "values": [10, 25, 50, 100],
+        "values": [1, 10, 25, 50, 100],
         "xlabel": "k_sigma (volatility sensitivity)",
     },
-    "toxicity": {
-        "param_name": "k_basis",
-        "values": [1e-5, 1e-4, 1e-3, 1e-2],
-        "xlabel": "k_basis (toxicity sensitivity)",
-    },
+    # "toxicity": {
+    #     "param_name": "k_basis",
+    #     "values": [1e-5, 1e-4, 1e-3, 1e-2],
+    #     "xlabel": "k_basis (toxicity sensitivity)",
+    # },
 }
 
 RUNS_PER_POINT = 5
