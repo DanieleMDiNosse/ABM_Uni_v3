@@ -32,9 +32,9 @@ from utils import load_simulation_parameters  # noqa: E402
 
 
 SCENARIO_FEE_MODES: Dict[str, str] = {
-    "static_baseline": "static",
-    "volatility_baseline": "volatility",
-    "toxicity_baseline": "toxicity",
+    "static": "static",
+    "volatility": "volatility",
+    "toxicity": "toxicity",
 }
 
 
@@ -50,7 +50,7 @@ class SweepConfig:
     steps: int
     seed: int
     workers: int
-    noise_floor: Optional[float]
+    noise_trades_per_block: Optional[float]
     output: Path
     csv: Path
     base_simulation_config: Path
@@ -103,7 +103,7 @@ def load_sweep_config(config_path: Path) -> SweepConfig:
         "steps",
         "seed",
         "workers",
-        "noise_floor",
+        "noise_trades_per_block",
         "output",
         "csv",
         "base_simulation_config",
@@ -121,16 +121,16 @@ def load_sweep_config(config_path: Path) -> SweepConfig:
     except (TypeError, ValueError) as exc:
         raise ValueError("Runs, steps, seed, and workers must be integers.") from exc
 
-    noise_floor_raw = fee_sweep_cfg["noise_floor"]
-    if noise_floor_raw is None:
-        noise_floor = None
+    noise_trades_raw = fee_sweep_cfg["noise_trades_per_block"]
+    if noise_trades_raw is None:
+        noise_trades_per_block = None
     else:
         try:
-            noise_floor = float(noise_floor_raw)
+            noise_trades_per_block = float(noise_trades_raw)
         except (TypeError, ValueError) as exc:
-            raise ValueError("noise_floor must be a float or null.") from exc
-        if not (0.0 <= noise_floor <= 1.0):
-            raise ValueError("noise_floor must be within [0, 1].")
+            raise ValueError("noise_trades_per_block must be a float or null.") from exc
+        if noise_trades_per_block < 0.0:
+            raise ValueError("noise_trades_per_block must be non-negative.")
 
     cfg_dir = resolved.parent
     output_path = (cfg_dir / Path(fee_sweep_cfg["output"])).resolve()
@@ -183,7 +183,7 @@ def load_sweep_config(config_path: Path) -> SweepConfig:
         steps=steps,
         seed=seed,
         workers=workers,
-        noise_floor=noise_floor,
+        noise_trades_per_block=noise_trades_per_block,
         output=output_path,
         csv=csv_path,
         base_simulation_config=base_sim_path,
@@ -217,7 +217,7 @@ def _simulate_once(
     fee_param: Optional[float],
     steps: int,
     seed: int,
-    noise_floor_override: Optional[float],
+    noise_trades_override: Optional[float],
     base_params: Dict[str, Any],
 ) -> Tuple[int, float, float, float]:
     """Run a single simulation and return final LP wealth components."""
@@ -230,8 +230,8 @@ def _simulate_once(
         }
     )
     params["fee_mode"] = SCENARIO_FEE_MODES[scenario]
-    if noise_floor_override is not None:
-        params["noise_floor"] = noise_floor_override
+    if noise_trades_override is not None:
+        params["noise_trades_per_block"] = noise_trades_override
 
     if scenario == "volatility_baseline" and fee_param is not None:
         params["k_sigma"] = fee_param
@@ -251,7 +251,7 @@ def run_single_configuration(
     steps: int,
     rng: np.random.Generator,
     n_runs: int,
-    noise_floor_override: Optional[float],
+    noise_trades_override: Optional[float],
     executor: ProcessPoolExecutor,
     progress_bar: Optional[tqdm],
     scenario_params: Dict[str, Any],
@@ -265,7 +265,7 @@ def run_single_configuration(
             fee_param,
             steps,
             seed,
-            noise_floor_override,
+            noise_trades_override,
             scenario_params,
         ): seed
         for seed in seeds
@@ -346,7 +346,7 @@ def main() -> None:
                         sweep_cfg.steps,
                         rng,
                         sweep_cfg.runs,
-                        sweep_cfg.noise_floor,
+                        sweep_cfg.noise_trades_per_block,
                         executor,
                         progress,
                         scenario_base_params[scenario],

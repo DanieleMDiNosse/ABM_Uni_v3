@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-Sweep cex_sigma × controller-sensitivity for each fee_mode and plot final PnL.
-
-For every combination:
-  • run `RUNS_PER_POINT` simulations with distinct seeds,
-  • aggregate the mean/std of each agent’s final PnL,
-  • write the summary rows to CSV,
-  • for each cex_sigma produce one figure with subplots for every fee mode
-    (static, volatility, toxicity, gas) plotting mean ± std versus sensitivity.
+Parallel grid runner: sweep fee modes/sensitivities using the base YAML config
+for sigma (static or regime), aggregate PnL/fee distributions, and plot violins.
 """
 from __future__ import annotations
 
+import argparse
 import csv
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,15 +20,6 @@ from tqdm import tqdm
 import run as run_module
 from run_scenarios_mean_std import SERIES_DEFS, _slice_series, aggregate_runs
 from utils import load_simulation_parameters
-
-PNL_KEYS = [
-    ("arb_pnl_cum", "Arbitrageur PnL"),
-    ("lp_pnl_passive", "Passive LP hedged PnL"),
-]
-PNL_COLORS = {
-    "arb_pnl_cum": "#2ca02c",
-    "lp_pnl_passive": "#8c564b",
-}
 
 # Silence the tqdm progress bar inside run.simulate to avoid nested bars.
 
@@ -47,6 +34,14 @@ def _silent_tqdm(iterable=None, **kwargs):
 run_module.tqdm = _silent_tqdm  # type: ignore[attr-defined]
 simulate = run_module.simulate
 
+PNL_KEYS = [
+    ("arb_pnl_cum", "Arbitrageur PnL"),
+    ("lp_pnl_passive", "Passive LP hedged PnL"),
+]
+PNL_COLORS = {
+    "arb_pnl_cum": "#2ca02c",
+    "lp_pnl_passive": "#8c564b",
+}
 
 # --- configuration -----------------------------------------------------------
 BASE_CONFIG_PATH = Path("tests/test.yml")
@@ -58,17 +53,17 @@ FEE_MODE_CONFIG = {
     },
     "volatility": {
         "param_name": "k_sigma",
-        "values": np.linspace(1e-2, 2, 10),
+        "values": np.linspace(1e-2, 10, 10),
         "xlabel": "k_sigma (volatility sensitivity)",
     },
     "toxicity": {
         "param_name": "k_basis",
-        "values": np.linspace(1e-5, 1e-2, 10),
+        "values": np.linspace(1e-5, 1e-1, 10),
         "xlabel": "k_basis (toxicity sensitivity)",
     },
     "gas": {
         "param_name": "k_gas_sigma",
-        "values": np.linspace(1e-2, 2, 10),
+        "values": np.linspace(1e-2, 10, 10),
         "xlabel": "k_gas_sigma (GAS volatility sensitivity)",
     },
 }
@@ -81,6 +76,7 @@ PLOTS_DIR = OUTPUT_DIR / "plots"
 
 SAVE_SERIES = False        # set True if you still want per-point NPZ files
 KEEP_VISUALS = False       # pass through to simulate()
+VERBOSE_RUNS = False       # set True to print per-run progress inside workers
 # ----------------------------------------------------------------------------
 
 
@@ -95,7 +91,6 @@ class GridPoint:
     def label(self) -> str:
         if self.param_name is None:
             return f"fee={self.fee_mode}, sigma={self.cex_sigma_label}"
-            # fee mode only; sigma driven by base config
         return f"fee={self.fee_mode}, sigma={self.cex_sigma_label}, {self.param_name}={self.sensitivity}"
 
     def slug(self) -> str:
@@ -154,11 +149,9 @@ def build_grid(base_params: Dict[str, Any]) -> List[GridPoint]:
 def run_grid_point(
     base_params: Dict[str, Any],
     point: GridPoint,
-) -> tuple[np.ndarray, Dict[str, List[np.ndarray]], Dict[str, Any], Dict[str, List[float]], List[float]]:
+) -> Tuple[np.ndarray, Dict[str, List[np.ndarray]], Dict[str, Any], Dict[str, List[float]], List[float]]:
     params = dict(base_params)
-    params.update(
-        fee_mode=point.fee_mode,
-    )
+    params.update(fee_mode=point.fee_mode)
     if point.param_name and point.sensitivity is not None:
         params[point.param_name] = point.sensitivity
     if not KEEP_VISUALS:
@@ -174,7 +167,8 @@ def run_grid_point(
     for idx in range(RUNS_PER_POINT):
         seed = point.run_seed_base + idx
         params["seed"] = seed
-        print(f"[grid:{point.label()}] run {idx + 1}/{RUNS_PER_POINT} (seed={seed})")
+        if VERBOSE_RUNS:
+            print(f"[grid:{point.label()}] run {idx + 1}/{RUNS_PER_POINT} (seed={seed})")
         out = simulate(**params)
 
         reference = _slice_series(out[SERIES_DEFS[0][0]], skip_step)
@@ -297,8 +291,8 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
                     pc.set_alpha(0.4)
                 vp["cmeans"].set_color("#1f77b4")
                 vp["cmeans"].set_linewidth(1.4)
-            ax_fee.set_xticks(pos_base, labels)
-            ax_fee.set_xlabel(cfg["xlabel"], rotation=90)
+            ax_fee.set_xticks(pos_base, labels, rotation=90)
+            ax_fee.set_xlabel(cfg["xlabel"])
             ax_fee.set_ylabel("Fee")
             ax_fee.grid(True, alpha=0.3)
 
@@ -308,7 +302,35 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
         plt.close(fig)
 
 
+def _evaluate_point(point: GridPoint, base_params: Dict[str, Any]) -> Dict[str, Any]:
+    steps, series_data, metadata, pnl_samples, fee_samples = run_grid_point(base_params, point)
+    stats = aggregate_runs(series_data)
+    summary_rows = summarise(point, stats, metadata)
+    plot_entry = {
+        "fee_mode": point.fee_mode,
+        "sigma_label": point.cex_sigma_label,
+        "param_name": point.param_name,
+        "sensitivity": point.sensitivity,
+        "pnl_samples": pnl_samples,
+        "fee_samples": fee_samples,
+    }
+    return {
+        "point": point,
+        "steps": steps,
+        "stats": stats,
+        "summary_rows": summary_rows,
+        "plot_entry": plot_entry,
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Parallel grid search over fee modes/sensitivities.")
+    parser.add_argument("--workers", type=int, default=None, help="Number of worker processes (default: cpu_count).")
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     scenario_label, base_params = load_simulation_parameters(BASE_CONFIG_PATH, simulate_func=simulate)
     print(f"Loaded base scenario '{scenario_label}'")
 
@@ -318,28 +340,28 @@ def main() -> None:
     plot_data: List[Dict[str, Any]] = []
 
     grid = build_grid(base_params)
-    for point in tqdm(grid, desc="Grid combinations", unit="combo"):
-        steps, series_data, metadata, pnl_samples, fee_samples = run_grid_point(base_params, point)
-        stats = aggregate_runs(series_data)
-        summary_rows.extend(summarise(point, stats, metadata))
-        plot_data.append(
-            {
-                "fee_mode": point.fee_mode,
-                "sigma_label": point.cex_sigma_label,
-                "param_name": point.param_name,
-                "sensitivity": point.sensitivity,
-                "pnl_samples": pnl_samples,
-                "fee_samples": fee_samples,
-            }
-        )
-        if SAVE_SERIES:
-            npz_path = series_dir / f"{point.slug()}.npz"
-            npz_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"steps": steps}
-            for key, (mean, std) in stats.items():
-                payload[f"{key}_mean"] = mean
-                payload[f"{key}_std"] = std
-            np.savez(npz_path, **payload)
+    total = len(grid)
+    with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        futures = {
+            executor.submit(_evaluate_point, point, base_params): point
+            for point in grid
+        }
+        for fut in tqdm(as_completed(futures), total=total, desc="Grid combinations", unit="combo"):
+            result = fut.result()
+            summary_rows.extend(result["summary_rows"])
+            plot_data.append(result["plot_entry"])
+
+            if SAVE_SERIES:
+                point = result["point"]
+                steps = result["steps"]
+                stats = result["stats"]
+                npz_path = series_dir / f"{point.slug()}.npz"
+                npz_path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {"steps": steps}
+                for key, (mean, std) in stats.items():
+                    payload[f"{key}_mean"] = mean
+                    payload[f"{key}_std"] = std
+                np.savez(npz_path, **payload)
 
     # write CSV
     SUMMARY_CSV.parent.mkdir(parents=True, exist_ok=True)

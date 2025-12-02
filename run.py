@@ -119,12 +119,12 @@ def simulate(
     seed: int,
     cex_mu: float,
     cex_sigma: float,
-    p_trade: float, 
-    noise_floor: float,
-    p_lp_narrow: float,
+    smart_trades_per_block: float,
+    noise_trades_per_block: float,
+    narrow_mints_per_block: float,
+    passive_mints_per_block: float,
+    passive_burns_per_block: float,
     passive_lp_share: float,
-    passive_mint_prob: float,
-    passive_burn_prob: float,
     passive_width_ticks: int,
     N_LP: int,
     tau: int,
@@ -154,7 +154,7 @@ def simulate(
     visualize: bool,
     skip_step: int,
     # --- Dynamic fee controller (new) ---
-    fee_mode: str,      # "static" | "volatility" 
+    fee_mode: str,      # "static" | "volatility" | "gas"
     f0: float,             # baseline fee (e.g., 30 bps)
     f_min: float,         # 5 bps
     f_max: float,           # 200 bps safety cap
@@ -165,8 +165,26 @@ def simulate(
     fee_step_bps_min: float, # do not change fee unless ≥ 0.5 bps move
     fee_step_bps_max: float, # max step per update (bps)
     fee_cooldown: int,         # blocks between fee changes (hysteresis)
+    gas_alpha: float = 0.05,    # GAS score weight
+    gas_beta: float = 0.9,      # GAS persistence
+    gas_omega: float = 0.0,     # GAS drift term
+    k_gas_sigma: float = 0.0,   # fee sensitivity to GAS sigma level
+    k_gas_score: float = 0.0,   # fee sensitivity to positive score (surprise)
+    flash_loan_fee: float = 0.0,  # percentage cost on arbitrage notional (e.g., 0.0005 = 5 bps)
+    # --- CEX volatility regime switching ---
+    cex_sigma_mode: str = "static",    # "static" | "regime" | "noisy_sine"
+    cex_sigma_low: Optional[float] = None,
+    cex_sigma_high: Optional[float] = None,
+    cex_sigma_p_LL: float = 1.0,
+    cex_sigma_p_HH: float = 1.0,
+    cex_sigma_regime_init: str = "L",
+    cex_sigma_sine_period: int = 10_000,
+    cex_sigma_sine_amp: Optional[float] = None,
+    cex_sigma_sine_noise: float = 0.0,
+    cex_sigma_floor: float = 0.0,
+    cex_sigma_sine_phase: float = 0.0,
 ):
-    valid_fee_modes = {"static", "volatility", "toxicity"}
+    valid_fee_modes = {"static", "volatility", "toxicity", "gas"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
     if k_out_min <= 0 or k_out_max <= 0:
@@ -178,7 +196,7 @@ def simulate(
     """
     Run a Step-1 ABM with a Uniswap v3–style pool.
 
-    - noise_floor (float in [0,1]): with this probability, the noise trader executes on the DEX even if the DEX quote fails the relative-value check.
+    - noise_trades_per_block (float): expected noise trader intents per block. Internal Bernoulli per micro-step uses noise_trades_per_block / block_time.
     Run a Step-1 ABM of a Uniswap v3–style pool with noise traders, a band-targeting
     arbitrageur, and adaptive LPs. **Actor order is randomized each step.**
     """
@@ -186,18 +204,84 @@ def simulate(
     np.random.seed(seed)
     random.seed(seed)
     passive_share = max(0.0, min(1.0, passive_lp_share))
+    # Derive per-micro-step arrival probabilities from per-block expectations
+    B = max(1, int(block_time))
+    p_trade = clamp(smart_trades_per_block / B, 0.0, 1.0)
+    noise_floor = clamp(noise_trades_per_block / B, 0.0, 1.0)
+    narrow_agents = max(1e-12, (1.0 - passive_share) * max(1, N_LP))
+    passive_agents = max(1e-12, passive_share * max(1, N_LP))
+    p_lp_narrow = clamp(narrow_mints_per_block / (B * narrow_agents), 0.0, 1.0)
+    passive_mint_prob = clamp(passive_mints_per_block / (B * passive_agents), 0.0, 1.0)
+    passive_burn_prob = clamp(passive_burns_per_block / (B * passive_agents), 0.0, 1.0)
 
     # --- Log Annualized Volatility for Clarity ---
     # cex_sigma is per-micro-step (1 second).
     # Annualized Volatility = cex_sigma * sqrt(seconds_in_year)
     seconds_per_year = 365 * 24 * 60 * 60
-    sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
-    print(f"\\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
+    sigma_mode_norm = (cex_sigma_mode or "static").lower()
+    regime_mode = sigma_mode_norm in {"regime", "regime_switch", "regime_switching"}
+    noisy_sine_mode = sigma_mode_norm == "noisy_sine"
+    regime_state = "H" if str(cex_sigma_regime_init).upper().startswith("H") else "L"
+    sigma_mode_for_ref = "regime" if regime_mode else ("noisy_sine" if noisy_sine_mode else "static")
+    if regime_mode:
+        if cex_sigma_low is None or cex_sigma_high is None:
+            raise ValueError("cex_sigma_low and cex_sigma_high must be set when cex_sigma_mode='regime'.")
+        if cex_sigma_high <= cex_sigma_low:
+            raise ValueError(f"Require cex_sigma_high > cex_sigma_low (got {cex_sigma_low} >= {cex_sigma_high}).")
+        if not (0.0 <= cex_sigma_p_LL <= 1.0) or not (0.0 <= cex_sigma_p_HH <= 1.0):
+            raise ValueError("cex_sigma_p_LL and cex_sigma_p_HH must be probabilities in [0, 1].")
+        sigma_annualized_low = cex_sigma_low * math.sqrt(seconds_per_year)
+        sigma_annualized_high = cex_sigma_high * math.sqrt(seconds_per_year)
+        print(
+            f"\n[CONFIG] Regime-switching cex_sigma: "
+            f"low={cex_sigma_low} ({sigma_annualized_low:.2%} annualized), "
+            f"high={cex_sigma_high} ({sigma_annualized_high:.2%} annualized), "
+            f"start={regime_state}, p_LL={cex_sigma_p_LL}, p_HH={cex_sigma_p_HH}"
+        )
+        sigma_for_ref = cex_sigma_low if regime_state == "L" else cex_sigma_high
+    elif noisy_sine_mode:
+        if cex_sigma <= 0:
+            raise ValueError("cex_sigma must be positive when cex_sigma_mode='noisy_sine'.")
+        sigma_center = max(1e-12, float(cex_sigma))
+        amp_for_log = cex_sigma_sine_amp
+        if amp_for_log is None and cex_sigma_low is not None and cex_sigma_high is not None:
+            sigma_center = 0.5 * (float(cex_sigma_low) + float(cex_sigma_high))
+            amp_for_log = 0.5 * abs(float(cex_sigma_high) - float(cex_sigma_low))
+        if amp_for_log is None:
+            amp_for_log = 0.5 * sigma_center
+        sigma_annualized_center = sigma_center * math.sqrt(seconds_per_year)
+        print(
+            f"\\n[CONFIG] Noisy-sine cex_sigma: "
+            f"center={sigma_center} ({sigma_annualized_center:.2%} annualized), "
+            f"amp={amp_for_log}, period={cex_sigma_sine_period} steps, "
+            f"noise_std={cex_sigma_sine_noise}, floor={cex_sigma_floor}"
+        )
+        sigma_for_ref = sigma_center
+    else:
+        sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
+        print(f"\\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
+        sigma_for_ref = cex_sigma
     print(f"[CONFIG] Fee: {initial_params.get('f0', 0.0005)*10000:.1f} bps\\n")
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
-    ref = ReferenceMarket(m=m0, mu=cex_mu, sigma=cex_sigma, kappa=1e-3)
+    ref = ReferenceMarket(
+        m=m0,
+        mu=cex_mu,
+        sigma=sigma_for_ref,
+        kappa=1e-3,
+        sigma_mode=sigma_mode_for_ref,
+        sigma_low=cex_sigma_low,
+        sigma_high=cex_sigma_high,
+        p_LL=cex_sigma_p_LL,
+        p_HH=cex_sigma_p_HH,
+        regime_state=regime_state,
+        sigma_sine_amp=cex_sigma_sine_amp,
+        sigma_sine_period=cex_sigma_sine_period,
+        sigma_sine_noise=cex_sigma_sine_noise,
+        sigma_floor=cex_sigma_floor,
+        sigma_sine_phase=cex_sigma_sine_phase,
+    )
 
     LPs: List[LPAgent] = []
     for i in range(N_LP):
@@ -335,6 +419,8 @@ def simulate(
     liq_history: List[Dict[int, float]] = []
     tick_history: List[int] = []
     delta_a_cex_series = []
+    cex_sigma_series: List[float] = []
+    cex_regime_series: List[str] = []
     # --- Block-start target band (arb_ref_m) ---
     band_lo_target, band_hi_target = [], []
     # --- Micro-time traces (for block_time > 1 visualization) ---
@@ -413,6 +499,8 @@ def simulate(
     fee_basis_ticks_series = []    # EWMA fee-adjusted basis, in ticks
     fee_imb_series = []            # EWMA |imbalance| in [0,1]
     fee_signal_series = []         # controller signal actually used (per fee_mode)
+    gas_sigma_series: List[float] = []   # GAS-implied sigma_t
+    gas_score_series: List[float] = []   # GAS score_t
     # --- EWMA(B_t) state for LP width rule ---
     ewma_B = EWMA(half_life_steps=basis_half_life)
 
@@ -426,6 +514,8 @@ def simulate(
     ewma_sigma_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # |log m_t - log m_{t-1}|
     ewma_basis_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # fee-adjusted log gap
     prev_m_for_vol = ref.m
+    # GAS log-variance state (f_t = log σ_t^2)
+    gas_f = math.log(max(1e-18, float(sigma_for_ref) ** 2))
 
     # ------------------ LVR rebalancer helpers ------------------
     REBAL_EPS = 1e-18
@@ -650,6 +740,98 @@ def simulate(
         if P > hi * (1 + 1e-9):
             # down: returns (dx_in, 0.0, dy_out, direction, L_first)
             dx_in, dy_out, Lff = swap_exact_to_target(hi, "down", fee_cb=allocate_fees)
+            return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), Lff
+        return 0.0, 0.0, 0.0, None, 0.0
+
+    def _clone_pool_for_preview() -> V3Pool:
+        """Shallow pool clone to dry-run arbitrage profitability without touching state."""
+        return V3Pool(
+            g=pool.g,
+            base_s=pool.base_s,
+            tick=pool.tick,
+            S=pool.S,
+            f=pool.f,
+            liquidity_net=dict(pool.liquidity_net),
+            tick_spacing=pool.tick_spacing,
+        )
+
+    def _preview_swap_exact_to_target(pool_obj: V3Pool, target_price: float, direction: str) -> Tuple[float, float, float]:
+        """
+        Dry-run variant of swap_exact_to_target used to estimate arb profitability.
+        Mutates the provided pool_obj clone; does NOT allocate fees or touch real state.
+        """
+        target_S = math.sqrt(max(1e-18, target_price))
+
+        total_in = total_out = 0.0
+        L_first = 0.0
+
+        if pool_obj.L_active <= EPS_LIQ:
+            return 0.0, 0.0, 0.0
+
+        if direction == "up":
+            while pool_obj.L_active > EPS_LIQ and pool_obj.S < target_S - EPS_BOUNDARY:
+                S_hi = pool_obj.s_upper()
+                if pool_obj.S >= S_hi - EPS_BOUNDARY:
+                    pool_obj.S = S_hi
+                    pool_obj._cross_up_once()
+                    continue
+                L_before = pool_obj.L_active
+                dy_eff = L_before * (min(S_hi, target_S) - pool_obj.S)
+                if dy_eff <= 0.0:
+                    break
+                dy_pre = dy_eff / pool_obj.r
+                dx_out = L_before * (1 / pool_obj.S - 1 / (pool_obj.S + dy_eff / L_before))
+                pool_obj.S = min(S_hi, target_S)
+
+                if dy_pre > 0 and L_first == 0.0:
+                    L_first = L_before
+                total_in += dy_pre
+                total_out += dx_out
+
+                if pool_obj.S >= target_S - EPS_BOUNDARY:
+                    return total_in, total_out, L_first
+                pool_obj._cross_up_once()
+
+        else:
+            while pool_obj.L_active > EPS_LIQ and pool_obj.S > target_S + EPS_BOUNDARY:
+                S_lo = pool_obj.s_lower()
+                if pool_obj.S <= S_lo + EPS_BOUNDARY:
+                    pool_obj.S = S_lo
+                    pool_obj._cross_down_once()
+                    continue
+                L_before = pool_obj.L_active
+                dx_eff = L_before * (1 / max(target_S, S_lo) - 1 / pool_obj.S)
+                if dx_eff <= 0.0:
+                    break
+                dx_pre = dx_eff / pool_obj.r
+                dy_out = L_before * (pool_obj.S - max(target_S, S_lo))
+                pool_obj.S = max(target_S, S_lo)
+
+                if dx_pre > 0 and L_first == 0.0:
+                    L_first = L_before
+                total_in += dx_pre
+                total_out += dy_out
+
+                if pool_obj.S <= target_S + EPS_BOUNDARY:
+                    return total_in, total_out, L_first
+                pool_obj._cross_down_once()
+
+        return total_in, total_out, L_first
+
+    def preview_arbitrage_to_target(arb_ref_m: float) -> Tuple[float, float, float, Optional[str], float]:
+        """
+        Dry-run arbitrage path on a cloned pool to estimate profitability before executing.
+        Returns the same tuple shape as arbitrage_to_target but without mutating real state.
+        """
+        pool_sim = _clone_pool_for_preview()
+        P = pool_sim.price
+        r = pool_sim.r
+        lo, hi = arb_ref_m * r, arb_ref_m / r
+        if P < lo * (1 - 1e-9):
+            dy_in, dx_out, Lff = _preview_swap_exact_to_target(pool_sim, lo, "up")
+            return dy_in, dx_out, 0.0, ("up" if dy_in > 0 else None), Lff
+        if P > hi * (1 + 1e-9):
+            dx_in, dy_out, Lff = _preview_swap_exact_to_target(pool_sim, hi, "down")
             return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), Lff
         return 0.0, 0.0, 0.0, None, 0.0
 
@@ -964,6 +1146,25 @@ def simulate(
                 # Handle arbitrage intent (executes before other swaps in a block)
                 if typ == 'arb':
                     arb_ref = float(o.get('arb_ref_m', ref.m))
+                    # Preview arbitrage profitability (includes liquidity fee + flash loan fee)
+                    prev_in, prev_x_out, prev_y_out, prev_dir, _ = preview_arbitrage_to_target(arb_ref)
+                    expected_profit = 0.0
+                    expected_flash_fee = 0.0
+                    if prev_dir == "up":
+                        expected_flash_fee = flash_loan_fee * prev_in
+                        expected_profit = prev_x_out * arb_ref - prev_in - expected_flash_fee
+                    elif prev_dir == "down":
+                        notional_y = prev_in * arb_ref
+                        expected_flash_fee = flash_loan_fee * notional_y
+                        expected_profit = prev_y_out - notional_y - expected_flash_fee
+                    if prev_dir is None or expected_profit <= 0.0:
+                        buffer_log(
+                            f"[t={t:03d}] arb SKIPPED (unprofitable): dir={prev_dir} "
+                            f"expected_profit={expected_profit:.6f} flash_fee={expected_flash_fee:.6f} "
+                            f"| price={pool.price:.4f} cex={arb_ref:.4f}\n"
+                        )
+                        return
+
                     price_before = pool.price
                     tick_before = pool.tick
                     in_used, x_out_from_dex, y_out_from_dex, dir_arb, L_first = arbitrage_to_target(arb_ref)
@@ -1382,6 +1583,24 @@ def simulate(
         def act_arbitrageur():
             nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
 
+            prev_in, prev_x_out, prev_y_out, prev_dir, _ = preview_arbitrage_to_target(arb_ref_m)
+            expected_profit = 0.0
+            expected_flash_fee = 0.0
+            if prev_dir == "up":
+                expected_flash_fee = flash_loan_fee * prev_in
+                expected_profit = prev_x_out * arb_ref_m - prev_in - expected_flash_fee
+            elif prev_dir == "down":
+                notional_y = prev_in * arb_ref_m
+                expected_flash_fee = flash_loan_fee * notional_y
+                expected_profit = prev_y_out - notional_y - expected_flash_fee
+            if prev_dir is None or expected_profit <= 0.0:
+                buffer_log(
+                    f"[t={t:03d}] arb SKIPPED (unprofitable): dir={prev_dir} "
+                    f"expected_profit={expected_profit:.6f} flash_fee={expected_flash_fee:.6f} "
+                    f"| price={pool.price:.4f} cex={arb_ref_m:.4f}\n"
+                )
+                return
+
             in_used, x_out_from_dex, y_out_from_dex, dir_arb, L_first = arbitrage_to_target(arb_ref_m)
             delta_a_cex_this = 0.0
             if in_used > 0 and dir_arb is not None:
@@ -1603,14 +1822,24 @@ def simulate(
         # ================== Dynamic fee controller  ==================
         # Signals based on END-OF-STEP state; new fee applies NEXT step.
 
-        # 1) Volatility of CEX (abs log-return)
+        # 1) Volatility of CEX (abs log-return) and GAS log-return
         try:
-            vol_obs = abs(math.log(max(ref.m, 1e-18)) - math.log(max(prev_m_for_vol, 1e-18)))
+            log_m_now = math.log(max(ref.m, 1e-18))
+            log_m_prev = math.log(max(prev_m_for_vol, 1e-18))
+            vol_obs = abs(log_m_now - log_m_prev)
+            gas_logret = log_m_now - log_m_prev
         except ValueError:
-            print("[fee_mode: volatility] ValueError in log computation for volatility observation")
+            print("[fee_mode] ValueError in log computation for volatility/GAS observation")
             vol_obs = 0.0
+            gas_logret = 0.0
         prev_m_for_vol = ref.m
         sigma_hat = ewma_sigma_fee.update(vol_obs)
+
+        # GAS update: f_t = log σ_t^2
+        sigma2_gas = max(1e-18, math.exp(gas_f))
+        score_t = 0.5 * ((gas_logret * gas_logret / sigma2_gas) - 1.0)
+        gas_f = gas_omega + gas_beta * gas_f + gas_alpha * score_t
+        sigma_gas = math.sqrt(max(1e-18, math.exp(gas_f)))
 
         # 2) Toxicity / basis (fee-adjusted log gap)
         fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f))
@@ -1622,6 +1851,8 @@ def simulate(
         # Record raw signals for diagnostics/plotting
         fee_sigma_series.append(sigma_hat)
         fee_basis_ticks_series.append(basis_ticks)
+        gas_sigma_series.append(sigma_gas)
+        gas_score_series.append(score_t)
 
         # Select controller
         f_raw = pool.f
@@ -1629,6 +1860,8 @@ def simulate(
             f_raw = f0 + k_sigma * sigma_hat * np.sqrt(block_time)
         elif fee_mode == "toxicity":
             f_raw = f0 + k_basis * basis_ticks
+        elif fee_mode == "gas":
+            f_raw = f0 + k_gas_sigma * sigma_gas + k_gas_score * max(0.0, score_t)
         else:
             f_raw = pool.f  # "static": no change
 
@@ -1638,6 +1871,8 @@ def simulate(
             ctrl_sig = sigma_hat
         elif fee_mode == "toxicity":
             ctrl_sig = basis_ticks
+        elif fee_mode == "gas":
+            ctrl_sig = sigma_gas
         else:
             ctrl_sig = 0.0
         fee_signal_series.append(ctrl_sig)
@@ -1663,6 +1898,8 @@ def simulate(
         P_after = pool.price
         P_series.append(P_after)
         M_series.append(ref.m)
+        cex_sigma_series.append(ref.sigma)
+        cex_regime_series.append(getattr(ref, "regime_state", "L"))
         delta_a_cex_series.append(delta_a_cex_this)
 
         x_e, y_e = reserves_in_active_tick()
@@ -1882,8 +2119,13 @@ def simulate(
     lp_wealth_passive_series = np.array(lp_wealth_passive_series)
     fee_sigma_series = np.array(fee_sigma_series)
     fee_basis_ticks_series = np.array(fee_basis_ticks_series)
+    gas_sigma_series = np.array(gas_sigma_series)
+    gas_score_series = np.array(gas_score_series)
     fee_imb_series = np.array(fee_imb_series)
     fee_signal_series = np.array(fee_signal_series)
+    cex_sigma_series = np.array(cex_sigma_series)
+    cex_regime_series = np.array(cex_regime_series)
+    sigma_panel = regime_mode or noisy_sine_mode
 
     # --- Visualization skip window ---
     s0 = max(0, int(skip_step))
@@ -1908,7 +2150,10 @@ def simulate(
     fee_series_v = fee_series[s0:]
     fee_sigma_series_v = fee_sigma_series[s0:]
     fee_basis_ticks_series_v = fee_basis_ticks_series[s0:]
+    gas_sigma_series_v = gas_sigma_series[s0:]
+    gas_score_series_v = gas_score_series[s0:]
     fee_signal_series_v = fee_signal_series[s0:]
+    cex_sigma_series_v = cex_sigma_series[s0:]
     arb_y_v = np.array(arb_y_series)[s0:]
     sr_y_v = sr_y_series[s0:]
     noise_y_v = noise_y_series[s0:]
@@ -1944,7 +2189,15 @@ def simulate(
         _html_dir = _out_dir / "html"
         _png_dir.mkdir(parents=True, exist_ok=True)
         _html_dir.mkdir(parents=True, exist_ok=True)
-        _prefix = f"abm_fee_{fee_mode}_{cex_sigma}"
+        sigma_label = cex_sigma
+        if regime_mode:
+            sigma_label = f"{cex_sigma_low}-{cex_sigma_high}-regime"
+        elif noisy_sine_mode:
+            amp_label = "auto" if cex_sigma_sine_amp is None else cex_sigma_sine_amp
+            sigma_label = f"noisy_sine-{cex_sigma}-amp{amp_label}-per{cex_sigma_sine_period}"
+            if cex_sigma_sine_noise:
+                sigma_label += f"-noise{cex_sigma_sine_noise}"
+        _prefix = f"abm_fee_{fee_mode}_{sigma_label}"
 
         total_steps = max(1, len(steps) - s0)
 
@@ -2253,9 +2506,21 @@ def simulate(
             _save_plotly("6b_mint_width_signal", fig6b)
 
         # ----- 7) PnL panel -----
-        fig6 = go.Figure()
-        fig6.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"))
-        fig6.add_trace(go.Scatter(x=steps_list, y=sr_pnl_cum_v, mode="lines", name="Smart router PnL"))
+        pnl_rows = 2 if sigma_panel else 1
+        fig6 = make_subplots(
+            rows=pnl_rows,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.08 if sigma_panel else 0.1,
+            row_heights=[0.7, 0.3] if sigma_panel else None,
+            subplot_titles=("Agent PnL (token1)", "CEX σ per step") if sigma_panel else ("Agent PnL (token1)",),
+        )
+        fig6.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=1, col=1)
+        fig6.add_trace(
+            go.Scatter(x=steps_list, y=sr_pnl_cum_v, mode="lines", name="Smart router PnL"),
+            row=1,
+            col=1,
+        )
         fig6.add_trace(
             go.Scatter(
                 x=steps_list,
@@ -2263,9 +2528,15 @@ def simulate(
                 mode="lines",
                 name="Noise trader PnL",
                 line=dict(dash="dash"),
-            )
+            ),
+            row=1,
+            col=1,
         )
-        fig6.add_trace(go.Scatter(x=steps_list, y=arb_pnl_cum_v, mode="lines", name="Arbitrageur PnL"))
+        fig6.add_trace(
+            go.Scatter(x=steps_list, y=arb_pnl_cum_v, mode="lines", name="Arbitrageur PnL"),
+            row=1,
+            col=1,
+        )
         fig6.add_trace(
             go.Scatter(
                 x=steps_list,
@@ -2273,7 +2544,9 @@ def simulate(
                 mode="lines",
                 name="Active LP hedged (fees - LVR)",
                 line=dict(dash="dash", color="#9467bd"),
-            )
+            ),
+            row=1,
+            col=1,
         )
         fig6.add_trace(
             go.Scatter(
@@ -2282,7 +2555,9 @@ def simulate(
                 mode="lines",
                 name="Passive LP hedged (fees - LVR)",
                 line=dict(dash="dot", color="#8c564b"),
-            )
+            ),
+            row=1,
+            col=1,
         )
         fig6.add_trace(
             go.Scatter(
@@ -2291,7 +2566,9 @@ def simulate(
                 mode="lines",
                 name="Active LP unhedged",
                 line=dict(color="#9467bd"),
-            )
+            ),
+            row=1,
+            col=1,
         )
         fig6.add_trace(
             go.Scatter(
@@ -2300,13 +2577,32 @@ def simulate(
                 mode="lines",
                 name="Passive LP unhedged",
                 line=dict(color="#8c564b"),
-            )
+            ),
+            row=1,
+            col=1,
         )
+        if sigma_panel and len(cex_sigma_series_v) > 0:
+            fig6.add_trace(
+                go.Scatter(
+                    x=steps_list,
+                    y=cex_sigma_series_v,
+                    mode="lines",
+                    name="CEX σ",
+                    line=dict(width=1.8, color="#2ca02c"),
+                    line_shape="hv",
+                ),
+                row=2,
+                col=1,
+            )
+        fig6.update_yaxes(title_text="Token1 value", row=1, col=1)
+        if sigma_panel:
+            fig6.update_yaxes(title_text="CEX σ (per step)", row=2, col=1)
+            fig6.update_xaxes(title_text="Step", row=2, col=1)
+        else:
+            fig6.update_xaxes(title_text="Step", row=1, col=1)
         fig6.update_layout(
             template="plotly_white",
-            title="Agent PnL (token1)",
-            xaxis_title="Step",
-            yaxis_title="Token1 value",
+            title="Agent PnL (token1)" + (" with CEX σ" if sigma_panel else ""),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         )
         _save_plotly("6_pnl", fig6)
@@ -2325,6 +2621,9 @@ def simulate(
         elif fee_mode == "toxicity":
             secondary_vals = fee_basis_ticks_series_v
             secondary_label = "Basis (ticks)"
+        elif fee_mode == "gas":
+            secondary_vals = gas_sigma_series_v
+            secondary_label = "σ̂ (GAS)"
         else:
             secondary_vals = fee_signal_series_v
             secondary_label = "Controller signal"
@@ -2352,6 +2651,8 @@ def simulate(
     return {
         "DEX_price": P_series,
         "CEX_price": M_series,
+        "cex_sigma_series": cex_sigma_series.tolist(),
+        "cex_regime_series": cex_regime_series.tolist(),
         "band_lo_pre": band_lo_pre,
         "band_hi_pre": band_hi_pre,
         "band_lo_post": band_lo_post,
@@ -2416,6 +2717,8 @@ def simulate(
         "fee_basis_ticks_series": fee_basis_ticks_series.tolist(),
         "fee_imb_series": fee_imb_series.tolist(),
         "fee_signal_series": fee_signal_series.tolist(),
+        "gas_sigma_series": gas_sigma_series.tolist(),
+        "gas_score_series": gas_score_series.tolist(),
         "lp_wallet_series": lp_wallet_series.tolist(),
         "lp_wealth_series": lp_wealth_series.tolist(),
         "lp_wallet_active_series": lp_wallet_active_series.tolist(),

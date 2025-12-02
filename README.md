@@ -6,7 +6,7 @@
 
 Agent-based market (ABM) simulator for a Uniswap v3 style pool that extends the Angeris et al. model (“An analysis of Uniswap markets”). The project focuses on **microstructure effects** such as block mempools, asynchronous LP management, dynamic fee schedules, and realistic arbitrage/trader interactions.
 
-The implementation lives in `run.py` and can be configured through YAML scenario files (for example `abm_mempool_config.yml`). Results, plots, and verbose logs are written to `abm_results/`.
+The implementation lives in `run.py` and is configured via YAML files consumed by `utils.load_simulation_parameters` (top-level `fee_mode` + a complete `simulate` section). Scenario examples live under `scenarios/` (high/low-vol templates) and `tests/test.yml`. Results, plots, and verbose logs are written to `abm_results/`.
 
 ---
 
@@ -19,15 +19,16 @@ The implementation lives in `run.py` and can be configured through YAML scenario
   - **LPs**: passive baselines and active narrow LPs. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
 - **Block-aware mempool**:
   - `block_time == 1`: deterministic schedule `LP bucket A → smart+noise → LP bucket B → arb → LP bucket C`.
-  - `block_time > 1`: (i) freeze the validated snapshot, (ii) run the arbitrage at that price, (iii) diffuse the CEX for each micro-step, (iv) enqueue LP/trader intents, and (v) execute the shuffled mempool to mimic intra-block ordering. When desired the block length itself can be re-drawn from a bounded Zipf(α) distribution.
-- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block LPs, noise traders, and the arbitrageur make decisions against this shared “last validated” snapshot, while the smart router still references the frozen DEX state but measures best execution against the live diffused CEX mark. This keeps order placement aligned with what would be visible on-chain while letting the router react to the most recent CEX price.
+  - `block_time > 1`: freeze the validated snapshot, then run `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents; at the block boundary enqueue a single arb intent plus LP intents (burn/recenter/mint) and replay the shuffled mempool (arb first) against the live pool. When desired the block length itself can be re-drawn from a bounded Zipf(α) distribution.
+- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block LPs, noise traders, the arbitrageur, and the smart router all reference this shared “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`) when forming orders; in block mode the CEX path still diffuses in the background for rebalancing and diagnostics, but mempool orders are priced off the frozen snapshot and executed together at the block boundary.
 - **Dynamic fee controller** with three modes:
   - `static` fixes the fee at `f0`.
   - `volatility` adds a multiple of EWMA(|log-return|).
   - `toxicity` adds a multiple of the fee-adjusted log basis (in ticks).
   Fee moves are clipped by `fee_step_bps_min/max` and gated by `fee_cooldown`.
 - **Liquidity bootstrapping**: simulations always start from an evolved/sharded binomial hill that allocates `initial_total_L` across synthetic LPs and can optionally be plotted.
-- **Comprehensive telemetry**: per-agent PnL series, liquidity history, fee path, target bands, LP wallet/wealth, and block-level log files.
+- **LP width rule**: narrow LPs size their ranges off an EWMA of the fee-adjusted basis plus a configurable binomial noise term (`binom_n`, `binom_p`), then clamp to `[w_min_ticks, w_max_ticks]`.
+- **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (block mode), and verbose logs under `abm_results/logs/`.
 
 ---
 
@@ -35,9 +36,10 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 
 ### Reference Market (CEX)
 - Implemented as `ReferenceMarket` in `utils.py`.
-- Modeled as a GBM over the CEX mid-price with drift `cex_mu` and volatility `cex_sigma`, plus a permanent impact term of the form
+- Modeled as a GBM over the CEX mid-price with drift `cex_mu` and volatility `σ_t`, plus a permanent impact term of the form
   `impact = kappa * sign(Δa) * |Δa|^{1+xi}` applied to the CEX price in token1 units per token0.
-- The diffusion step uses `m ← m · exp(cex_mu - 0.5 · cex_sigma^2 + cex_sigma · z)` with `z ~ N(0,1)`, so `cex_sigma` is interpreted directly as the per-microstep volatility (no squaring).
+- Volatility can be **static** (`cex_sigma_mode: static`, using `cex_sigma`), **regime-switching** (`cex_sigma_mode: regime`, two-state Markov chain over `σ_L`/`σ_H` with transition probabilities `p_LL`/`p_HH`), or a **noisy sine wave** (`cex_sigma_mode: noisy_sine`) following `σ_t = max(cex_sigma_floor, σ_center + A·sin(2πt/period) + ε_t)` with `ε_t ~ N(0, cex_sigma_sine_noise)`. The center defaults to `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` when provided); the amplitude defaults to half the center unless `cex_sigma_sine_amp` is set. The active path is returned as `cex_sigma_series` and `cex_regime_series`.
+- The diffusion step uses `m ← m · exp(cex_mu - 0.5 · σ_t^2 + σ_t · z)` with `z ~ N(0,1)`, so `σ_t` is interpreted directly as the per-microstep volatility (no squaring).
 - In non-block mode (`block_time == 1`), each simulation step calls `ref.step(Δa_cex)`, which first applies impact from the net arbitrage flow and then diffuses via GBM.
 - In block mode (`block_time > 1`), the CEX only diffuses during intra-block micro-steps (`ref.diffuse_only()`), while impact from the arbitrage is applied once at the end via `ref.apply_impact_only(Δa_cex)`. This decouples diffusion from impact and matches the code in `run.py`.
 
@@ -65,7 +67,7 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 ### Liquidity Providers
 - Defined in `agents.py` (`LPAgent`, `Position`, and `RebalancerState`) with management logic in `run.py`.
 - **Types**:
-  - *Passive baselines* (`is_passive=True` for a fraction `passive_lp_share` of LPs): wide fixed-width ranges, probabilistic mint/burn rules (`passive_mint_prob`, `passive_burn_prob`, `passive_width_ticks`).
+  - *Passive baselines* (`is_passive=True` for a fraction `passive_lp_share` of LPs): wide fixed-width ranges, probabilistic mint/burn rules driven by `passive_mints_per_block`, `passive_burns_per_block`, and `passive_width_ticks`.
   - *Active narrow LPs* (`is_active_narrow=True` and `is_passive=False`): concentrate liquidity near the current mid, recenter after they have been out of range for a random number of steps between `k_out_min` and `k_out_max`, and follow an EWMA-driven width signal with binomial noise.
 - **Decision process** (per LP):
   - Review times are drawn from a geometric distribution with mean `tau`; only LPs whose review clocks fire in a given step are allowed to act.
@@ -92,7 +94,7 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 2. **Per step (block)**:
    - Copy the validated snapshot into agent-facing variables (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`).
    - Update/adapt reference CEX (diffusion + impact) and evolve EWMA signals.
-   - Randomize actor order depending on `block_time`. In block mode: arb at the snapshot price, diffuse micro-steps, enqueue intents (all referencing the snapshot), then replay the mempool against the live pool.
+   - Randomize actor order depending on `block_time`. In block mode: run micro-steps that diffuse the CEX and enqueue smart/noise + LP intents against the snapshot, then insert an arb intent (using the same snapshot) and replay the mempool (arb first) against the live pool.
    - Apply fees, update LP positions, and settle agent PnL at the post-impact CEX price.
    - Update the dynamic fee controller, log state, and finally capture the new validated snapshot (live DEX + CEX) for the next iteration.
 3. **Post-processing**:
@@ -104,7 +106,7 @@ The implementation lives in `run.py` and can be configured through YAML scenario
 
 ## Configuration
 
-Scenario YAML files follow the schema:
+Scenario YAML files contain a top-level `fee_mode` label plus a `simulate` mapping with every parameter accepted by `simulate(...)`. The loader fails fast on missing/extra keys. A minimal template:
 
 ```yaml
 fee_mode: static            # scenario label + default fee mode
@@ -113,13 +115,24 @@ simulate:
   T: 750                    # number of blocks
   seed: 7
   cex_mu: 0.0
-  cex_sigma: 0.0015
-  p_trade: 0.7
-  noise_floor: 0.5
-  p_lp_narrow: 0.95
+  cex_sigma_mode: static    # "static", "regime", or "noisy_sine"
+  cex_sigma: 0.0015         # used when mode=static
+  cex_sigma_low: 0.0001     # regime-switching: σ_L
+  cex_sigma_high: 0.002     # regime-switching: σ_H (> σ_L)
+  cex_sigma_p_LL: 0.98      # P(Z_{t+1}=L | Z_t=L)
+  cex_sigma_p_HH: 0.95      # P(Z_{t+1}=H | Z_t=H)
+  cex_sigma_regime_init: L  # starting regime ("L" or "H")
+  cex_sigma_sine_period: 10000   # noisy_sine: steps per full cycle
+  cex_sigma_sine_amp: null       # noisy_sine: amplitude (defaults to 0.5 * center or midpoint of low/high)
+  cex_sigma_sine_noise: 0.0      # noisy_sine: white-noise std added to σ_t
+  cex_sigma_sine_phase: 0.0      # noisy_sine: phase offset (radians)
+  cex_sigma_floor: 0.0           # noisy_sine: lower bound for σ_t
+  smart_trades_per_block: 8.0    # expected smart-router intents per block
+  noise_trades_per_block: 6.0    # expected noise intents per block
+  narrow_mints_per_block: 200.0  # expected narrow LP mints per block (total across narrow LPs)
   passive_lp_share: 0.2
-  passive_mint_prob: 0.3
-  passive_burn_prob: 0.05
+  passive_mints_per_block: 60.0  # expected passive LP mints per block (total across passive LPs)
+  passive_burns_per_block: 10.0  # expected passive LP burns per block (total across passive LPs)
   passive_width_ticks: 500
   N_LP: 500
   tau: 20
@@ -160,16 +173,21 @@ Any argument of `simulate(...)` can be overridden in the YAML. Keep `fee_mode` i
 
 ## Running a Scenario
 ```bash
-python run.py --config scenarios/abm_mempool_config.yml
+python run.py --config scenarios/high_vol_static.yml
 ```
 
 Outputs:
-- `abm_results/verbose_steps_<scenario>.txt`: human-readable log per step and mempool replay summaries.
-- `abm_results/png/` & `abm_results/html/`: figures summarizing prices, liquidity, agent PnLs, and fee path.
+- `abm_results/logs/verbose_steps_<fee_mode>_<n>.txt`: human-readable log per step and mempool replay summaries (includes micro-time traces when `block_time>1`).
+- `abm_results/png/` & `abm_results/html/`: figures summarizing prices, liquidity, agent PnLs (smart vs. noise vs. arb, hedged vs. unhedged LPs), fee path, and width signals. PNG export relies on Kaleido (needs Chrome); HTML files are always written.
 - Optional `abm_results/liquidity_evolution_<fee_mode>.gif` if `make_liquidity_gif` is enabled.
-- JSON-like dict returned by `simulate` (see tail of `run.py` for exact keys).
-- Plots are rendered with Plotly; PNG export relies on Kaleido (which in turn needs Chrome available). HTML files are always written.
+- JSON-like dict returned by `simulate` with all recorded series (see tail of `run.py` for exact keys, including wallet vs. wealth, fee signals, micro-step history, and the active CEX volatility/regime path).
 
 ---
+
+## Batch Runners & Analysis Helpers
+- `run_fee_sweep.py --config fee_sweep_config.yml`: sweep `k_sigma`/`k_basis` (or static baseline) with parallel simulations; writes a CSV plus matplotlib summary of active/passive LP wealth.
+- `run_scenarios_mean_std.py --scenarios-dir scenarios/ --runs 5`: run every YAML scenario multiple times and emit mean ± std PnL charts for each agent class.
+- `run_parameter_grid_mean_std.py`: grid-search `cex_sigma` × fee sensitivity for all fee modes (static, volatility, toxicity, gas) and plot mean ± std PnL per fee mode.
+- `sigma_calibration.py`: derive realistic per-second `cex_sigma` from Binance 1s ETH/USDC data (CSV/Parquet/pickle) and optionally persist the computed series.
 
 For further questions or ideas, open an issue or start a discussion in this repository. Happy simulating!

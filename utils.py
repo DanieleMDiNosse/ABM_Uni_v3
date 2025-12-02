@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Tuple, List, Optional
 
@@ -113,6 +113,112 @@ class ReferenceMarket:
     sigma: float        # vol (per step) of log-returns
     kappa: float        # impact scale (price units per A^(1+xi))
     xi: float = 0.0     # impact exponent (xi = 0 => linear in |Δa|)
+    sigma_mode: str = "static"   # "static" | "regime" | "noisy_sine"
+    sigma_low: Optional[float] = None
+    sigma_high: Optional[float] = None
+    p_LL: float = 1.0
+    p_HH: float = 1.0
+    regime_state: str = "L"
+    sigma_sine_amp: Optional[float] = None
+    sigma_sine_period: int = 10_000
+    sigma_sine_noise: float = 0.0
+    sigma_sine_phase: float = 0.0
+    sigma_floor: float = 0.0
+    _sigma_step: int = field(init=False, default=0, repr=False)
+    _sigma_sine_center: float = field(init=False, default=0.0, repr=False)
+    _sigma_sine_amp_eff: float = field(init=False, default=0.0, repr=False)
+
+    def __post_init__(self):
+        """
+        Normalize and validate volatility regime settings.
+        """
+        mode = (self.sigma_mode or "static").lower()
+        valid_modes = {"static", "regime", "regime_switch", "regime_switching", "noisy_sine"}
+        if mode not in valid_modes:
+            raise ValueError(f"Invalid sigma_mode '{self.sigma_mode}'. Use 'static', 'regime', or 'noisy_sine'.")
+        if mode in {"regime", "regime_switch", "regime_switching"}:
+            self.sigma_mode = "regime"
+        else:
+            self.sigma_mode = mode
+
+        if self.sigma_mode == "regime":
+            if self.sigma_low is None or self.sigma_high is None:
+                raise ValueError("sigma_low and sigma_high must be provided for regime-switching sigma.")
+            if self.sigma_high <= self.sigma_low:
+                raise ValueError(f"sigma_high must exceed sigma_low (got {self.sigma_low} >= {self.sigma_high}).")
+            if not (0.0 <= self.p_LL <= 1.0) or not (0.0 <= self.p_HH <= 1.0):
+                raise ValueError("p_LL and p_HH must be probabilities in [0, 1].")
+            self.regime_state = "H" if str(self.regime_state).upper().startswith("H") else "L"
+            self.sigma = self._sigma_for_state(self.regime_state)
+        elif self.sigma_mode == "noisy_sine":
+            self.sigma_floor = max(0.0, float(self.sigma_floor))
+            self._sigma_sine_center = max(self.sigma_floor, float(self.sigma))
+            self.sigma_sine_period = max(1, int(self.sigma_sine_period))
+            self.sigma_sine_noise = max(0.0, float(self.sigma_sine_noise))
+            self.sigma_sine_phase = float(self.sigma_sine_phase)
+            self.regime_state = "S"
+            if self.sigma_sine_amp is None:
+                if self.sigma_low is not None and self.sigma_high is not None:
+                    self._sigma_sine_center = max(
+                        self.sigma_floor,
+                        0.5 * (float(self.sigma_low) + float(self.sigma_high)),
+                    )
+                    self._sigma_sine_amp_eff = 0.5 * abs(float(self.sigma_high) - float(self.sigma_low))
+                else:
+                    self._sigma_sine_amp_eff = 0.5 * self._sigma_sine_center
+            else:
+                if self.sigma_sine_amp < 0:
+                    raise ValueError("sigma_sine_amp must be non-negative.")
+                self._sigma_sine_amp_eff = float(self.sigma_sine_amp)
+            self._sigma_step = 0
+            self.sigma = self._sigma_from_sine(advance=False)
+        else:
+            # Static mode: keep provided sigma and ignore regime params
+            self.regime_state = "L"
+            self.sigma_low = None
+            self.sigma_high = None
+
+    @property
+    def regime_enabled(self) -> bool:
+        return self.sigma_mode == "regime"
+
+    def _sigma_for_state(self, state: str) -> float:
+        if self.regime_enabled:
+            return self.sigma_low if state == "L" else self.sigma_high  # type: ignore[arg-type]
+        return self.sigma
+
+    def _transition_regime(self) -> None:
+        """Advance the Markov chain and update the active sigma."""
+        if not self.regime_enabled:
+            return
+        current = self.regime_state
+        draw = random.random()
+        if current == "L":
+            self.regime_state = "L" if draw < self.p_LL else "H"
+        else:
+            self.regime_state = "H" if draw < self.p_HH else "L"
+        self.sigma = self._sigma_for_state(self.regime_state)
+
+    def _sigma_from_sine(self, advance: bool = True) -> float:
+        """
+        Generate sigma from a noisy sine wave, optionally advancing the counter.
+        """
+        if self.sigma_mode != "noisy_sine":
+            return self.sigma
+        step = self._sigma_step + (1 if advance else 0)
+        phase = self.sigma_sine_phase + 2.0 * math.pi * step / self.sigma_sine_period
+        noise = np.random.normal(scale=self.sigma_sine_noise) if self.sigma_sine_noise > 0 else 0.0
+        sigma_raw = self._sigma_sine_center + self._sigma_sine_amp_eff * math.sin(phase) + noise
+        sigma_new = max(self.sigma_floor, sigma_raw)
+        if advance:
+            self._sigma_step += 1
+        return sigma_new
+
+    def _update_sigma(self) -> None:
+        if self.sigma_mode == "regime":
+            self._transition_regime()
+        elif self.sigma_mode == "noisy_sine":
+            self.sigma = self._sigma_from_sine()
 
     def step(self, delta_a_cex_signed: float) -> float:
         """
@@ -136,6 +242,7 @@ class ReferenceMarket:
 
     def diffuse_only(self) -> float:
         """Diffuse the reference price via GBM without additional impact."""
+        self._update_sigma()
         z = np.random.normal()
         self.m *= math.exp(self.mu - 0.5 * self.sigma**2 + self.sigma * z)
         self.m = max(1e-12, self.m)
@@ -410,12 +517,19 @@ def load_simulation_parameters(config_path: Path, simulate_func=None) -> Tuple[s
         params = dict(params)
 
     signature = inspect.signature(simulate_func)
-    expected_keys = set(signature.parameters)
-    missing_keys = [name for name in signature.parameters if name not in params]
+    missing_keys = []
+    for name, param in signature.parameters.items():
+        if name in params:
+            continue
+        if param.default is inspect._empty:
+            missing_keys.append(name)
+        else:
+            # populate optional parameters with their default if omitted in config
+            params[name] = param.default
     if missing_keys:
         raise ValueError(f"Missing simulate parameters in {config_path}: {missing_keys}")
 
-    extra_keys = sorted(set(params) - expected_keys)
+    extra_keys = sorted(set(params) - set(signature.parameters))
     if extra_keys:
         raise ValueError(f"Unexpected keys in 'simulate' section: {extra_keys}")
 

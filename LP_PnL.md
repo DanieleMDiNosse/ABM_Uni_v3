@@ -113,11 +113,11 @@ provided that “mark-to-market” refers to the value of the **principal** only
   - plus **fees** earned from all swaps.
 
 This is the **full economic outcome** for the LP.  
-In your ABM, this is the first quantity you should always compute and store.
+In the ABM, this is the first quantity you should always compute and store.
 
 ---
 
-## 3. Rebalancing benchmark and Liquidity Value at Risk (LVR)
+## 3. Rebalancing benchmark and Loss-versus-Rebalancing (LVR)
 
 To understand how much of the LP’s PnL comes from **liquidity provision** vs **market risk**, we compare the LP to a **rebalancing strategy** that:
 
@@ -150,7 +150,7 @@ This strategy carries exactly the **same market exposure** as the LP, but withou
 
 ### 3.2. LVR: loss from adverse selection
 
-Define **Liquidity Value at Risk (LVR)**, denoted \(\text{LVR}_t\), as the cumulative loss the LP suffers from being forced to trade at mispriced AMM quotes instead of at fair CEX prices, along the entire path up to time \(t\).
+Define **Loss-Versus-Rebalancing (LVR)**, denoted \(\text{LVR}_t\), as the cumulative loss the LP suffers from being forced to trade at mispriced AMM quotes instead of at fair CEX prices, along the entire path up to time \(t\).
 
 The key result (in the continuous-time / frictionless framework) is:
 
@@ -283,3 +283,16 @@ The pair **(unhedged PnL, hedged PnL)** gives you:
 - a clean measure of how your mechanisms (dynamic fees, MEV protection, etc.) **tame adverse selection** and **shift the balance between fees and LVR**.
 
 ---
+
+## 6. How the Simulator Reports These Quantities
+
+`run.py` keeps LP wealth self-consistent by debiting wallets on mint, crediting full value (principal + fees) on burn, and delta-hedging via `RebalancerState`. The returned series map directly to the objects above:
+
+- `lp_wallet_series`, `lp_wallet_active_series`, `lp_wallet_passive_series`: realized token1 wallet after mints/burns.
+- `lp_wealth_series` (+ active/passive splits): wallet + mark-to-market of open positions, i.e., \(V^{\text{LP}}_t\).
+- `lp_fee_value_*_series`: \(F_t\) (fees marked to the CEX price).
+- `lp_unhedged_*`: unhedged PnL \(V^{\text{LP}}_t - V^{\text{LP}}_0\).
+- `lp_rebal_value_*_series` and `lp_rebal_*_series`: rebalancing benchmark value \(V^{\text{reb}}_t\) and its PnL path.
+- `lp_pnl_*` (hedged) = \(F_t - \text{LVR}_t\); `lp_lvr_*` = \(\text{LVR}_t\).
+
+All series are split into total/active/passive cohorts for easier cohort-level analysis and are consumed by the batch runners (`run_scenarios_mean_std.py`, `run_fee_sweep.py`, etc.).

@@ -13,15 +13,27 @@ simulate:
   seed: 7
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.00
+  # Choose between constant sigma or a 2-state regime-switching sigma
+  cex_sigma_mode: static
   # Volatility of the reference CEX price process (per step/second)
   # 1e-4 ~= 56% annualized; 1e-5 ~= 5.6% annualized; 2e-4 ~= 112% annualized
   cex_sigma: 0.0001
+  cex_sigma_low: 0.0001
+  cex_sigma_high: 0.002
+  cex_sigma_p_LL: 0.98
+  cex_sigma_p_HH: 0.95
+  cex_sigma_regime_init: L
+  cex_sigma_sine_noise: 0.0
+  cex_sigma_sine_period: 10000
+  cex_sigma_sine_amp: null
+  cex_sigma_sine_phase: 0.0
+  cex_sigma_floor: 0.0
 
   ##### TRADERS #####
-  # Probability that a smart-router trade intent arrives in each micro step. The expected total number of smart router trades is p_trade * block_time
-  p_trade: 0.1
-  # Probability that a noise trader submits even when best execution fails. The expected total number of noise trades is noise_floor * block_time
-  noise_floor: 0.1
+  # Expected number of smart-router trade intents per block
+  smart_trades_per_block: 1.2
+  # Expected noise trader intents per block
+  noise_trades_per_block: 1.2
   # Mean of log-normal order size distribution for traders
   trader_mean: 2.5
   # Standard deviation of log-normal order size distribution for traders
@@ -37,12 +49,12 @@ simulate:
   N_LP: 10
   # Fraction of LP agents designated as passive baseline providers
   passive_lp_share: 0.3
-  # Mint probability for narrow, actively re-centering LPs per micro step. The expected number of narrow LP mints per micro step is p_lp_narrow * (1 - passive_lp_share) * N_LP
-  p_lp_narrow: 0.2
-  # Probability per review that a passive LP mints. The expected number of passive LP mints per micro step is passive_mint_prob * passive_lp_share * N_LP
-  passive_mint_prob: 0.25
-  # Probability per review that a passive LP burns its existing position. The expected number of passive LP burns per micro step is passive_burn_prob * passive_lp_share * N_LP
-  passive_burn_prob: 0.25
+  # Expected number of narrow LP mints per block (total across narrow LPs)
+  narrow_mints_per_block: 16.8
+  # Expected number of passive LP mints per block (total across passive LPs)
+  passive_mints_per_block: 9.0
+  # Expected number of passive LP burns per block (total across passive LPs)
+  passive_burns_per_block: 9.0
   # Range width in ticks used for passive LP positions
   passive_width_ticks: 50 # 500 corresponds to ~10% of the initial price
   # Average cadence (in steps) between LP reviews of their positions
@@ -94,9 +106,17 @@ simulate:
   k_sigma: 50
   # Multiplier converting EWMA basis (ticks) into a fee adjustment
   k_basis: 0.001
+  # GAS fee mode parameters (volatility level and surprise)
+  gas_alpha: 0.05
+  gas_beta: 0.9
+  gas_omega: 0.0
+  k_gas_sigma: 0.0
+  k_gas_score: 0.0
   # Minimum absolute fee change (in bps) required before committing an update. A value of 0.001 corresponds to 0.00001 = 0.001% of the previous fee
   fee_step_bps_min: 0.001
   # Maximum fee change (in bps) allowed per update step
   fee_step_bps_max: 20.0
   # Cooldown (steps) between consecutive fee updates
   fee_cooldown: 3
+  # Percentage fee on arbitrage notional for flash loan usage (e.g., 0.0005 = 5 bps)
+  flash_loan_fee: 0.0

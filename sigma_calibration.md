@@ -10,6 +10,9 @@ two years. The key assumptions are:
 - The CEX mid‑price follows a geometric Brownian motion (GBM) with
   per‑second parameters.
 
+The script accepts CSV, Parquet, or pickle inputs and auto-detects whether
+the timestamp column is in seconds or milliseconds.
+
 The goal is to derive **low** and **high** values of `cex_sigma` that are
 empirically grounded in the historical ETH/USDC volatility.
 
@@ -23,20 +26,26 @@ table, and low/high regime medians:
 
 ```bash
 python sigma_calibration.py /path/to/ETHUSDC_1s.csv \
-    --window-seconds 300 \
+    --window-seconds 600 \
     --low-quantile 0.20 \
     --high-quantile 0.80 \
-    --save-csv abm_results/ethusdc_sigma_1s.csv
+    --percentiles 0.1 0.25 0.5 0.75 0.9 0.99 \
+    --save-csv abm_results/ethusdc_sigma_1s.csv \
+    --save-parquet abm_results/ethusdc_sigma_1s.parquet
 ```
 
 Key options:
 
 - `--window-seconds`: length of the time-based rolling window (defaults to
-  5 minutes). Increase it for smoother volatility estimates.
+  600s = 10 minutes). Increase it for smoother volatility estimates.
+- `--time-column` / `--close-column`: override column names if your data is
+  not in Binance format.
 - `--low-quantile` / `--high-quantile`: define the regime thresholds used
   to extract representative `cex_sigma` values.
 - `--save-csv` / `--save-parquet`: optionally persist the time series with
   columns `close`, `log_return_1s`, `sigma_1s`, and `sigma_annualized`.
+- `--percentiles`: which percentiles of the per-second sigma distribution
+  to print (defaults to `0.1 0.25 0.5 0.75 0.9 0.99`).
 
 Internally the script mirrors every mathematical step outlined in the
 sections below (timestamp parsing, log-return computation, rolling
@@ -346,19 +355,32 @@ full 2‑year ETH/USDC dataset.
 
 Once you have `sigma_1s_low` and `sigma_1s_high`:
 
-- Use `sigma_1s_low` as `cex_sigma` in `scenarios/low_volatility.yml`.
-- Use `sigma_1s_high` as `cex_sigma` in `scenarios/high_volatility.yml`.
+- **Static sigma:** use `sigma_1s_low` or `sigma_1s_high` as `cex_sigma` in the corresponding scenario.
+- **Regime-switching sigma:** set `cex_sigma_mode: regime` and plug the calibrated values into `cex_sigma_low`/`cex_sigma_high` (e.g. low-vol template starts in regime `L` with `p_LL`/`p_HH` defining persistence).
+- **Noisy-sine sigma:** set `cex_sigma_mode: noisy_sine` to oscillate around `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` if supplied) with optional controls for amplitude (`cex_sigma_sine_amp`), period (`cex_sigma_sine_period`), noise (`cex_sigma_sine_noise`), and floor (`cex_sigma_floor`).
 
-For example:
+For example (static vs. regime):
 
 ```yaml
 # scenarios/low_volatility.yml
 simulate:
+  cex_sigma_mode: static
   cex_sigma: <sigma_1s_low from calibration>   # per-second volatility
+  cex_sigma_low: <sigma_1s_low>                # used if cex_sigma_mode: regime
+  cex_sigma_high: <sigma_1s_high>              # used if cex_sigma_mode: regime
+  cex_sigma_p_LL: 0.98
+  cex_sigma_p_HH: 0.95
+  cex_sigma_regime_init: L
 
 # scenarios/high_volatility.yml
 simulate:
-  cex_sigma: <sigma_1s_high from calibration>  # per-second volatility
+  cex_sigma_mode: regime
+  cex_sigma: <sigma_1s_high from calibration>  # still required; use high as baseline
+  cex_sigma_low: <sigma_1s_low>
+  cex_sigma_high: <sigma_1s_high>
+  cex_sigma_p_LL: 0.98
+  cex_sigma_p_HH: 0.95
+  cex_sigma_regime_init: H
 ```
 
 Because one micro step equals one second in the simulation, **no further

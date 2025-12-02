@@ -4,7 +4,7 @@ fee_sweep:
   steps: 1000  # Simulation timesteps (passed as T) for each individual run
   seed: 12345  # Master RNG seed used to derive per-run seeds for reproducibility
   workers: 10  # Size of the ProcessPoolExecutor used to parallelise simulations
-  noise_floor: null  # Optional override of the base config's noise_floor (null keeps the original)
+  noise_trades_per_block: null  # Optional override of the base config's noise_trades_per_block (null keeps the original)
   output: abm_results/fee_sweep.png  # Destination plot visualising aggregated LP PnL across sweeps
   csv: abm_results/fee_sweep_results.csv  # Destination CSV storing per-scenario summary statistics
   base_simulation_config: abm_mempool_config.yml  # Base simulation parameters shared by all sweeps
@@ -18,4 +18,3 @@ fee_sweep:
     toxicity_baseline:  # Toxicity-aware fee mode sweeping k_basis
       param_name: k_basis  # Target parameter in base config controlling toxicity sensitivity
       values: [1.0e-6, 3.0e-6, 1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]  # Candidate k_basis values to evaluate
-

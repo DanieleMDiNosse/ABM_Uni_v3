@@ -6,11 +6,12 @@ The fee logic is primarily implemented in `run.py` within the `simulate` functio
 
 ## Fee Modes
 
-There are three supported fee modes:
+There are four supported fee modes:
 
 1.  **Static** (`static`)
 2.  **Volatility-based** (`volatility`)
 3.  **Toxicity-based** (`toxicity`)
+4.  **GAS-based** (`gas`)
 
 ### 1. Static Fee
 
@@ -26,7 +27,7 @@ This mode adjusts the fee based on the realized volatility of the CEX price. The
 
 **Formula:**
 
-$$ f_{raw} = f_0 + k_\sigma \cdot \hat{\sigma}^2_t $$
+$$ f_{raw} = f_0 + k_\sigma \cdot \hat{\sigma}_t \cdot \sqrt{\text{block\_time}} $$
 
 **Components:**
 
@@ -34,9 +35,9 @@ $$ f_{raw} = f_0 + k_\sigma \cdot \hat{\sigma}^2_t $$
     $$ vol\_obs_t = |\ln(m_t) - \ln(m_{t-1})| $$
     where $m_t$ is the CEX price at step $t$.
 
-*   **EWMA of Squared Volatility:**
-    $$ \hat{\sigma}^2_t = \text{EWMA}(vol\_obs_t^2) $$
-    The Exponentially Weighted Moving Average (EWMA) is updated at each step using a half-life parameter (`fee_half_life`).
+*   **EWMA of absolute log-returns:**
+    $$ \hat{\sigma}_t = \text{EWMA}(vol\_obs_t) $$
+    The Exponentially Weighted Moving Average (EWMA) is updated at each step using a half-life parameter (`fee_half_life`). No squaring is applied; the controller works directly with the smoothed absolute log-return.
 
 *   **Parameters:**
     *   $f_0$: Baseline fee.
@@ -59,9 +60,9 @@ $$ f_{raw} = f_0 + k_{basis} \cdot \text{basis\_ticks}_t $$
 *   **Log Price Gap:**
     $$ \text{log\_gap}_t = |\ln(P_{DEX, t}) - \ln(P_{CEX, t})| $$
 
-*   **Excess Basis (Observation):**
+*   **Excess Basis (Observation, uses the *current* pool fee):**
     $$ B_{obs, t} = \max(0, \text{log\_gap}_t - \text{fee\_band\_ln}) $$
-    This measures how much the price gap exceeds the fee band.
+    This measures how much the price gap exceeds the fee band; gaps inside the fee band contribute 0.
 
 *   **EWMA of Basis:**
     $$ B_{hat, t} = \text{EWMA}(B_{obs, t}) $$
@@ -75,6 +76,30 @@ $$ f_{raw} = f_0 + k_{basis} \cdot \text{basis\_ticks}_t $$
     *   $f_0$: Baseline fee.
     *   $k_{basis}$: Scaling factor for basis ticks (parameter `k_basis`).
 
+### 4. GAS-based Fee
+
+This mode replaces the EWMA with a **score-driven (GAS) volatility state** and charges based on both the level of that state and the “surprise” in the most recent return.
+
+**State and score (Gaussian log-variance):**
+
+*   Observation: $r_t = \log m_t - \log m_{t-1}$.
+*   State: $f_t = \log \sigma_t^2$.
+*   Score: $s_t = \tfrac{1}{2}\left(\frac{r_t^2}{\sigma_t^2} - 1\right)$ with $\sigma_t^2 = e^{f_t}$.
+*   Update: $f_{t+1} = \omega + \beta f_t + \alpha s_t$.
+*   Derived level: $\hat{\sigma}_t = \exp(\tfrac{1}{2} f_t)$.
+
+**Fee mapping:**
+
+$$ f_{raw} = f_0 + k_{\text{gas\_sigma}} \cdot \hat{\sigma}_t + k_{\text{gas\_score}} \cdot \max(0, s_t). $$
+
+**Parameters:**
+
+*   `gas_alpha` ($\alpha$): score weight.
+*   `gas_beta` ($\beta$): persistence of the log-variance state.
+*   `gas_omega` ($\omega$): drift term.
+*   `k_gas_sigma`: fee sensitivity to the GAS volatility level $\hat{\sigma}_t$.
+*   `k_gas_score`: fee sensitivity to positive surprises $s_t$.
+
 ## Fee Update Mechanism (Controller)
 
 Regardless of the mode, the calculated raw fee $f_{raw}$ goes through a controller that applies clamping, smoothing, and hysteresis before updating the actual pool fee.
@@ -87,20 +112,22 @@ Regardless of the mode, the calculated raw fee $f_{raw}$ goes through a controll
     The fee is only updated if the change is significant enough, and the change per step is limited.
 
     *   **Minimum Change Threshold:**
-        If $|f_{tgt} - f_{current}| < \text{fee\_step\_bps\_min}$, no update occurs.
+        If $|f_{tgt} - f_{current}| < \text{fee\_step\_bps\_min} / 10{,}000$, no update occurs.
 
     *   **Maximum Step Size:**
-        The change is capped at $\text{fee\_step\_bps\_max}$.
-        $$ \Delta f = \text{sign}(f_{tgt} - f_{current}) \cdot \min(|f_{tgt} - f_{current}|, \text{fee\_step\_bps\_max}) $$
+        The change is capped at $\text{fee\_step\_bps\_max} / 10{,}000$.
+        $$ \Delta f = \text{sign}(f_{tgt} - f_{current}) \cdot \min(|f_{tgt} - f_{current}|, \text{fee\_step\_bps\_max} / 10{,}000) $$
 
     *   **New Fee:**
         $$ f_{new} = f_{current} + \Delta f $$
+        If scheduled, `f_new` is staged in `fee_next` and only committed once any cooldown has elapsed.
 
 3.  **Cooldown:**
-    After a fee update, a cooldown period (`fee_cooldown` steps) is enforced during which the fee cannot be changed again.
+    After staging a fee update, a cooldown period (`fee_cooldown` steps) is enforced during which additional changes are ignored.
 
 ## Implementation Reference
 
 *   **File:** `run.py`
 *   **Function:** `simulate`
 *   **Relevant Section:** "Dynamic fee controller" block inside the main simulation loop.
+*   **Diagnostics:** the simulation returns `fee_series`, `fee_sigma_series`, `fee_basis_ticks_series`, `fee_signal_series`, and `fee_imb_series` for plotting/debugging.
