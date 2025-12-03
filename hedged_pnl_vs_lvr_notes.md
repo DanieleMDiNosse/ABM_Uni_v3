@@ -93,7 +93,7 @@ So the *informed* or “non‑noise” trader flow hitting the AMM is **systemat
 - Passive LPs:
   - hold finite‑width ranges (e.g. 2–10% bands in your configs),
   - are present across most of the time horizon (seed binomial hill + ongoing mints),
-  - recenter or exit according to simple PnL rules (`theta_TP`, `theta_SL`) and review clocks (`tau`).
+  - enter and exit positions according to **simple probabilistic rules** tied to review clocks (`tau`): when a passive LP’s review clock fires, it may mint a new wide range with probability derived from `passive_mints_per_block`, and may randomly burn one of its existing ranges with probability derived from `passive_burns_per_block`. Passive LPs never recenter based on out‑of‑range thresholds and do **not** use TP/SL (`theta_TP`, `theta_SL`); those thresholds apply only to active narrow LPs.
 - They **do not control**:
   - when informed flow arrives,
   - where the CEX price is diffusing,
@@ -227,8 +227,8 @@ Ideas:
 - Use **wider ranges** for passive LPs (hundreds–thousands of ticks) so they behave closer to HODL with fee income.
 - Reduce passive churn:
   - lower `passive_burns_per_block`,
-  - lengthen `tau` (review interval),
-  - and adjust `theta_TP`/`theta_SL` to avoid frequent rebalance events that realize LVR.
+  - lengthen `tau` (review interval).
+- For **active narrow LPs** (which do use TP/SL), adjust `theta_TP`/`theta_SL` to avoid frequent rebalance events that realize LVR; for purely passive baselines you typically keep these thresholds high and rely on the probabilistic burn rule instead.
 - Consider separating:
   - very wide “baseline” LPs (fee‑earning, low LVR per unit),
   - from narrower, more active LPs whose hedged PnL you do *not* expect to be positive but that improve pool quality.

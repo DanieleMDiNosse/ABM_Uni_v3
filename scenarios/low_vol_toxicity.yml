@@ -1,4 +1,4 @@
-# Fee mode (also used as the scenario label)
+# Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
 fee_mode: toxicity
 # Parameter overrides passed to the simulate() runner
 simulate:
@@ -25,7 +25,7 @@ simulate:
   cex_sigma_regime_init: L
   cex_sigma_sine_noise: 0.0
   cex_sigma_sine_period: 10000
-  cex_sigma_sine_amp: null
+  cex_sigma_sine_amp: 0.00005
   cex_sigma_sine_phase: 0.0
   cex_sigma_floor: 0.0
 

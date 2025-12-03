@@ -21,16 +21,12 @@ import run as run_module
 from run_scenarios_mean_std import SERIES_DEFS, _slice_series, aggregate_runs
 from utils import load_simulation_parameters
 
-# Silence the tqdm progress bar inside run.simulate to avoid nested bars.
-
-
+# Silence the tqdm progress bar inside run.simulate to avoid nested bars
 def _silent_tqdm(iterable=None, **kwargs):
     if iterable is None:
         total = int(kwargs.get("total", 0))
         return range(total)
     return iterable
-
-
 run_module.tqdm = _silent_tqdm  # type: ignore[attr-defined]
 simulate = run_module.simulate
 
@@ -61,11 +57,11 @@ FEE_MODE_CONFIG = {
         "values": np.linspace(1e-5, 1e-1, 10),
         "xlabel": "k_basis (toxicity sensitivity)",
     },
-    "gas": {
-        "param_name": "k_gas_sigma",
-        "values": np.linspace(1e-2, 10, 10),
-        "xlabel": "k_gas_sigma (GAS volatility sensitivity)",
-    },
+    # "gas": {
+    #     "param_name": "k_gas_sigma",
+    #     "values": np.linspace(1e-2, 10, 10),
+    #     "xlabel": "k_gas_sigma (GAS volatility sensitivity)",
+    # },
 }
 
 RUNS_PER_POINT = 30
@@ -125,6 +121,18 @@ def _sigma_label_from_params(params: Dict[str, Any]) -> str:
         amp_label = "auto" if amp is None else amp
         return f"noisy_sine_{center}_amp{amp_label}_per{period}_noise{noise}"
     return str(params.get("cex_sigma"))
+
+
+def _format_values(values: Sequence[Any]) -> str:
+    formatted: List[str] = []
+    for val in values:
+        if val is None:
+            formatted.append("const")
+        elif isinstance(val, (float, int, np.floating)):
+            formatted.append(f"{float(val):.4g}")
+        else:
+            formatted.append(str(val))
+    return ", ".join(formatted)
 
 
 def build_grid(base_params: Dict[str, Any]) -> List[GridPoint]:
@@ -255,7 +263,7 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
                 continue
 
             sens_values = list(cfg["values"])
-            labels = ["const" if v is None else str(v) for v in sens_values]
+            labels = ["const" if v is None else str(v)[:6] for v in sens_values]
             pos_base = np.arange(len(sens_values)) + 1
             width = 0.18
 
@@ -276,7 +284,7 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
                     vp["cmeans"].set_linewidth(1.4)
                 ax_pnl.plot([], [], color=PNL_COLORS.get(key, "#444"), label=label)
 
-            ax_pnl.set_title(f"{fee_mode} — sigma={sigma_value}")
+            # ax_pnl.set_title(f"{fee_mode} — sigma={sigma_value}")
             ax_pnl.set_xticks(pos_base, labels)
             ax_pnl.grid(True, alpha=0.3)
             ax_pnl.legend(fontsize=8)
@@ -332,7 +340,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     scenario_label, base_params = load_simulation_parameters(BASE_CONFIG_PATH, simulate_func=simulate)
-    print(f"Loaded base scenario '{scenario_label}'")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary_rows: List[Dict[str, Any]] = []
@@ -341,6 +348,22 @@ def main() -> None:
 
     grid = build_grid(base_params)
     total = len(grid)
+    fee_lines = []
+    for fee_mode, cfg in FEE_MODE_CONFIG.items():
+        param_label = cfg["param_name"] or "constant"
+        values_label = _format_values(cfg["values"])
+        fee_lines.append(f"    - {fee_mode}: {param_label} = [{values_label}]")
+    fee_block = "\n".join(fee_lines)
+    print(
+        "Grid search parameters:\n"
+        f"  base scenario: {scenario_label}\n"
+        f"  sigma profile: {_sigma_label_from_params(base_params)}\n"
+        "  fee_mode from YAML will be overridden\n"
+        f"  combinations: {total} ({len(FEE_MODE_CONFIG)} fee modes)\n"
+        f"  runs per point: {RUNS_PER_POINT}\n"
+        "  sweeps:\n"
+        f"{fee_block}"
+    )
     with ProcessPoolExecutor(max_workers=args.workers) as executor:
         futures = {
             executor.submit(_evaluate_point, point, base_params): point

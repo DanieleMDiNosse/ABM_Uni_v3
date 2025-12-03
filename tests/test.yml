@@ -1,33 +1,34 @@
-# Fee mode (also used as the scenario label)
-fee_mode: static
+# Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
+fee_mode: gas
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 20000
+  T: 7000
   # Number of initial steps to omit from visualizations and analytics
-  skip_step: 1000
+  skip_step: 0
   # Random seed used for reproducibility across RNGs
   seed: 7
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.00
-  # Choose between static, regime-switching, or noisy-sine volatility modes
-  cex_sigma_mode: static
+  # Choose between static, regime (regime switching), noisy-sine volatility modes
+  cex_sigma_mode: noisy_sine
   # Volatility of the reference CEX price process (per step/second)
   # 1e-4 ~= 56% annualized; 1e-5 ~= 5.6% annualized; 2e-4 ~= 112% annualized
-  cex_sigma: 0.0001
-  # regime switching parameters
+  cex_sigma: 0.00015
+  # high and low volatility levels for regime switching and noisy sine modes
   cex_sigma_low: 0.0001
   cex_sigma_high: 0.002
+  # regime switching transition matrix parameters
   cex_sigma_p_LL: 0.999
   cex_sigma_p_HH: 0.999
-  cex_sigma_regime_init: L
+  cex_sigma_regime_init: L # initial regime: L (low) or H (high)
   # noisy sine parameters
-  cex_sigma_sine_noise: 1e-4
-  cex_sigma_sine_period: 10000
-  cex_sigma_sine_amp: null
+  cex_sigma_sine_noise: 5e-5
+  cex_sigma_sine_period: 20000
+  cex_sigma_sine_amp: 0.0001
   cex_sigma_sine_phase: 0.0
   cex_sigma_floor: 0.0
 
@@ -54,9 +55,9 @@ simulate:
   # Total number of LP agents instantiated in the simulation
   N_LP: 10
   # Fraction of LP agents designated as passive baseline providers
-  passive_lp_share: 1
+  passive_lp_share: 0.7
   # Expected number of narrow LP mints per block (total across narrow LPs)
-  narrow_mints_per_block: 0.0
+  narrow_mints_per_block: 10
   # Expected number of passive LP mints per block (total across passive LPs)
   passive_mints_per_block: 10
   # Expected number of passive LP burns per block (total across passive LPs)
@@ -64,7 +65,7 @@ simulate:
   # Range width in ticks used for passive LP positions
   passive_width_ticks: 1000 # 500 corresponds to ~2% of the initial price
   # Average cadence (in steps) between LP reviews of their positions
-  tau: 20
+  tau: 10
   # Minimum and maximum width in ticks for programmatic LP mints
   w_min_ticks: 10 # 10 corresponds to ~0.2% of the initial price
   w_max_ticks: 1774540
@@ -113,13 +114,13 @@ simulate:
   # Multiplier converting EWMA basis (ticks) into a fee adjustment
   k_basis: 0.001
   # GAS fee mode parameters (volatility level and surprise)
-  gas_alpha: 0.05
-  gas_beta: 0.9
+  gas_alpha: 0.1
+  gas_beta: 0.1
   gas_omega: 0.0
-  k_gas_sigma: 0.1
-  k_gas_score: 0.1
+  k_gas_sigma: 0.05
+  # k_gas_score: 0.005
   # Minimum absolute fee change (in bps) required before committing an update. A value of 0.001 corresponds to 0.00001 = 0.001% of the previous fee
-  fee_step_bps_min: 0.001
+  fee_step_bps_min: 0.0005
   # Maximum fee change (in bps) allowed per update step
   fee_step_bps_max: 200.0
   # Cooldown (steps) between consecutive fee updates

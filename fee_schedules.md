@@ -90,7 +90,8 @@ This mode replaces the EWMA with a **score-driven (GAS) volatility state** and c
 
 **Fee mapping:**
 
-$$ f_{raw} = f_0 + k_{\text{gas\_sigma}} \cdot \hat{\sigma}_t + k_{\text{gas\_score}} \cdot \max(0, s_t). $$
+$$ f_{raw} = f_0 + k_{\text{gas\_sigma}} \cdot \hat{\sigma}_t . $$
+<!-- $$ f_{raw} = f_0 + k_{\text{gas\_sigma}} \cdot \hat{\sigma}_t + k_{\text{gas\_score}} \cdot \max(0, s_t). $$ -->
 
 **Parameters:**
 
@@ -98,7 +99,7 @@ $$ f_{raw} = f_0 + k_{\text{gas\_sigma}} \cdot \hat{\sigma}_t + k_{\text{gas\_sc
 *   `gas_beta` ($\beta$): persistence of the log-variance state.
 *   `gas_omega` ($\omega$): drift term.
 *   `k_gas_sigma`: fee sensitivity to the GAS volatility level $\hat{\sigma}_t$.
-*   `k_gas_score`: fee sensitivity to positive surprises $s_t$.
+<!-- *   `k_gas_score`: fee sensitivity to positive surprises $s_t$. -->
 
 ## Fee Update Mechanism (Controller)
 

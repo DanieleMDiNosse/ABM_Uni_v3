@@ -240,28 +240,38 @@ def simulate(
         )
         sigma_for_ref = cex_sigma_low if regime_state == "L" else cex_sigma_high
     elif noisy_sine_mode:
-        if cex_sigma <= 0:
-            raise ValueError("cex_sigma must be positive when cex_sigma_mode='noisy_sine'.")
-        sigma_center = max(1e-12, float(cex_sigma))
-        amp_for_log = cex_sigma_sine_amp
-        if amp_for_log is None and cex_sigma_low is not None and cex_sigma_high is not None:
-            sigma_center = 0.5 * (float(cex_sigma_low) + float(cex_sigma_high))
-            amp_for_log = 0.5 * abs(float(cex_sigma_high) - float(cex_sigma_low))
-        if amp_for_log is None:
-            amp_for_log = 0.5 * sigma_center
+        try:
+            cex_sigma_val = float(cex_sigma)
+            cex_sigma_sine_amp_val = float(cex_sigma_sine_amp)
+            cex_sigma_sine_noise_val = float(cex_sigma_sine_noise)
+            cex_sigma_sine_period_val = int(cex_sigma_sine_period)
+        except Exception as exc:
+            raise ValueError("noisy_sine mode requires numeric cex_sigma, cex_sigma_sine_amp, cex_sigma_sine_noise, and cex_sigma_sine_period.") from exc
+        if cex_sigma_val <= 0:
+            raise ValueError("cex_sigma must be set and positive when cex_sigma_mode='noisy_sine'.")
+        if cex_sigma_sine_amp_val <= 0:
+            raise ValueError("cex_sigma_sine_amp must be set and positive when cex_sigma_mode='noisy_sine'.")
+        if cex_sigma_sine_period_val <= 0:
+            raise ValueError("cex_sigma_sine_period must be set and positive when cex_sigma_mode='noisy_sine'.")
+        if cex_sigma_sine_noise_val < 0:
+            raise ValueError("cex_sigma_sine_noise must be set and non-negative when cex_sigma_mode='noisy_sine'.")
+        sigma_center = max(1e-12, cex_sigma_val)
+        amp_for_log = cex_sigma_sine_amp_val
         sigma_annualized_center = sigma_center * math.sqrt(seconds_per_year)
+        sigma_high_annualized = (sigma_center + amp_for_log) * math.sqrt(seconds_per_year)
+        sigma_low_annualized = max(0.0, (sigma_center - amp_for_log)) * math.sqrt(seconds_per_year)
         print(
-            f"\\n[CONFIG] Noisy-sine cex_sigma: "
+            f"\n[CONFIG] Noisy-sine cex_sigma: "
             f"center={sigma_center} ({sigma_annualized_center:.2%} annualized), "
-            f"amp={amp_for_log}, period={cex_sigma_sine_period} steps, "
+            f"amp={amp_for_log} ([{sigma_low_annualized:.2%},{sigma_high_annualized:.2%}] annualized), period={cex_sigma_sine_period} steps, "
             f"noise_std={cex_sigma_sine_noise}, floor={cex_sigma_floor}"
         )
         sigma_for_ref = sigma_center
     else:
         sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
-        print(f"\\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
+        print(f"\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
         sigma_for_ref = cex_sigma
-    print(f"[CONFIG] Fee: {initial_params.get('f0', 0.0005)*10000:.1f} bps\\n")
+    print(f"[CONFIG] Fee: {initial_params.get('f0', 0.0005)*10000:.1f} bps\n")
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
@@ -1861,7 +1871,7 @@ def simulate(
         elif fee_mode == "toxicity":
             f_raw = f0 + k_basis * basis_ticks
         elif fee_mode == "gas":
-            f_raw = f0 + k_gas_sigma * sigma_gas + k_gas_score * max(0.0, score_t)
+            f_raw = f0 + k_gas_sigma * sigma_gas# + k_gas_score * max(0.0, score_t)
         else:
             f_raw = pool.f  # "static": no change
 
