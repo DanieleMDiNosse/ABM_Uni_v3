@@ -27,7 +27,7 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
   - `toxicity` adds a multiple of the fee-adjusted log basis (in ticks).
   - `gas` maps a GAS-style (score-driven) volatility state into the fee using `gas_alpha`, `gas_beta`, `gas_omega`, and `k_gas_sigma`.
   Fee moves are clipped by `fee_step_bps_min/max` and gated by `fee_cooldown`.
-- **Liquidity bootstrapping**: simulations always start from an evolved/sharded binomial hill that allocates `initial_total_L` across synthetic LPs and can optionally be plotted.
+- **Liquidity bootstrapping**: simulations always start from an evolved/sharded binomial hill that allocates `initial_total_L` across synthetic *seed* LPs (`is_seed=True`) that provide background liquidity and can optionally be plotted; these seed LPs are excluded from the strategic LP cohorts and PnL statistics.
 - **LP width rule**: narrow LPs size their ranges off an EWMA of the fee-adjusted basis plus a configurable binomial noise term (`binom_n`, `binom_p`), then clamp to `[w_min_ticks, w_max_ticks]`.
 - **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (block mode), and verbose logs under `abm_results/logs/`.
 
@@ -39,16 +39,62 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 - Implemented as `ReferenceMarket` in `utils.py`.
 - Modeled as a GBM over the CEX mid-price with drift `cex_mu` and volatility `σ_t`, plus a permanent impact term of the form
   `impact = kappa * sign(Δa) * |Δa|^{1+xi}` applied to the CEX price in token1 units per token0.
-- Volatility can be **static** (`cex_sigma_mode: static`, using `cex_sigma`), **regime-switching** (`cex_sigma_mode: regime`, two-state Markov chain over `σ_L`/`σ_H` with transition probabilities `p_LL`/`p_HH`), or a **noisy sine wave** (`cex_sigma_mode: noisy_sine`) following `σ_t = max(cex_sigma_floor, σ_center + A·sin(2πt/period) + ε_t)` with `ε_t ~ N(0, cex_sigma_sine_noise)`. The center defaults to `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` when provided); in scenarios using `noisy_sine` the amplitude is typically specified explicitly via `cex_sigma_sine_amp`. The active path is returned as `cex_sigma_series` and `cex_regime_series`.
-- The diffusion step uses `m ← m · exp(cex_mu - 0.5 · σ_t^2 + σ_t · z)` with `z ~ N(0,1)`, so `σ_t` is interpreted directly as the per-microstep volatility (no squaring).
-- In non-block mode (`block_time == 1`), each simulation step calls `ref.step(Δa_cex)`, which first applies impact from the net arbitrage flow and then diffuses via GBM.
+- Volatility can be:
+  - **static** (`cex_sigma_mode: static`, using `cex_sigma`);
+  - **regime-switching** (`cex_sigma_mode: regime`, two-state Markov chain over `σ_L`/`σ_H` with transition probabilities `p_LL`/`p_HH`);
+  - a **noisy sine wave** (`cex_sigma_mode: noisy_sine`) following `σ_t = max(cex_sigma_floor, σ_center + A·sin(2πt/period) + ε_t)` with `ε_t ~ N(0, cex_sigma_sine_noise)`;
+  - or **Heston-like stochastic volatility** (`cex_sigma_mode: heston`), where the variance `v_t = σ_t^2` follows a mean-reverting square-root process with parameters `cex_heston_kappa`, `cex_heston_theta`, `cex_heston_sigma_v`, correlation `cex_heston_rho`, and optional initial variance `cex_heston_v0` (falling back to `cex_sigma^2` when omitted).
+  The center for the noisy-sine mode defaults to `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` when provided); in scenarios using `noisy_sine` the amplitude is typically specified explicitly via `cex_sigma_sine_amp`. The active path is returned as `cex_sigma_series` and `cex_regime_series`.
+- In non-Heston modes the diffusion step uses `m ← m · exp(cex_mu - 0.5 · σ_t^2 + σ_t · z)` with `z ~ N(0,1)`, so `σ_t` is interpreted directly as the per-microstep volatility (no squaring). In Heston mode, the variance `v_t` and price `m_t` are updated jointly with correlated Gaussian shocks while keeping `σ_t = sqrt(v_t)` in the returned series.
+- In non-block mode (`block_time == 1`), each simulation step calls `ref.step(Δa_cex)`, which first applies impact from the net arbitrage flow and then diffuses via GBM/Heston.
 - In block mode (`block_time > 1`), the CEX only diffuses during intra-block micro-steps (`ref.diffuse_only()`), while impact from the arbitrage is applied once at the end via `ref.apply_impact_only(Δa_cex)`. This decouples diffusion from impact and matches the code in `run.py`.
+
+#### Heston Volatility Mode (details)
+- **Continuous-time model** (conceptual): in Heston mode the CEX price `m_t` and variance `v_t` are thought of as solving
+  - \( \mathrm{d}\log m_t = (\mu - \tfrac{1}{2} v_t)\,\mathrm{d}t + \sqrt{v_t}\,\mathrm{d}W_t^{(1)} \)
+  - \( \mathrm{d}v_t = \kappa(\theta - v_t)\,\mathrm{d}t + \sigma_v \sqrt{v_t}\,\mathrm{d}W_t^{(2)} \)
+  with correlation \( \mathrm{corr}(W^{(1)}, W^{(2)}) = \rho \).
+- **Discrete-time implementation** (per micro-step, `Δt = 1` second):
+  - The simulator stores the variance as `_heston_v = v_t` and uses `σ_t = sqrt(v_t)` in plots and outputs (`cex_sigma_series`).
+  - Each diffusion step (`ReferenceMarket._diffuse_heston`) draws `z1, z2 ~ N(0, 1)` i.i.d. and performs:
+    - `v_t = max(_heston_v, 0)` (guard against numerical drift),
+    - `dv = kappa * (theta - v_t) * dt + sigma_v * sqrt(max(v_t, 0)) * sqrt(dt) * z1`,
+    - `v_next = max(0, v_t + dv)` (full truncation to keep variance non-negative),
+    - `_heston_v = v_next` and `sigma = sqrt(max(v_next, 0))` (this `sigma` is what ends up in `cex_sigma_series`),
+    - `z_price = rho * z1 + sqrt(1 - rho^2) * z2` (correlated shock for the price, with `rho` clipped to `[-1, 1]`),
+    - `log_m_next = log(m_t) + (mu - 0.5 * v_t) * dt + sqrt(max(v_t, 0)) * sqrt(dt) * z_price`,
+    - `m_t` is updated to `exp(log_m_next)` and floored at `1e-12` for numerical stability.
+- **Initialization and parameter validation**:
+  - Heston mode is enabled by `cex_sigma_mode: heston` in the YAML config; `simulate(...)` fails fast if any of the required parameters are missing:
+    - `cex_heston_kappa`, `cex_heston_theta`, `cex_heston_sigma_v`, `cex_heston_rho`.
+  - Constraints enforced at startup:
+    - `cex_heston_kappa > 0`,
+    - `cex_heston_theta ≥ 0`,
+    - `cex_heston_sigma_v ≥ 0`,
+    - `cex_heston_rho ∈ [-1, 1]`.
+  - The initial variance is chosen as:
+    - `v0 = cex_heston_v0` if provided (must be strictly positive), or
+    - `v0 = cex_sigma^2` if `cex_heston_v0` is omitted (requires `cex_sigma > 0`).
+    In both cases `sigma_for_ref = sqrt(v0)` is used as the initial per-step volatility in logs and for GAS-style fee diagnostics.
+- **Configuration knobs** (YAML, under `simulate:`):
+  - `cex_sigma_mode: heston` — activates the Heston engine.
+  - `cex_sigma` — per-step volatility used as `sqrt(v0)` when `cex_heston_v0` is omitted.
+  - `cex_heston_kappa` — mean reversion speed of the variance process (higher values pull `v_t` back to `theta` more aggressively).
+  - `cex_heston_theta` — long-run variance level.
+  - `cex_heston_sigma_v` — volatility of the variance process (controls how “noisy” `v_t` is).
+  - `cex_heston_rho` — correlation between price shocks and variance shocks; negative values generate the usual “leverage effect”.
+  - `cex_heston_v0` — optional explicit initial variance; when omitted the code uses `cex_sigma^2`.
+- **Outputs and plotting**:
+  - `cex_sigma_series` continues to contain the *per-step* volatility used in the GBM/Heston update; in Heston mode this is `sqrt(v_t)` at each step.
+  - The existing PnL figure (`6_pnl`) uses a volatility subplot whenever the sigma path is dynamic. Heston mode enables this subplot (`sigma_panel = True`) so you can inspect `cex_sigma_series` under the agent PnL panel.
+  - The `cex_regime_series` remains available for consistency; in Heston mode it is a simple label (`"H"`) and not used for logic.
 
 ### Arbitrageur
 - Encoded in `arbitrage_to_target` and the `arb` branch of `execute_mempool_orders` in `run.py`.
 - At each step, uses the **validated** snapshot of the CEX price from the end of the previous block (`cex_ref_for_agents`) to define a no-arb band `[m·r, m/r]`, where `r = 1 - fee`.
 - In non-block mode, the arbitrageur trades directly against the live pool using the current `ref.m`.
 - In block mode, an `arb` intent is inserted into the mempool at the start of the block, and it executes first when the mempool is replayed. The arb’s trade size and direction are determined by bringing the DEX price back into the no-arb band, with per-span fees allocated via the same fee callback used for traders.
+- A configurable `flash_loan_fee` parameter models per-notional funding cost for the arb; before executing, the arbitrageur previews the trade’s PnL **including** this fee and will skip the arbitrage entirely whenever the expected profit (after flash cost) is non-positive.
 - PnL is measured in token1 by tracking token flows vs. the CEX price after impact is applied for that block.
 
 ### Smart Router
@@ -56,7 +102,7 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 - Per potential trade:
   - Draws a token1 notional from a log-normal distribution (`trader_mean`, `trader_sigma`).
   - Randomly chooses direction `X_to_Y` or `Y_to_X` with equal probability, converting the notionals into dx/dy so the expected trade *value* is symmetric across directions.
-  - Applies a best-execution check vs. the CEX price referenced by agents (`theta_T`): if the quoted DEX execution is worse than the CEX benchmark by more than this threshold, the trade is skipped.
+  - Applies a best-execution check vs. the CEX price referenced by agents (`theta_T`): if the quoted DEX execution is worse than the CEX benchmark by more than this threshold, the trade is **routed to the CEX instead** (no AMM leg); the resulting CEX flow contributes to the reference-price impact and to the smart-router PnL.
   - Enforces a maximum relative slippage bound (`slippage_tolerance`) at execution time; trades violating slippage are also skipped.
 - Trade *arrival rates* are configured via `smart_trades_per_block`, interpreted as the **expected number of smart-router intents per block**. Internally this is converted to a per-step/per-micro-step Bernoulli probability `p_smart ≈ smart_trades_per_block / block_time` (clipped to `[0,1]`) that is sampled each micro-step in block mode and each step in non-block mode.
 - In non-block mode, smart-router trades execute immediately in the step schedule. In block mode, the smart router simply enqueues intents into the mempool during micro-steps; those intents are executed later in random order when the mempool is replayed.
@@ -70,8 +116,9 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 ### Liquidity Providers
 - Defined in `agents.py` (`LPAgent`, `Position`, and `RebalancerState`) with management logic in `run.py`.
 - **Types**:
-  - *Passive baselines* (`is_passive=True` for a fraction `passive_lp_share` of LPs): wide fixed-width ranges, probabilistic mint/burn rules driven by the block-level targets `passive_mints_per_block`, `passive_burns_per_block`, and width `passive_width_ticks`.
+  - *Passive baselines* (`is_passive=True` for a fraction `passive_lp_share` of the `N_LP` **strategic** LPs): wide fixed-width ranges, probabilistic mint/burn rules driven by the block-level targets `passive_mints_per_block`, `passive_burns_per_block`, and width `passive_width_ticks`.
   - *Active narrow LPs* (`is_active_narrow=True` and `is_passive=False`): concentrate liquidity near the current mid, recenter after they have been out of range for a random number of steps between `k_out_min` and `k_out_max`, and follow an EWMA-driven width signal with binomial noise.
+  - *Seed/background LPs* (`is_seed=True`, always passive): created by `bootstrap_initial_binomial_hill_sharded` to form the initial binomial hill; they provide background liquidity and evolve via the same passive mint/burn rules but are excluded from `N_LP` counts and from the active/passive LP PnL and wealth series.
 - **Decision process** (per LP):
   - Each LP carries an internal review clock with inter-review times drawn from a geometric distribution with mean `tau`. In any block an LP is either *not due* (clock has not fired yet) or *due* (clock hits zero); only due LPs are allowed to act.
   - LP activity knobs are specified as **target counts per block** across the population: `narrow_mints_per_block`, `passive_mints_per_block`, and `passive_burns_per_block`. Given `block_time = B`, the passive share, and `N_LP`, the simulator converts these into per-LP Bernoulli probabilities, e.g. `p_narrow_mint ≈ narrow_mints_per_block / (B · N_narrow)`, `p_passive_mint ≈ passive_mints_per_block / (B · N_passive)`, and `p_passive_burn ≈ passive_burns_per_block / (B · N_passive)` (clipped to `[0,1]`), and flips these coins only for LPs whose review clock is due and that are not in cooldown. Realized mint/burn counts therefore fluctuate around the targets and also scale with how many LPs happen to be due in that block (≈ `1/τ` fraction on average) and with cooldowns.
@@ -82,8 +129,8 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
   - In non-block mode, LP burns and narrow-LP recenter actions execute directly during their bucket(s) in the per-step schedule A/B/C. New mints are currently handled only in the block-mode mempool path, so for fully budget- and wallet-consistent LP dynamics you should prefer `block_time > 1`.
   - In block mode, all LP actions (burn, recenter, mint) are added to the mempool as intents (`lp_burn`, `lp_recenter`, `lp_mint`) and executed alongside trader orders when the mempool is replayed.
 - **Budgets & bootstrap**:
-  - Each LP carries a liquidity budget `L_budget` and tracked live deployment `L_live`; new mints are clipped by both a per-step cap (fraction of `L_budget`) and remaining budget.
-  - `bootstrap_initial_binomial_hill_sharded` distributes `initial_total_L` across a set of seed LPs so early burns are staggered and the book has a smooth “hill” shape.
+  - Each strategic LP carries a liquidity budget `L_budget` and tracked live deployment `L_live`; new mints are clipped by both a per-step cap (fraction of `L_budget`) and remaining budget.
+  - `bootstrap_initial_binomial_hill_sharded` distributes `initial_total_L` across a set of seed LPs (`is_seed=True`) so early burns are staggered and the book has a smooth “hill” shape; these seed LPs are treated as background liquidity and are not counted in `N_LP` or in the passive/active LP cohorts.
 - **Wealth tracking**:
   - `RebalancerState` maintains a self-financing benchmark that delta-hedges the LP’s token0 exposure using the CEX price; LVR is computed as the difference between LP wealth (wallet plus open position mark-to-market) and this benchmark.
   - Simulation outputs track total and cohort-level PnLs (active vs. passive), rebalancer PnL, wallet balances, and mark-to-market wealth.
@@ -119,7 +166,7 @@ simulate:
   T: 750                    # number of blocks
   seed: 7
   cex_mu: 0.0
-  cex_sigma_mode: static    # "static", "regime", or "noisy_sine"
+  cex_sigma_mode: static    # "static", "regime", "noisy_sine", or "heston"
   cex_sigma: 0.0015         # used when mode=static
   cex_sigma_low: 0.0001     # regime-switching: σ_L
   cex_sigma_high: 0.002     # regime-switching: σ_H (> σ_L)
@@ -131,6 +178,12 @@ simulate:
   cex_sigma_sine_noise: 0.0      # noisy_sine: white-noise std added to σ_t (must be set explicitly)
   cex_sigma_sine_phase: 0.0      # noisy_sine: phase offset (radians)
   cex_sigma_floor: 0.0           # noisy_sine: lower bound for σ_t
+  # Heston: stochastic variance over σ_t^2 (only used when cex_sigma_mode: heston)
+  # cex_heston_kappa: 1.0        # mean reversion speed of variance
+  # cex_heston_theta: 1.0e-6     # long-run variance level
+  # cex_heston_sigma_v: 0.1      # volatility of variance
+  # cex_heston_rho: -0.5         # correlation between price and variance shocks
+  # cex_heston_v0: 2.25e-8       # optional initial variance; defaults to cex_sigma^2 when omitted
   smart_trades_per_block: 8.0    # expected smart-router intents per block
   noise_trades_per_block: 6.0    # expected noise intents per block
   narrow_mints_per_block: 200.0  # expected narrow LP mints per block (total across narrow LPs)
@@ -138,7 +191,7 @@ simulate:
   passive_mints_per_block: 60.0  # expected passive LP mints per block (total across passive LPs)
   passive_burns_per_block: 10.0  # expected passive LP burns per block (total across passive LPs)
   passive_width_ticks: 500
-  N_LP: 500
+  N_LP: 500                # number of strategic LP agents (excluding the seed binomial-hill LPs)
   tau: 20
   w_min_ticks: 10
   w_max_ticks: 1_774_540

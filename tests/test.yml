@@ -1,20 +1,20 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: gas
+fee_mode: volatility
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 7000
+  T: 15000
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 0
   # Random seed used for reproducibility across RNGs
   seed: 7
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.00
-  # Choose between static, regime (regime switching), noisy-sine volatility modes
-  cex_sigma_mode: noisy_sine
+  # Choose between static, regime (regime switching), noisy-sine, or Heston volatility modes
+  cex_sigma_mode: heston
   # Volatility of the reference CEX price process (per step/second)
   # 1e-4 ~= 56% annualized; 1e-5 ~= 5.6% annualized; 2e-4 ~= 112% annualized
   cex_sigma: 0.00015
@@ -27,10 +27,16 @@ simulate:
   cex_sigma_regime_init: L # initial regime: L (low) or H (high)
   # noisy sine parameters
   cex_sigma_sine_noise: 5e-5
-  cex_sigma_sine_period: 20000
+  cex_sigma_sine_period: 10000
   cex_sigma_sine_amp: 0.0001
   cex_sigma_sine_phase: 0.0
   cex_sigma_floor: 0.0
+  # Heston volatility parameters (used when cex_sigma_mode: heston)
+  cex_heston_kappa: 1.0       # mean reversion speed of variance
+  cex_heston_theta: 1.0e-8    # long-run variance level
+  cex_heston_sigma_v: 0.001     # volatility of variance
+  cex_heston_rho: -0.5        # correlation between price and variance shocks
+  cex_heston_v0: 2.25e-8      # optional initial variance; defaults to cex_sigma^2 when omitted
 
   ##### TRADERS #####
   # Expected number of smart-router trade intents per block
@@ -55,7 +61,7 @@ simulate:
   # Total number of LP agents instantiated in the simulation
   N_LP: 10
   # Fraction of LP agents designated as passive baseline providers
-  passive_lp_share: 0.7
+  passive_lp_share: 0
   # Expected number of narrow LP mints per block (total across narrow LPs)
   narrow_mints_per_block: 10
   # Expected number of passive LP mints per block (total across passive LPs)
@@ -78,8 +84,8 @@ simulate:
   # Success probability for the binomial noise component on LP width
   binom_p: 0.5
   # Range for consecutive out-of-range steps before a narrow LP recenters (sampled per LP)
-  k_out_min: 10
-  k_out_max: 30
+  k_out_min: 5
+  k_out_max: 10
   # Mean of log-normal draw scaling LP mint sizes
   mint_mu: 2.5
   # Standard deviation of log-normal draw scaling LP mint sizes
@@ -109,10 +115,10 @@ simulate:
   f_max: 0.05
   # Half-life (n blocks) of the EWMA used for fee controller signals
   fee_half_life: 2
-  # Multiplier converting EWMA volatility into a fee adjustment
+  # Multiplier converting EWMA volatility into a fee adjustment (volatility mode)
   k_sigma: 1
-  # Multiplier converting EWMA basis (ticks) into a fee adjustment
-  k_basis: 0.001
+  # Multiplier converting EWMA basis (ticks) into a fee adjustment (toxicity mode)
+  k_basis: 0.01
   # GAS fee mode parameters (volatility level and surprise)
   gas_alpha: 0.1
   gas_beta: 0.1

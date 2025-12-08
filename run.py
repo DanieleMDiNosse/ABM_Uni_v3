@@ -65,6 +65,7 @@ from utils import (
     LEGEND_FONT_SIZE,
     make_liquidity_gif,
     load_simulation_parameters,
+    scenario_output_root,
 )
 from agents import (
     LPAgent,
@@ -171,8 +172,8 @@ def simulate(
     k_gas_sigma: float = 0.0,   # fee sensitivity to GAS sigma level
     k_gas_score: float = 0.0,   # fee sensitivity to positive score (surprise)
     flash_loan_fee: float = 0.0,  # percentage cost on arbitrage notional (e.g., 0.0005 = 5 bps)
-    # --- CEX volatility regime switching ---
-    cex_sigma_mode: str = "static",    # "static" | "regime" | "noisy_sine"
+    # --- CEX volatility (static / regime / noisy-sine / Heston) ---
+    cex_sigma_mode: str = "static",    # "static" | "regime" | "noisy_sine" | "heston"
     cex_sigma_low: Optional[float] = None,
     cex_sigma_high: Optional[float] = None,
     cex_sigma_p_LL: float = 1.0,
@@ -183,6 +184,14 @@ def simulate(
     cex_sigma_sine_noise: float = 0.0,
     cex_sigma_floor: float = 0.0,
     cex_sigma_sine_phase: float = 0.0,
+    # --- CEX Heston-like volatility (stochastic variance over σ_t^2) ---
+    cex_heston_kappa: Optional[float] = None,
+    cex_heston_theta: Optional[float] = None,
+    cex_heston_sigma_v: Optional[float] = None,
+    cex_heston_rho: Optional[float] = None,
+    cex_heston_v0: Optional[float] = None,
+    # --- Output root (for logs/plots); defaults to 'abm_results' ---
+    results_root: Optional[str | Path] = None,
 ):
     valid_fee_modes = {"static", "volatility", "toxicity", "gas"}
     if fee_mode not in valid_fee_modes:
@@ -201,6 +210,11 @@ def simulate(
     arbitrageur, and adaptive LPs. **Actor order is randomized each step.**
     """
     initial_params = dict(locals())
+    # Normalize output root for this simulation (logs + plots).
+    if results_root is None:
+        results_root_path = Path("abm_results")
+    else:
+        results_root_path = Path(results_root)
     np.random.seed(seed)
     random.seed(seed)
     passive_share = max(0.0, min(1.0, passive_lp_share))
@@ -221,8 +235,33 @@ def simulate(
     sigma_mode_norm = (cex_sigma_mode or "static").lower()
     regime_mode = sigma_mode_norm in {"regime", "regime_switch", "regime_switching"}
     noisy_sine_mode = sigma_mode_norm == "noisy_sine"
+    heston_mode = sigma_mode_norm == "heston"
     regime_state = "H" if str(cex_sigma_regime_init).upper().startswith("H") else "L"
-    sigma_mode_for_ref = "regime" if regime_mode else ("noisy_sine" if noisy_sine_mode else "static")
+    sigma_mode_for_ref = (
+        "regime"
+        if regime_mode
+        else ("noisy_sine" if noisy_sine_mode else ("heston" if heston_mode else "static"))
+    )
+
+    if heston_mode:
+        # Fail fast on missing Heston parameters.
+        missing = []
+        if cex_heston_kappa is None:
+            missing.append("cex_heston_kappa")
+        if cex_heston_theta is None:
+            missing.append("cex_heston_theta")
+        if cex_heston_sigma_v is None:
+            missing.append("cex_heston_sigma_v")
+        if cex_heston_rho is None:
+            missing.append("cex_heston_rho")
+        if missing:
+            raise ValueError(
+                "cex_sigma_mode='heston' requires parameters: " + ", ".join(missing)
+            )
+        if not (-1.0 <= float(cex_heston_rho) <= 1.0):
+            raise ValueError(
+                "cex_heston_rho must be in [-1, 1] when cex_sigma_mode='heston'."
+            )
     if regime_mode:
         if cex_sigma_low is None or cex_sigma_high is None:
             raise ValueError("cex_sigma_low and cex_sigma_high must be set when cex_sigma_mode='regime'.")
@@ -267,6 +306,28 @@ def simulate(
             f"noise_std={cex_sigma_sine_noise}, floor={cex_sigma_floor}"
         )
         sigma_for_ref = sigma_center
+    elif heston_mode:
+        # Determine initial per-step sigma from explicit v0 or cex_sigma.
+        if cex_heston_v0 is not None:
+            v0 = float(cex_heston_v0)
+            if v0 <= 0.0:
+                raise ValueError(
+                    "cex_heston_v0 must be positive when cex_sigma_mode='heston'."
+                )
+            sigma_for_ref = math.sqrt(v0)
+        else:
+            sigma_for_ref = float(cex_sigma)
+            if sigma_for_ref <= 0.0:
+                raise ValueError(
+                    "cex_sigma must be positive when cex_sigma_mode='heston' and cex_heston_v0 is not provided."
+                )
+        sigma_annualized = sigma_for_ref * math.sqrt(seconds_per_year)
+        print(
+            f"\n[CONFIG] Heston cex_sigma_mode: "
+            f"sigma0={sigma_for_ref} ({sigma_annualized:.2%} annualized), "
+            f"kappa={cex_heston_kappa}, theta={cex_heston_theta}, "
+            f"sigma_v={cex_heston_sigma_v}, rho={cex_heston_rho}, v0={cex_heston_v0}"
+        )
     else:
         sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
         print(f"\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
@@ -291,13 +352,25 @@ def simulate(
         sigma_sine_noise=cex_sigma_sine_noise,
         sigma_floor=cex_sigma_floor,
         sigma_sine_phase=cex_sigma_sine_phase,
+        heston_kappa=cex_heston_kappa,
+        heston_theta=cex_heston_theta,
+        heston_sigma_v=cex_heston_sigma_v,
+        heston_rho=cex_heston_rho,
+        heston_v0=cex_heston_v0,
     )
 
     LPs: List[LPAgent] = []
+    # Deterministically assign exactly round((1 - passive_share) * N_LP) active narrow LPs.
+    total_lps = max(0, int(N_LP))
+    target_active = int(round((1.0 - passive_share) * total_lps))
+    target_active = max(0, min(total_lps, target_active))
+    indices = list(range(total_lps))
+    random.shuffle(indices)
+    active_indices = set(indices[:target_active])
+
     for i in range(N_LP):
-        r = random.random()
-        is_passive = r < passive_share
-        is_narrow = not is_passive
+        is_narrow = i in active_indices
+        is_passive = not is_narrow
         mintProb = passive_mint_prob if is_passive else p_lp_narrow
         LPs.append(
             LPAgent(
@@ -422,6 +495,12 @@ def simulate(
     mint_steps, mint_sizes, burn_steps, burn_sizes = [], [], [], []
     mint_is_passive: List[bool] = []
     burn_is_passive: List[bool] = []
+    # --- Agent activity recorders (+1 / -1 per action) ---
+    smart_activity_steps: List[int] = []
+    smart_activity_signs: List[int] = []
+    noise_activity_steps: List[int] = []
+    noise_activity_signs: List[int] = []
+    arb_skip_steps: List[int] = []
     mint_widths = []
     w_ticks_series: List[int] = []
     w_unclipped_series: List[float] = []
@@ -469,9 +548,10 @@ def simulate(
     sr_y_series = []
     noise_y_series = []
 
-    # Determine verbose log file path for this run
-    os.makedirs("abm_results/logs", exist_ok=True)
-    verbose_log_path = next_numbered_path(Path(f"abm_results/logs/verbose_steps_{fee_mode}"))
+    # Determine verbose log file path for this run (scenario-aware)
+    logs_dir = results_root_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    verbose_log_path = next_numbered_path(logs_dir / f"verbose_steps_{fee_mode}")
     verbose_log_path_str = str(verbose_log_path)
 
     verbose_log = open(verbose_log_path_str, "a")
@@ -967,7 +1047,12 @@ def simulate(
         
         # ----- Non-mutating Uni v3 quotes (spacing-aware, can bridge deserts) -----
         def maybe_enqueue_smart_router_intent(m_now: float):
-            """Enqueue a smart-router swap intent if DEX output is competitive vs CEX (theta_T)."""
+            """
+            Enqueue a smart-router swap intent when DEX is competitive; otherwise
+            route the trade to the CEX and record its impact and PnL.
+            """
+            nonlocal trader_y_this, sr_acc, _trader_execs, delta_a_cex_this
+            nonlocal total_smart_swaps_executed, smart_swaps_x_to_y, smart_swaps_y_to_x
             if random.random() >= p_trade_micro:
                 return
             side = random.choice(["X_to_Y", "Y_to_X"])
@@ -983,7 +1068,27 @@ def simulate(
                 if initial_quote <= 0.0:
                     return
                 # best-ex vs CEX: compare dy_out to dx * m_now (value in token1)
-                if initial_quote < theta_T * dx * m_now:
+                cex_value_y = dx * m_now
+                if initial_quote < theta_T * cex_value_y:
+                    # DEX too uncompetitive: execute against CEX
+                    dy_cex = cex_value_y
+                    trader_steps.append(t); trader_dirs.append("down")
+                    smart_activity_steps.append(t); smart_activity_signs.append(+1)
+                    delta_y = -dy_cex
+                    sr_acc.notional_y += delta_y
+                    trader_y_this += delta_y
+                    sr_acc.record_swap(dx_in=dx, dy_out=dy_cex)
+                    executed = int(dx > 0.0)
+                    sr_acc.execs += executed
+                    _trader_execs += executed
+                    total_smart_swaps_executed += executed
+                    smart_swaps_x_to_y += executed
+                    # Sell token0 on CEX => negative Δa_cex
+                    delta_a_cex_this += -dx
+                    buffer_log(
+                        f"[t={t:03d}] smart CEX swap X_to_Y EXEC dx={dx:.6f} dy_out={dy_cex:.6f} "
+                        f"@ m={m_now:.4f}\n"
+                    )
                     return
                 baseline_quote = _baseline_quote_x_to_y(dx)
                 min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
@@ -1004,7 +1109,25 @@ def simulate(
                 if initial_quote <= 0.0:
                     return
                 # best-ex vs CEX: compare dx_out to dy / m_now (value in token0)
-                if initial_quote < theta_T * dy / max(m_now, 1e-18):
+                dx_cex = dy / max(m_now, 1e-18)
+                if initial_quote < theta_T * dx_cex:
+                    # DEX too uncompetitive: execute against CEX
+                    trader_steps.append(t); trader_dirs.append("up")
+                    smart_activity_steps.append(t); smart_activity_signs.append(-1)
+                    sr_acc.notional_y += dy
+                    trader_y_this += dy
+                    sr_acc.record_swap(dy_in=dy, dx_out=dx_cex)
+                    executed = int(dy > 0.0)
+                    sr_acc.execs += executed
+                    _trader_execs += executed
+                    total_smart_swaps_executed += executed
+                    smart_swaps_y_to_x += executed
+                    # Buy token0 on CEX => positive Δa_cex
+                    delta_a_cex_this += dx_cex
+                    buffer_log(
+                        f"[t={t:03d}] smart CEX swap Y_to_X EXEC dy={dy:.6f} dx_out={dx_cex:.6f} "
+                        f"@ m={m_now:.4f}\n"
+                    )
                     return
                 baseline_quote = _baseline_quote_y_to_x(dy)
                 min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
@@ -1168,6 +1291,7 @@ def simulate(
                         expected_flash_fee = flash_loan_fee * notional_y
                         expected_profit = prev_y_out - notional_y - expected_flash_fee
                     if prev_dir is None or expected_profit <= 0.0:
+                        arb_skip_steps.append(t)
                         buffer_log(
                             f"[t={t:03d}] arb SKIPPED (unprofitable): dir={prev_dir} "
                             f"expected_profit={expected_profit:.6f} flash_fee={expected_flash_fee:.6f} "
@@ -1178,7 +1302,6 @@ def simulate(
                     price_before = pool.price
                     tick_before = pool.tick
                     in_used, x_out_from_dex, y_out_from_dex, dir_arb, L_first = arbitrage_to_target(arb_ref)
-                    delta_a_cex_this = 0.0
                     if in_used > 0 and dir_arb is not None:
                         L_pre_arb_eff_this = L_first
                         dir_arb_this = dir_arb
@@ -1186,7 +1309,7 @@ def simulate(
 
                         if dir_arb == "up":
                             # DEX cheap: buy token0 on DEX, sell on CEX
-                            delta_a_cex_this = -x_out_from_dex
+                            delta_a_cex_this += -x_out_from_dex
                             arb_y_this = +in_used
                             arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
                             buffer_log(
@@ -1195,7 +1318,7 @@ def simulate(
                             )
                         else:
                             # DEX expensive: sell token0 on DEX, buy on CEX
-                            delta_a_cex_this = +in_used
+                            delta_a_cex_this += +in_used
                             arb_y_this = -pool.price * in_used
                             arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
                             buffer_log(
@@ -1233,6 +1356,7 @@ def simulate(
                     agent = o.get('agent')
                     if agent == 'smart':
                         trader_steps.append(t); trader_dirs.append('down')
+                        smart_activity_steps.append(t); smart_activity_signs.append(+1)
                         sr_acc.notional_y += -P_pre_exec * used_dx_pre
                         trader_y_this += -P_pre_exec * used_dx_pre
                         sr_acc.record_swap(dx_in=used_dx_pre, dy_out=dy_out_real)
@@ -1246,6 +1370,7 @@ def simulate(
                         )
                     elif agent == 'noise':
                         trader_steps.append(t); trader_dirs.append('down')
+                        noise_activity_steps.append(t); noise_activity_signs.append(+1)
                         noise_acc.notional_y += -P_pre_exec * used_dx_pre
                         trader_y_this += -P_pre_exec * used_dx_pre
                         noise_acc.record_swap(dx_in=used_dx_pre, dy_out=dy_out_real)
@@ -1285,6 +1410,7 @@ def simulate(
                     agent = o.get('agent')
                     if agent == 'smart':
                         trader_steps.append(t); trader_dirs.append('up')
+                        smart_activity_steps.append(t); smart_activity_signs.append(-1)
                         sr_acc.notional_y += +used_dy_pre
                         trader_y_this += +used_dy_pre
                         sr_acc.record_swap(dy_in=used_dy_pre, dx_out=dx_out_real)
@@ -1298,6 +1424,7 @@ def simulate(
                         )
                     elif agent == 'noise':
                         trader_steps.append(t); trader_dirs.append('up')
+                        noise_activity_steps.append(t); noise_activity_signs.append(-1)
                         noise_acc.notional_y += +used_dy_pre
                         trader_y_this += +used_dy_pre
                         noise_acc.record_swap(dy_in=used_dy_pre, dx_out=dx_out_real)
@@ -1331,7 +1458,7 @@ def simulate(
             mempool_orders.clear()
 
         def execute_trader(agent_label: str, probability: float, accumulator: TraderStepAccumulator, enforce_best_ex: bool, m_reference: float) -> None:
-            nonlocal L_pre_trader_this, trader_y_this, _trader_execs
+            nonlocal L_pre_trader_this, trader_y_this, _trader_execs, delta_a_cex_this
             nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
             nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
             nonlocal smart_swaps_x_to_y, smart_swaps_y_to_x
@@ -1357,7 +1484,28 @@ def simulate(
                 if initial_quote <= 0.0:
                     return
                 if enforce_best_ex:
-                    if initial_quote < theta_T * dx * m_reference:
+                    cex_value_y = dx * m_reference
+                    if initial_quote < theta_T * cex_value_y:
+                        # DEX too uncompetitive: execute on CEX instead.
+                        if agent_label == "smart":
+                            trader_steps.append(t)
+                            trader_dirs.append("down")
+                            smart_activity_steps.append(t); smart_activity_signs.append(+1)
+                            delta_y = -cex_value_y
+                            accumulator.notional_y += delta_y
+                            trader_y_this += delta_y
+                            accumulator.record_swap(dx_in=dx, dy_out=cex_value_y)
+                            executed = int(dx > 0.0)
+                            accumulator.execs += executed
+                            _trader_execs += executed
+                            total_smart_swaps_executed += executed
+                            smart_swaps_x_to_y += executed
+                            # Sell token0 on CEX => negative Δa_cex
+                            delta_a_cex_this += -dx
+                            buffer_log(
+                                f"[t={t:03d}] smart CEX swap X_to_Y EXEC dx={dx:.6f} dy_out={cex_value_y:.6f} "
+                                f"@ m={m_reference:.4f}\n"
+                            )
                         return
                 baseline_quote = _baseline_quote_x_to_y(dx)
                 min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
@@ -1385,6 +1533,10 @@ def simulate(
 
                 trader_steps.append(t)
                 trader_dirs.append("down")
+                if agent_label == "smart":
+                    smart_activity_steps.append(t); smart_activity_signs.append(+1)
+                elif agent_label == "noise":
+                    noise_activity_steps.append(t); noise_activity_signs.append(+1)
 
                 delta_y = -P_pre * used_dx_pre
                 accumulator.notional_y += delta_y
@@ -1422,6 +1574,25 @@ def simulate(
                 if enforce_best_ex:
                     dx_cex = dy / max(m_reference, 1e-18)
                     if initial_quote < theta_T * dx_cex:
+                        # DEX too uncompetitive: execute on CEX instead.
+                        if agent_label == "smart":
+                            trader_steps.append(t)
+                            trader_dirs.append("up")
+                            smart_activity_steps.append(t); smart_activity_signs.append(-1)
+                            accumulator.notional_y += dy
+                            trader_y_this += dy
+                            accumulator.record_swap(dy_in=dy, dx_out=dx_cex)
+                            executed = int(dy > 0.0)
+                            accumulator.execs += executed
+                            _trader_execs += executed
+                            total_smart_swaps_executed += executed
+                            smart_swaps_y_to_x += executed
+                            # Buy token0 on CEX => positive Δa_cex
+                            delta_a_cex_this += dx_cex
+                            buffer_log(
+                                f"[t={t:03d}] smart CEX swap Y_to_X EXEC dy={dy:.6f} dx_out={dx_cex:.6f} "
+                                f"@ m={m_reference:.4f}\n"
+                            )
                         return
                 baseline_quote = _baseline_quote_y_to_x(dy)
                 min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
@@ -1449,6 +1620,10 @@ def simulate(
 
                 trader_steps.append(t)
                 trader_dirs.append("up")
+                if agent_label == "smart":
+                    smart_activity_steps.append(t); smart_activity_signs.append(-1)
+                elif agent_label == "noise":
+                    noise_activity_steps.append(t); noise_activity_signs.append(-1)
 
                 accumulator.notional_y += used_dy_pre
                 trader_y_this += used_dy_pre
@@ -1604,6 +1779,7 @@ def simulate(
                 expected_flash_fee = flash_loan_fee * notional_y
                 expected_profit = prev_y_out - notional_y - expected_flash_fee
             if prev_dir is None or expected_profit <= 0.0:
+                arb_skip_steps.append(t)
                 buffer_log(
                     f"[t={t:03d}] arb SKIPPED (unprofitable): dir={prev_dir} "
                     f"expected_profit={expected_profit:.6f} flash_fee={expected_flash_fee:.6f} "
@@ -1612,7 +1788,6 @@ def simulate(
                 return
 
             in_used, x_out_from_dex, y_out_from_dex, dir_arb, L_first = arbitrage_to_target(arb_ref_m)
-            delta_a_cex_this = 0.0
             if in_used > 0 and dir_arb is not None:
                 L_pre_arb_eff_this = L_first
                 dir_arb_this = dir_arb
@@ -1620,14 +1795,14 @@ def simulate(
 
                 if dir_arb == "up":
                     # DEX cheap: buy A on DEX (A out), sell A on CEX @ m_now
-                    delta_a_cex_this = -x_out_from_dex
+                    delta_a_cex_this += -x_out_from_dex
                     arb_y_this = +in_used
                     arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
                     _arb_execs += int(in_used > 0)
                     # Fees already allocated per span via fee_cb
                 else:
                     # DEX expensive: sell A on DEX (A in), buy A on CEX @ m_now
-                    delta_a_cex_this = +in_used
+                    delta_a_cex_this += +in_used
                     arb_y_this = -pool.price * in_used
                     arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
                     _arb_execs += int(in_used > 0)
@@ -1950,7 +2125,12 @@ def simulate(
         lp_wealth_active = 0.0
         lp_wealth_passive = 0.0
         for lp in LPs:
-            wallet_y = getattr(lp, 'wallet_y', 0.0)
+            # Seed/background LPs provide liquidity but are excluded from
+            # cohort-level PnL and wealth statistics.
+            if getattr(lp, "is_seed", False):
+                continue
+
+            wallet_y = getattr(lp, "wallet_y", 0.0)
             lp_wallet_total += wallet_y
             rb = lp.rebalancer
             _ensure_rebalancer_initialized(lp, ref.m, pool.S)
@@ -2135,7 +2315,44 @@ def simulate(
     fee_signal_series = np.array(fee_signal_series)
     cex_sigma_series = np.array(cex_sigma_series)
     cex_regime_series = np.array(cex_regime_series)
-    sigma_panel = regime_mode or noisy_sine_mode
+    sigma_panel = regime_mode or noisy_sine_mode or heston_mode
+
+    # --- Agent activity series (per step, then cumulative) ---
+    n_steps = len(P_series)
+    smart_activity = np.zeros(n_steps, dtype=float)
+    noise_activity = np.zeros(n_steps, dtype=float)
+    lp_active_activity = np.zeros(n_steps, dtype=float)
+    lp_passive_activity = np.zeros(n_steps, dtype=float)
+    arb_activity = np.zeros(n_steps, dtype=float)
+
+    # Smart router / noise trader: +1 for X->Y, -1 for Y->X
+    for s, sign in zip(smart_activity_steps, smart_activity_signs):
+        if 0 <= s < n_steps:
+            smart_activity[s] += sign
+    for s, sign in zip(noise_activity_steps, noise_activity_signs):
+        if 0 <= s < n_steps:
+            noise_activity[s] += sign
+
+    # LPs (active vs passive): +1 for mint, -1 for burn
+    for s, is_passive in zip(mint_steps, mint_is_passive):
+        if 0 <= s < n_steps:
+            target = lp_passive_activity if is_passive else lp_active_activity
+            target[s] += 1.0
+    for s, is_passive in zip(burn_steps, burn_is_passive):
+        if 0 <= s < n_steps:
+            target = lp_passive_activity if is_passive else lp_active_activity
+            target[s] -= 1.0
+
+    # Arbitrageur: +1 for successful arb, 0 for skipped
+    for s in arb_steps:
+        if 0 <= s < n_steps:
+            arb_activity[s] += 1.0
+
+    smart_activity_cum = np.cumsum(smart_activity)
+    noise_activity_cum = np.cumsum(noise_activity)
+    lp_active_activity_cum = np.cumsum(lp_active_activity)
+    lp_passive_activity_cum = np.cumsum(lp_passive_activity)
+    arb_activity_cum = np.cumsum(arb_activity)
 
     # --- Visualization skip window ---
     s0 = max(0, int(skip_step))
@@ -2170,6 +2387,11 @@ def simulate(
     w_ticks_series_v = np.array(w_ticks_series)[s0:] if w_ticks_series else np.array([])
     w_unclipped_series_v = np.array(w_unclipped_series)[s0:] if w_unclipped_series else np.array([])
     w_noise_series_v = np.array(w_noise_series)[s0:] if w_noise_series else np.array([])
+    smart_activity_cum_v = smart_activity_cum[s0:]
+    noise_activity_cum_v = noise_activity_cum[s0:]
+    lp_active_activity_cum_v = lp_active_activity_cum[s0:]
+    lp_passive_activity_cum_v = lp_passive_activity_cum[s0:]
+    arb_activity_cum_v = arb_activity_cum[s0:]
     
     if visualize:
         # ΔL per step (split by LP type)
@@ -2192,9 +2414,7 @@ def simulate(
         burn_step_sum_passive_v = burn_step_sum_passive[s0:]
         burn_step_sum_active_v = burn_step_sum_active[s0:]
 
-        from pathlib import Path as _Path
-
-        _out_dir = _Path("abm_results")
+        _out_dir = results_root_path
         _png_dir = _out_dir / "png"
         _html_dir = _out_dir / "html"
         _png_dir.mkdir(parents=True, exist_ok=True)
@@ -2355,6 +2575,57 @@ def simulate(
             yaxis_title="Notional (token1, signed)",
         )
         _save_plotly("2_notional", fig2)
+
+        # ----- 2b) Agent activity (cumulative +/-1) -----
+        fig2b = go.Figure()
+        fig2b.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"))
+        fig2b.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=smart_activity_cum_v,
+                mode="lines",
+                name="Smart router activity",
+            )
+        )
+        fig2b.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=noise_activity_cum_v,
+                mode="lines",
+                name="Noise trader activity",
+            )
+        )
+        fig2b.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=lp_active_activity_cum_v,
+                mode="lines",
+                name="Active LPs activity",
+            )
+        )
+        fig2b.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=lp_passive_activity_cum_v,
+                mode="lines",
+                name="Passive LPs activity",
+            )
+        )
+        fig2b.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=arb_activity_cum_v,
+                mode="lines",
+                name="Arbitrageur activity",
+            )
+        )
+        fig2b.update_layout(
+            template="plotly_white",
+            title="Agent Activity (cumulative +1 / -1)",
+            xaxis_title="Step",
+            yaxis_title="Cumulative activity",
+        )
+        _save_plotly("2b_agent_activity", fig2b)
 
         # helper for zero-liquidity shading
         def _zero_liquidity_shapes():
@@ -2580,17 +2851,17 @@ def simulate(
             row=1,
             col=1,
         )
-        fig6.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=lp_unhedged_passive_series_v,
-                mode="lines",
-                name="Passive LP unhedged",
-                line=dict(color="#8c564b"),
-            ),
-            row=1,
-            col=1,
-        )
+        # fig6.add_trace(
+        #     go.Scatter(
+        #         x=steps_list,
+        #         y=lp_unhedged_passive_series_v,
+        #         mode="lines",
+        #         name="Passive LP unhedged",
+        #         line=dict(color="#8c564b"),
+        #     ),
+        #     row=1,
+        #     col=1,
+        # )
         if sigma_panel and len(cex_sigma_series_v) > 0:
             fig6.add_trace(
                 go.Scatter(
@@ -2736,6 +3007,11 @@ def simulate(
         "lp_wealth_active_series": lp_wealth_active_series.tolist(),
         "lp_wealth_passive_series": lp_wealth_passive_series.tolist(),
         "arb_exec_count": arb_exec_count,
+        "smart_router_activity_cum": smart_activity_cum.tolist(),
+        "noise_trader_activity_cum": noise_activity_cum.tolist(),
+        "lp_active_activity_cum": lp_active_activity_cum.tolist(),
+        "lp_passive_activity_cum": lp_passive_activity_cum.tolist(),
+        "arb_activity_cum": arb_activity_cum.tolist(),
     }
 
 
@@ -2755,9 +3031,13 @@ if __name__ == "__main__":
     config_path = Path(args.config).expanduser().resolve()
     scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
 
+    # Derive a scenario-specific output root under abm_results/scenarios/<name>
+    scenario_root = scenario_output_root(config_path)
+    params = dict(params)
+    params["results_root"] = scenario_root
 
     print(f"[config] {config_path}")
-    print(f"[scenario] {scenario_label}")
+    print(f"[scenario] {scenario_label} (output -> {scenario_root})")
 
     out = simulate(**params)
 
@@ -2780,7 +3060,8 @@ if __name__ == "__main__":
         yaxis_title="Autocorrelation",
     )
 
-    results_root = Path("abm_results")
+    # Save autocorrelation plots alongside other scenario outputs
+    results_root = scenario_root
     png_dir = results_root / "png"
     html_dir = results_root / "html"
     png_dir.mkdir(parents=True, exist_ok=True)

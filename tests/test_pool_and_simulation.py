@@ -154,3 +154,32 @@ def test_simulate_seed_determinism():
     assert dex_a == dex_b
     assert sr_pnl_a == sr_pnl_b
     assert any(abs(a - b) > 1e-12 for a, b in zip(dex_a, dex_c))
+
+
+def test_simulate_heston_mode_requires_parameters():
+    """
+    Heston volatility mode must fail fast when required cex_heston_* parameters are missing.
+    """
+    with pytest.raises(ValueError, match="cex_sigma_mode='heston' requires parameters"):
+        simulate(T=1, block_time=1, visualize=False, cex_sigma_mode="heston")
+
+
+def test_simulate_heston_mode_runs_and_emits_sigma_series():
+    """
+    With valid Heston parameters, simulate() should run and produce a non-negative cex_sigma_series.
+    """
+    out = simulate(
+        T=3,
+        block_time=1,
+        visualize=False,
+        cex_sigma_mode="heston",
+        cex_sigma=0.001,  # used as sqrt(v0) when cex_heston_v0 is omitted
+        cex_heston_kappa=1.0,
+        cex_heston_theta=1e-6,
+        cex_heston_sigma_v=0.1,
+        cex_heston_rho=-0.5,
+    )
+    sigma_series = out["cex_sigma_series"]
+    cex_series = out["CEX_price"]
+    assert len(sigma_series) == len(cex_series)
+    assert all(s >= 0.0 for s in sigma_series)

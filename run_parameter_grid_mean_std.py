@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 import run as run_module
 from run_scenarios_mean_std import SERIES_DEFS, _slice_series, aggregate_runs
-from utils import load_simulation_parameters
+from utils import load_simulation_parameters, scenario_output_root
 
 PNL_KEYS = [
     ("arb_pnl_cum", "Arbitrageur PnL"),
@@ -237,18 +237,19 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
     sigma_values = sorted({entry["sigma_label"] for entry in plot_data})
     for sigma_value in sigma_values:
         fig, axes = plt.subplots(
-            2,
+            3,
             len(FEE_MODE_CONFIG),
-            figsize=(6 * len(FEE_MODE_CONFIG), 6),
+            figsize=(6 * len(FEE_MODE_CONFIG), 8),
             sharex="col",
-            gridspec_kw={"height_ratios": [2.0, 1.0]},
+            gridspec_kw={"height_ratios": [2.0, 1.0, 1.0]},
         )
         if len(FEE_MODE_CONFIG) == 1:
-            axes = np.array([[axes[0]], [axes[1]]])  # ensure 2D indexing when len=1
+            axes = np.array([[axes[0]], [axes[1]], [axes[2]]])  # ensure 2D indexing when len=1
 
         for col_idx, (fee_mode, cfg) in enumerate(FEE_MODE_CONFIG.items()):
             ax_pnl = axes[0, col_idx]
             ax_fee = axes[1, col_idx]
+            ax_band = axes[2, col_idx]
 
             entries = [
                 entry for entry in plot_data
@@ -258,6 +259,7 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
                 ax_pnl.set_title(f"{fee_mode} (no data)")
                 ax_pnl.axis("off")
                 ax_fee.axis("off")
+                ax_band.axis("off")
                 continue
 
             sens_values = list(cfg["values"])
@@ -291,16 +293,42 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
                 entry = next((e for e in entries if e["sensitivity"] == sens and e["param_name"] == cfg["param_name"]), None)
                 if entry is None or not entry["fee_samples"]:
                     continue
+                # Fee violins
                 vp = ax_fee.violinplot(entry["fee_samples"], positions=[pos], widths=0.35, showmeans=True, showextrema=False)
                 for pc in vp["bodies"]:
                     pc.set_facecolor("#1f77b4")
                     pc.set_alpha(0.4)
                 vp["cmeans"].set_color("#1f77b4")
                 vp["cmeans"].set_linewidth(1.4)
+
+                # No-arb band width violins (derived from fee)
+                width_samples: List[float] = []
+                for f in entry["fee_samples"]:
+                    f_val = float(f)
+                    r = 1.0 - f_val
+                    if r <= 0.0:
+                        continue
+                    width_rel = (1.0 / r) - r
+                    width_bps = width_rel * 1e4
+                    width_samples.append(width_bps)
+                if not width_samples:
+                    continue
+                vp_band = ax_band.violinplot(width_samples, positions=[pos], widths=0.35, showmeans=True, showextrema=False)
+                for pc in vp_band["bodies"]:
+                    pc.set_facecolor("#d62728")
+                    pc.set_alpha(0.4)
+                vp_band["cmeans"].set_color("#d62728")
+                vp_band["cmeans"].set_linewidth(1.4)
+
             ax_fee.set_xticks(pos_base, labels)
             ax_fee.set_xlabel(cfg["xlabel"], rotation=90)
             ax_fee.set_ylabel("Fee")
             ax_fee.grid(True, alpha=0.3)
+
+            ax_band.set_xticks(pos_base, labels)
+            ax_band.set_xlabel(cfg["xlabel"], rotation=90)
+            ax_band.set_ylabel("No-arb band width (bps)")
+            ax_band.grid(True, alpha=0.3)
 
         axes[0, 0].set_ylabel("Final PnL")
         fig.tight_layout()
@@ -310,7 +338,11 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
 
 def main() -> None:
     scenario_label, base_params = load_simulation_parameters(BASE_CONFIG_PATH, simulate_func=simulate)
-    print(f"Loaded base scenario '{scenario_label}'")
+    # Route all underlying runs into a scenario-specific root under abm_results/scenarios/<base_name>/grid_search
+    scenario_root = scenario_output_root(BASE_CONFIG_PATH)
+    base_params = dict(base_params)
+    base_params["results_root"] = scenario_root / "grid_search_runs"
+    print(f"Loaded base scenario '{scenario_label}' (output -> {scenario_root})")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary_rows: List[Dict[str, Any]] = []
@@ -341,7 +373,7 @@ def main() -> None:
                 payload[f"{key}_std"] = std
             np.savez(npz_path, **payload)
 
-    # write CSV
+    # write CSV (global summary)
     SUMMARY_CSV.parent.mkdir(parents=True, exist_ok=True)
     with SUMMARY_CSV.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -363,9 +395,41 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(summary_rows)
 
+    # Also mirror CSV and plots into the scenario-specific grid_search folder
+    scenario_grid_dir = scenario_output_root(BASE_CONFIG_PATH) / "grid_search"
+    scenario_grid_dir.mkdir(parents=True, exist_ok=True)
+    scenario_summary_csv = scenario_grid_dir / "grid_summary.csv"
+    with scenario_summary_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "fee_mode",
+                "cex_sigma_label",
+                "param_name",
+                "sensitivity",
+                "series_key",
+                "series_label",
+                "mean_final_pnl",
+                "std_final_pnl",
+                "runs",
+                "skip_step",
+                "steps",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(summary_rows)
+
     plot_per_sigma(plot_data)
-    print(f"Summary CSV written to {SUMMARY_CSV}")
-    print(f"Plots written to {PLOTS_DIR}")
+
+    # Copy per-sigma plots into scenario-local grid_search as well
+    scenario_plots_dir = scenario_grid_dir / "plots"
+    scenario_plots_dir.mkdir(parents=True, exist_ok=True)
+    for plot_path in PLOTS_DIR.glob("sigma_*.png"):
+        target = scenario_plots_dir / plot_path.name
+        target.write_bytes(plot_path.read_bytes())
+
+    print(f"Summary CSV written to {SUMMARY_CSV} and {scenario_summary_csv}")
+    print(f"Plots written to {PLOTS_DIR} and {scenario_plots_dir}")
 
 
 if __name__ == "__main__":

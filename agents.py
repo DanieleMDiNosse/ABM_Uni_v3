@@ -114,6 +114,7 @@ class LPAgent:
     mintProb: float = 0.5
     is_active_narrow: bool = False
     is_passive: bool = False
+    is_seed: bool = False
     # --- async scheduler state ---
     review_rate: float = 0.2      # p for geometric clock; we'll set = 1/tau at runtime
     next_review: int = 0          # steps until this LP may act again

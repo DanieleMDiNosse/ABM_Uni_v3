@@ -113,7 +113,7 @@ class ReferenceMarket:
     sigma: float        # vol (per step) of log-returns
     kappa: float        # impact scale (price units per A^(1+xi))
     xi: float = 0.0     # impact exponent (xi = 0 => linear in |Δa|)
-    sigma_mode: str = "static"   # "static" | "regime" | "noisy_sine"
+    sigma_mode: str = "static"   # "static" | "regime" | "noisy_sine" | "heston"
     sigma_low: Optional[float] = None
     sigma_high: Optional[float] = None
     p_LL: float = 1.0
@@ -124,18 +124,27 @@ class ReferenceMarket:
     sigma_sine_noise: float = 0.0
     sigma_sine_phase: float = 0.0
     sigma_floor: float = 0.0
+    # Heston-style stochastic volatility parameters (variance process)
+    heston_kappa: Optional[float] = None     # mean reversion speed of variance
+    heston_theta: Optional[float] = None     # long-run variance level
+    heston_sigma_v: Optional[float] = None   # vol of variance
+    heston_rho: Optional[float] = None       # corr between price and variance shocks
+    heston_v0: Optional[float] = None        # initial variance; if None fall back to sigma^2
     _sigma_step: int = field(init=False, default=0, repr=False)
     _sigma_sine_center: float = field(init=False, default=0.0, repr=False)
     _sigma_sine_amp_eff: float = field(init=False, default=0.0, repr=False)
+    _heston_v: float = field(init=False, default=0.0, repr=False)
 
     def __post_init__(self):
         """
         Normalize and validate volatility regime settings.
         """
         mode = (self.sigma_mode or "static").lower()
-        valid_modes = {"static", "regime", "regime_switch", "regime_switching", "noisy_sine"}
+        valid_modes = {"static", "regime", "regime_switch", "regime_switching", "noisy_sine", "heston"}
         if mode not in valid_modes:
-            raise ValueError(f"Invalid sigma_mode '{self.sigma_mode}'. Use 'static', 'regime', or 'noisy_sine'.")
+            raise ValueError(
+                f"Invalid sigma_mode '{self.sigma_mode}'. Use 'static', 'regime', 'noisy_sine', or 'heston'."
+            )
         if mode in {"regime", "regime_switch", "regime_switching"}:
             self.sigma_mode = "regime"
         else:
@@ -172,6 +181,48 @@ class ReferenceMarket:
                 self._sigma_sine_amp_eff = float(self.sigma_sine_amp)
             self._sigma_step = 0
             self.sigma = self._sigma_from_sine(advance=False)
+        elif self.sigma_mode == "heston":
+            # Validate required Heston parameters.
+            missing = []
+            if self.heston_kappa is None:
+                missing.append("heston_kappa")
+            if self.heston_theta is None:
+                missing.append("heston_theta")
+            if self.heston_sigma_v is None:
+                missing.append("heston_sigma_v")
+            if self.heston_rho is None:
+                missing.append("heston_rho")
+            if missing:
+                raise ValueError(
+                    f"Heston sigma_mode requires parameters: {', '.join(missing)}."
+                )
+            if self.heston_kappa <= 0.0:
+                raise ValueError("heston_kappa must be positive for Heston sigma_mode.")
+            if self.heston_theta is None or self.heston_theta < 0.0:
+                raise ValueError("heston_theta must be non-negative for Heston sigma_mode.")
+            if self.heston_sigma_v is None or self.heston_sigma_v < 0.0:
+                raise ValueError("heston_sigma_v must be non-negative for Heston sigma_mode.")
+            if not (-1.0 <= float(self.heston_rho) <= 1.0):
+                raise ValueError("heston_rho must be in [-1, 1] for Heston sigma_mode.")
+
+            # Initialize variance v_0. Prefer explicit heston_v0, fall back to sigma^2.
+            if self.heston_v0 is not None:
+                v0 = float(self.heston_v0)
+                if v0 <= 0.0:
+                    raise ValueError("heston_v0 must be positive for Heston sigma_mode.")
+            else:
+                if self.sigma <= 0.0:
+                    raise ValueError(
+                        "sigma must be positive when using sigma_mode='heston' without explicit heston_v0."
+                    )
+                v0 = float(self.sigma) ** 2
+            self._heston_v = max(1e-18, v0)
+            # Keep sigma in sync with sqrt(variance) for downstream consumers (plots, GAS, etc.).
+            self.sigma = math.sqrt(self._heston_v)
+            # Regime-related attributes are unused in Heston mode.
+            self.regime_state = "H"
+            self.sigma_low = None
+            self.sigma_high = None
         else:
             # Static mode: keep provided sigma and ignore regime params
             self.regime_state = "L"
@@ -219,11 +270,57 @@ class ReferenceMarket:
             self._transition_regime()
         elif self.sigma_mode == "noisy_sine":
             self.sigma = self._sigma_from_sine()
+        # Heston mode updates sigma together with the variance process in diffuse_only.
+
+    def _diffuse_heston(self) -> None:
+        """
+        One discrete-time Heston step over Δt = 1 (per micro-step).
+
+        Variance:
+            v_{t+1} = max(0, v_t + κ(θ - v_t)Δt + σ_v sqrt(max(v_t, 0)) sqrt(Δt) z_1)
+
+        Price:
+            log M_{t+1} = log M_t + (μ - 0.5 v_t)Δt
+                           + sqrt(max(v_t, 0)) * (ρ z_1 + sqrt(1-ρ²) z_2) * sqrt(Δt)
+        """
+        # Guard: this should only be called in Heston mode, but keep it robust.
+        if self.sigma_mode != "heston":
+            # Fallback to GBM update if misused.
+            z = np.random.normal()
+            self.m *= math.exp(self.mu - 0.5 * self.sigma**2 + self.sigma * z)
+            self.m = max(1e-12, self.m)
+            return
+
+        v_t = max(0.0, float(self._heston_v))
+        dt = 1.0
+        # Two independent standard normals
+        z1 = np.random.normal()
+        z2 = np.random.normal()
+        sqrt_v_t = math.sqrt(max(v_t, 0.0))
+
+        # Variance update (full truncation to keep v >= 0)
+        kappa_v = float(self.heston_kappa)  # type: ignore[arg-type]
+        theta_v = float(self.heston_theta)  # type: ignore[arg-type]
+        sigma_v = float(self.heston_sigma_v)  # type: ignore[arg-type]
+        dv = kappa_v * (theta_v - v_t) * dt + sigma_v * sqrt_v_t * math.sqrt(dt) * z1
+        v_next = max(0.0, v_t + dv)
+        self._heston_v = v_next
+        sigma_eff = math.sqrt(max(v_next, 0.0))
+        self.sigma = sigma_eff
+
+        # Correlated shock for price
+        rho = float(self.heston_rho)  # type: ignore[arg-type]
+        rho = max(-1.0, min(1.0, rho))
+        z_price = rho * z1 + math.sqrt(max(0.0, 1.0 - rho * rho)) * z2
+
+        log_m = math.log(max(self.m, 1e-18))
+        log_m_next = log_m + (self.mu - 0.5 * v_t) * dt + sqrt_v_t * math.sqrt(dt) * z_price
+        self.m = max(1e-12, math.exp(log_m_next))
 
     def step(self, delta_a_cex_signed: float) -> float:
         """
         Apply permanent, additive impact from the CEX trade in token A units,
-        then diffuse via GBM. Returns the impact applied (for debugging).
+        then diffuse via GBM or Heston dynamics. Returns the impact applied (for debugging).
         """
         impact = self.apply_impact_only(delta_a_cex_signed)
         self.diffuse_only()
@@ -241,11 +338,14 @@ class ReferenceMarket:
         return impact
 
     def diffuse_only(self) -> float:
-        """Diffuse the reference price via GBM without additional impact."""
-        self._update_sigma()
-        z = np.random.normal()
-        self.m *= math.exp(self.mu - 0.5 * self.sigma**2 + self.sigma * z)
-        self.m = max(1e-12, self.m)
+        """Diffuse the reference price via GBM/Heston without additional impact."""
+        if self.sigma_mode == "heston":
+            self._diffuse_heston()
+        else:
+            self._update_sigma()
+            z = np.random.normal()
+            self.m *= math.exp(self.mu - 0.5 * self.sigma**2 + self.sigma * z)
+            self.m = max(1e-12, self.m)
         return self.m
 
 
@@ -310,7 +410,13 @@ def bootstrap_initial_binomial_hill_sharded(
     seed_LPs: List[LPAgent] = []
     for j in range(num_seed_lps):
         sid = seed_lp_id_base + j
-        lp = LPAgent(id=sid, mintProb=seed_mint_prob, is_active_narrow=False, is_passive=seed_is_passive)
+        lp = LPAgent(
+            id=sid,
+            mintProb=seed_mint_prob,
+            is_active_narrow=False,
+            is_passive=seed_is_passive,
+            is_seed=True,
+        )
         # async timing so they act at different steps
         lp.review_rate = 1.0 / max(1, tau)
         lp.next_review = int(np.random.geometric(lp.review_rate))
@@ -479,6 +585,23 @@ def make_liquidity_gif(
 # =============================================================================
 # Configuration loading
 # =============================================================================
+
+def scenario_output_root(config_path: Path, base_dir: Path | str | None = None) -> Path:
+    """
+    Derive the per-scenario output directory from a YAML config path.
+
+    For a config like `.../sigma_sine_fee_gas.yml` this returns
+    `abm_results/scenarios/sigma_sine_fee_gas` (by default) and ensures
+    the directory exists.
+    """
+    if base_dir is None:
+        base_dir = Path("abm_results") / "scenarios"
+    base_dir = Path(base_dir)
+    scenario_name = Path(config_path).stem
+    out_root = base_dir / scenario_name
+    out_root.mkdir(parents=True, exist_ok=True)
+    return out_root
+
 
 def load_simulation_parameters(config_path: Path, simulate_func=None) -> Tuple[str, Dict[str, Any]]:
     """

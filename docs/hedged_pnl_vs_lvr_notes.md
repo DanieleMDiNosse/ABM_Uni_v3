@@ -75,8 +75,8 @@ Effectively, you have **continuous monitoring in discrete time**: any significan
   - best execution vs the CEX mid (`theta_T` threshold),
   - a slippage window vs a baseline quote (to avoid very bad DEX fills).
 - This means:
-  - When the DEX is marginally *worse* than the CEX, **smart flow does not trade on the DEX**.
-  - When the DEX is marginally *better*, smart flow will happily trade and *harvest* favorable quotes.
+  - When the DEX is marginally *worse* than the CEX, smart flow **routes to the CEX** instead of the DEX; the CEX leg contributes to reference-price impact and smart-router PnL, but does not interact with AMM liquidity.
+  - When the DEX is marginally *better*, smart flow will happily trade on the DEX and *harvest* favorable quotes.
 
 So the *informed* or “non‑noise” trader flow hitting the AMM is **systematically tilted** toward states where the DEX is attractive for traders and unattractive for LPs.
 
@@ -91,8 +91,8 @@ So the *informed* or “non‑noise” trader flow hitting the AMM is **systemat
 ### 2.5 LPs: Always Exposed, Without Information Edge
 
 - Passive LPs:
-  - hold finite‑width ranges (e.g. 2–10% bands in your configs),
-  - are present across most of the time horizon (seed binomial hill + ongoing mints),
+  - hold finite-width ranges (e.g. 2–10% bands in your configs),
+  - are present across most of the time horizon (seed binomial hill from background LPs with `is_seed=True` + ongoing mints by the strategic passive cohort),
   - enter and exit positions according to **simple probabilistic rules** tied to review clocks (`tau`): when a passive LP’s review clock fires, it may mint a new wide range with probability derived from `passive_mints_per_block`, and may randomly burn one of its existing ranges with probability derived from `passive_burns_per_block`. Passive LPs never recenter based on out‑of‑range thresholds and do **not** use TP/SL (`theta_TP`, `theta_SL`); those thresholds apply only to active narrow LPs.
 - They **do not control**:
   - when informed flow arrives,

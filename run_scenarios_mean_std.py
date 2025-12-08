@@ -13,7 +13,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 from run import save_plotly_figure, simulate
-from utils import load_simulation_parameters
+from utils import load_simulation_parameters, scenario_output_root
 
 SeriesDef = Tuple[str, str, str]
 
@@ -172,6 +172,9 @@ def run_scenario(
 ) -> Tuple[np.ndarray, Dict[str, List[np.ndarray]], Dict[str, Any]]:
     scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
     run_params = dict(params)
+    # Ensure all runs for this scenario share the same per-scenario output root.
+    scenario_root = scenario_output_root(config_path)
+    run_params["results_root"] = scenario_root
     skip_step = max(0, int(run_params.get("skip_step", 0)))
     if not keep_visuals:
         run_params["visualize"] = False
@@ -182,7 +185,10 @@ def run_scenario(
     for run_idx in range(runs):
         seed = seed_base + run_idx
         run_params["seed"] = seed
-        print(f"[scenario:{config_path.name}] run {run_idx + 1}/{runs} (seed={seed}) — fee_mode={scenario_label}")
+        print(
+            f"[scenario:{config_path.name}] run {run_idx + 1}/{runs} "
+            f"(seed={seed}) — fee_mode={scenario_label} -> {scenario_root}"
+        )
         out = simulate(**run_params)
 
         reference_series = _slice_series(out[SERIES_DEFS[0][0]], skip_step)
@@ -218,11 +224,6 @@ def main() -> None:
     if not scenario_files:
         raise SystemExit(f"No scenario configs found in {args.scenarios_dir}")
 
-    output_png = args.output_dir / "png"
-    output_html = args.output_dir / "html"
-    output_png.mkdir(parents=True, exist_ok=True)
-    output_html.mkdir(parents=True, exist_ok=True)
-
     for scenario_index, config_path in enumerate(scenario_files):
         per_scenario_seed_base = args.seed_base + scenario_index * args.runs
         steps, series_data, metadata = run_scenario(
@@ -240,8 +241,36 @@ def main() -> None:
         total_steps = metadata["steps_len"]
         prefix = f"abm_fee_{fee_mode}_{cex_sigma}_{scenario_suffix}"
         filename = f"{prefix}_6_pnl_meanstd_steps{total_steps}"
-        save_plotly_figure(fig, output_png / f"{filename}.png", output_html / f"{filename}.html", source="mean_std")
-        print(f"[scenario:{config_path.name}] wrote {filename}.png/.html to {args.output_dir}")
+
+        # Global aggregated outputs (kept for backwards compatibility)
+        global_png = args.output_dir / "png"
+        global_html = args.output_dir / "html"
+        global_png.mkdir(parents=True, exist_ok=True)
+        global_html.mkdir(parents=True, exist_ok=True)
+        save_plotly_figure(
+            fig,
+            global_png / f"{filename}.png",
+            global_html / f"{filename}.html",
+            source="mean_std",
+        )
+
+        # Scenario-local aggregated outputs under abm_results/scenarios/<scenario>/mean_std
+        scenario_root = scenario_output_root(config_path)
+        scenario_png = scenario_root / "mean_std" / "png"
+        scenario_html = scenario_root / "mean_std" / "html"
+        scenario_png.mkdir(parents=True, exist_ok=True)
+        scenario_html.mkdir(parents=True, exist_ok=True)
+        save_plotly_figure(
+            fig,
+            scenario_png / f"{filename}.png",
+            scenario_html / f"{filename}.html",
+            source="mean_std",
+        )
+
+        print(
+            f"[scenario:{config_path.name}] wrote {filename}.png/.html "
+            f"to {args.output_dir} and {scenario_root / 'mean_std'}"
+        )
 
 
 if __name__ == "__main__":
