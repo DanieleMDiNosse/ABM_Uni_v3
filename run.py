@@ -1685,11 +1685,11 @@ def simulate(
 
                 for i in reversed(to_recenters):
                     pos = lp.positions[i]
-                    width = pos.upper - pos.lower
                     L_same = pos.L
                     burn_any(lp, i)
                     # Center around current sqrt price S (approximately), not the snapped active band.
-                    n_bands = max(1, int(round(width / pool.tick_spacing)))
+                    width_ticks = w_ticks
+                    n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
                     S_now = agent_S_ref
                     s = pool.tick_spacing
                     nb = n_bands
@@ -1924,7 +1924,7 @@ def simulate(
                         to_recenters.append(i)
                 for i in reversed(to_recenters):
                     pos = lp.positions[i]
-                    width_ticks = pos.upper - pos.lower
+                    width_ticks = w_ticks
                     n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
                     S_now = agent_S_ref
                     sps = pool.tick_spacing
@@ -2392,7 +2392,7 @@ def simulate(
     lp_active_activity_cum_v = lp_active_activity_cum[s0:]
     lp_passive_activity_cum_v = lp_passive_activity_cum[s0:]
     arb_activity_cum_v = arb_activity_cum[s0:]
-    
+
     if visualize:
         # ΔL per step (split by LP type)
         mint_step_sum_passive = np.zeros_like(P_series)
@@ -2626,6 +2626,54 @@ def simulate(
             yaxis_title="Cumulative activity",
         )
         _save_plotly("2b_agent_activity", fig2b)
+
+        # ----- 2c) Agent activity correlation heatmap -----
+        activity_labels = ["Smart router", "Noise trader", "Active LPs", "Passive LPs"]
+        activity_series = [
+            smart_activity_cum_v,
+            noise_activity_cum_v,
+            lp_active_activity_cum_v,
+            lp_passive_activity_cum_v,
+        ]
+
+        def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
+            if a.size == 0 or b.size == 0:
+                return 0.0
+            a_std = a.std()
+            b_std = b.std()
+            if a_std < 1e-12 or b_std < 1e-12:
+                return 0.0
+            return float(np.corrcoef(a, b)[0, 1])
+
+        corr_matrix = np.zeros((len(activity_series), len(activity_series)), dtype=float)
+        for i, arr_i in enumerate(activity_series):
+            for j, arr_j in enumerate(activity_series):
+                if i == j:
+                    corr_matrix[i, j] = 1.0 if arr_i.size > 0 else 0.0
+                else:
+                    corr_matrix[i, j] = _safe_corr(arr_i, arr_j)
+
+        fig2c = go.Figure(
+            data=go.Heatmap(
+                z=corr_matrix,
+                x=activity_labels,
+                y=activity_labels,
+                colorscale="RdBu",
+                zmin=-1,
+                zmax=1,
+                text=[[f"{val:.3f}" for val in row] for row in corr_matrix],
+                texttemplate="%{text}",
+                textfont=dict(color="black"),
+                colorbar=dict(title="Corr"),
+            )
+        )
+        fig2c.update_layout(
+            template="plotly_white",
+            title="Agent Activity Correlation (cumulative)",
+            xaxis_title="Agent",
+            yaxis_title="Agent",
+        )
+        _save_plotly("2c_agent_activity_corr", fig2c)
 
         # helper for zero-liquidity shading
         def _zero_liquidity_shapes():
