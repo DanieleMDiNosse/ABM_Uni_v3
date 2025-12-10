@@ -217,7 +217,7 @@ class ReferenceMarket:
                     )
                 v0 = float(self.sigma) ** 2
             self._heston_v = max(1e-18, v0)
-            # Keep sigma in sync with sqrt(variance) for downstream consumers (plots, GAS, etc.).
+            # Keep sigma in sync with sqrt(variance) for downstream consumers (plots, etc.).
             self.sigma = math.sqrt(self._heston_v)
             # Regime-related attributes are unused in Heston mode.
             self.regime_state = "H"
@@ -590,8 +590,8 @@ def scenario_output_root(config_path: Path, base_dir: Path | str | None = None) 
     """
     Derive the per-scenario output directory from a YAML config path.
 
-    For a config like `.../sigma_sine_fee_gas.yml` this returns
-    `abm_results/scenarios/sigma_sine_fee_gas` (by default) and ensures
+    For a config like `.../sigma_sine_fee_volatility.yml` this returns
+    `abm_results/scenarios/sigma_sine_fee_volatility` (by default) and ensures
     the directory exists.
     """
     if base_dir is None:

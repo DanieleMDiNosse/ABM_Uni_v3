@@ -119,12 +119,6 @@ simulate:
   k_sigma: 1
   # Multiplier converting EWMA basis (ticks) into a fee adjustment (toxicity mode)
   k_basis: 0.01
-  # GAS fee mode parameters (volatility level and surprise)
-  gas_alpha: 0.1
-  gas_beta: 0.1
-  gas_omega: 0.0
-  k_gas_sigma: 0.05
-  # k_gas_score: 0.005
   # Minimum absolute fee change (in bps) required before committing an update. A value of 0.001 corresponds to 0.00001 = 0.001% of the previous fee
   fee_step_bps_min: 0.0005
   # Maximum fee change (in bps) allowed per update step

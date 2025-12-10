@@ -102,7 +102,7 @@ Each scenario writes a standard set of Plotly figures under `abm_results/scenari
 
 ## Grid Search over Fee Sensitivities (Noisy-Sine Regime)
 
-To complement the single-seed runs above, `run_parameter_grid_mean_std_parallel.py` was used with `tests/test.yml` (same noisy-sine volatility profile) to sweep controller sensitivities and aggregate outcomes over 15 seeds per grid point. The summary CSV and plots live under:
+To complement the single-seed runs above, `run_parameter_grid_mean_std_parallel.py` was used with the base scenario config at `abm_results/scenarios/test.yml` (configured to match the noisy-sine volatility profile) to sweep controller sensitivities and aggregate outcomes over 15 seeds per grid point. The summary CSV and plots live under:
 
 - CSV: `abm_results/grid_search/grid_summary.csv`
 

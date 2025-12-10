@@ -114,6 +114,22 @@ class TraderStepAccumulator:
         """
         self.pnl = (self.dy_out - self.dy_in) + (self.dx_out - self.dx_in) * m_settle
 
+
+class _NullList(list):
+    """
+    Lightweight sink used in light_mode to avoid collecting data we won't use.
+    Behaves like an always-empty list; append/extend are no-ops.
+    """
+
+    def append(self, *args, **kwargs):  # type: ignore[override]
+        return None
+
+    def extend(self, *args, **kwargs):  # type: ignore[override]
+        return None
+
+    def __iadd__(self, other):  # type: ignore[override]
+        return self
+
 def simulate(
     block_time: int,
     T: int,
@@ -155,7 +171,7 @@ def simulate(
     visualize: bool,
     skip_step: int,
     # --- Dynamic fee controller (new) ---
-    fee_mode: str,      # "static" | "volatility" | "gas"
+    fee_mode: str,      # "static" | "volatility" | "volatility_oracle" | "toxicity"
     f0: float,             # baseline fee (e.g., 30 bps)
     f_min: float,         # 5 bps
     f_max: float,           # 200 bps safety cap
@@ -166,11 +182,6 @@ def simulate(
     fee_step_bps_min: float, # do not change fee unless ≥ 0.5 bps move
     fee_step_bps_max: float, # max step per update (bps)
     fee_cooldown: int,         # blocks between fee changes (hysteresis)
-    gas_alpha: float = 0.05,    # GAS score weight
-    gas_beta: float = 0.9,      # GAS persistence
-    gas_omega: float = 0.0,     # GAS drift term
-    k_gas_sigma: float = 0.0,   # fee sensitivity to GAS sigma level
-    k_gas_score: float = 0.0,   # fee sensitivity to positive score (surprise)
     flash_loan_fee: float = 0.0,  # percentage cost on arbitrage notional (e.g., 0.0005 = 5 bps)
     # --- CEX volatility (static / regime / noisy-sine / Heston) ---
     cex_sigma_mode: str = "static",    # "static" | "regime" | "noisy_sine" | "heston"
@@ -192,8 +203,10 @@ def simulate(
     cex_heston_v0: Optional[float] = None,
     # --- Output root (for logs/plots); defaults to 'abm_results' ---
     results_root: Optional[str | Path] = None,
+    verbose: bool = True,
+    light_mode: bool = False,
 ):
-    valid_fee_modes = {"static", "volatility", "toxicity", "gas"}
+    valid_fee_modes = {"static", "volatility", "volatility_oracle", "toxicity"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
     if k_out_min <= 0 or k_out_max <= 0:
@@ -202,14 +215,16 @@ def simulate(
         raise ValueError("k_out_min cannot exceed k_out_max.")
 
     slippage_tolerance = clamp(slippage_tolerance, 0.0, 1.0)
-    """
-    Run a Step-1 ABM with a Uniswap v3–style pool.
-
-    - noise_trades_per_block (float): expected noise trader intents per block. Internal Bernoulli per micro-step uses noise_trades_per_block / block_time.
-    Run a Step-1 ABM of a Uniswap v3–style pool with noise traders, a band-targeting
-    arbitrageur, and adaptive LPs. **Actor order is randomized each step.**
-    """
     initial_params = dict(locals())
+
+    def _vprint(*args, **kwargs):
+        if verbose:
+            print(*args, **kwargs)
+
+    if light_mode:
+        visualize = False
+        verbose = False
+
     # Normalize output root for this simulation (logs + plots).
     if results_root is None:
         results_root_path = Path("abm_results")
@@ -271,7 +286,7 @@ def simulate(
             raise ValueError("cex_sigma_p_LL and cex_sigma_p_HH must be probabilities in [0, 1].")
         sigma_annualized_low = cex_sigma_low * math.sqrt(seconds_per_year)
         sigma_annualized_high = cex_sigma_high * math.sqrt(seconds_per_year)
-        print(
+        _vprint(
             f"\n[CONFIG] Regime-switching cex_sigma: "
             f"low={cex_sigma_low} ({sigma_annualized_low:.2%} annualized), "
             f"high={cex_sigma_high} ({sigma_annualized_high:.2%} annualized), "
@@ -299,7 +314,7 @@ def simulate(
         sigma_annualized_center = sigma_center * math.sqrt(seconds_per_year)
         sigma_high_annualized = (sigma_center + amp_for_log) * math.sqrt(seconds_per_year)
         sigma_low_annualized = max(0.0, (sigma_center - amp_for_log)) * math.sqrt(seconds_per_year)
-        print(
+        _vprint(
             f"\n[CONFIG] Noisy-sine cex_sigma: "
             f"center={sigma_center} ({sigma_annualized_center:.2%} annualized), "
             f"amp={amp_for_log} ([{sigma_low_annualized:.2%},{sigma_high_annualized:.2%}] annualized), period={cex_sigma_sine_period} steps, "
@@ -322,7 +337,7 @@ def simulate(
                     "cex_sigma must be positive when cex_sigma_mode='heston' and cex_heston_v0 is not provided."
                 )
         sigma_annualized = sigma_for_ref * math.sqrt(seconds_per_year)
-        print(
+        _vprint(
             f"\n[CONFIG] Heston cex_sigma_mode: "
             f"sigma0={sigma_for_ref} ({sigma_annualized:.2%} annualized), "
             f"kappa={cex_heston_kappa}, theta={cex_heston_theta}, "
@@ -330,9 +345,9 @@ def simulate(
         )
     else:
         sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
-        print(f"\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
+        _vprint(f"\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
         sigma_for_ref = cex_sigma
-    print(f"[CONFIG] Fee: {initial_params.get('f0', 0.0005)*10000:.1f} bps\n")
+    _vprint(f"[CONFIG] Fee: {initial_params.get('f0', 0.0005)*10000:.1f} bps\n")
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
@@ -415,23 +430,20 @@ def simulate(
             lp.k_out_threshold = random.randint(k_out_min, k_out_max)
 
     lp_lookup: Dict[int, LPAgent] = {lp.id: lp for lp in LPs}
-    positions_by_tick: Dict[int, List[Position]] = defaultdict(list)
+    positions_by_tick: Dict[int, Set[Position]] = defaultdict(set)
 
     def _register_position(pos: Position) -> None:
         slots = tuple(range(pos.lower, pos.upper, pool.tick_spacing))
         pos.tick_slots = slots
         for tick_val in slots:
-            positions_by_tick[tick_val].append(pos)
+            positions_by_tick[tick_val].add(pos)
 
     def _unregister_position(pos: Position) -> None:
         for tick_val in getattr(pos, "tick_slots", ()):
             bucket = positions_by_tick.get(tick_val)
             if not bucket:
                 continue
-            try:
-                bucket.remove(pos)
-            except ValueError:
-                continue
+            bucket.discard(pos)
             if not bucket:
                 positions_by_tick.pop(tick_val, None)
         pos.tick_slots = tuple()
@@ -548,33 +560,44 @@ def simulate(
     sr_y_series = []
     noise_y_series = []
 
-    # Determine verbose log file path for this run (scenario-aware)
-    logs_dir = results_root_path / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    verbose_log_path = next_numbered_path(logs_dir / f"verbose_steps_{fee_mode}")
-    verbose_log_path_str = str(verbose_log_path)
-
-    verbose_log = open(verbose_log_path_str, "a")
     LOG_BUFFER_LIMIT = 10_000
     log_buffer: List[str] = []
+    verbose_log_path: Optional[Path] = None
+    verbose_log_path_str = ""
+    verbose_log = None
 
-    def buffer_log(msg: str) -> None:
-        """Accumulate log lines before flushing to disk."""
-        log_buffer.append(msg)
-        if len(log_buffer) >= LOG_BUFFER_LIMIT:
-            verbose_log.write("".join(log_buffer))
-            log_buffer.clear()
+    if light_mode:
+        def buffer_log(msg: str) -> None:
+            return None
 
-    def flush_log_buffer() -> None:
-        """Write the buffered log entries to disk."""
-        if log_buffer:
-            verbose_log.write("".join(log_buffer))
-            log_buffer.clear()
+        def flush_log_buffer() -> None:
+            return None
+    else:
+        # Determine verbose log file path for this run (scenario-aware)
+        logs_dir = results_root_path / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        verbose_log_path = next_numbered_path(logs_dir / f"verbose_steps_{fee_mode}")
+        verbose_log_path_str = str(verbose_log_path)
 
-    buffer_log("# Simulation parameters\n")
-    for key in sorted(initial_params):
-        buffer_log(f"{key} = {initial_params[key]}\n")
-    buffer_log("\n")
+        verbose_log = open(verbose_log_path_str, "a")
+
+        def buffer_log(msg: str) -> None:
+            """Accumulate log lines before flushing to disk."""
+            log_buffer.append(msg)
+            if len(log_buffer) >= LOG_BUFFER_LIMIT:
+                verbose_log.write("".join(log_buffer))
+                log_buffer.clear()
+
+        def flush_log_buffer() -> None:
+            """Write the buffered log entries to disk."""
+            if log_buffer:
+                verbose_log.write("".join(log_buffer))
+                log_buffer.clear()
+
+        buffer_log("# Simulation parameters\n")
+        for key in sorted(initial_params):
+            buffer_log(f"{key} = {initial_params[key]}\n")
+        buffer_log("\n")
 
 
     # --- LP wealth recorders (new) ---
@@ -589,8 +612,82 @@ def simulate(
     fee_basis_ticks_series = []    # EWMA fee-adjusted basis, in ticks
     fee_imb_series = []            # EWMA |imbalance| in [0,1]
     fee_signal_series = []         # controller signal actually used (per fee_mode)
-    gas_sigma_series: List[float] = []   # GAS-implied sigma_t
-    gas_score_series: List[float] = []   # GAS score_t
+
+    if light_mode:
+        P_series = _NullList()
+        M_series = _NullList()
+        X_active_end = _NullList()
+        Y_active_end = _NullList()
+        band_lo_pre = _NullList()
+        band_hi_pre = _NullList()
+        band_lo_post = _NullList()
+        band_hi_post = _NullList()
+        L_end = _NullList()
+        L_pre_step = _NullList()
+        L_pre_trader = _NullList()
+        L_pre_arb_eff = _NullList()
+        trader_y_series = _NullList()
+        arb_y_series = _NullList()
+        trader_steps = _NullList()
+        trader_dirs = _NullList()
+        arb_steps = _NullList()
+        arb_dirs = _NullList()
+        mint_sizes = _NullList()
+        burn_sizes = _NullList()
+        mint_is_passive = _NullList()
+        burn_is_passive = _NullList()
+        smart_activity_steps = _NullList()
+        smart_activity_signs = _NullList()
+        noise_activity_steps = _NullList()
+        noise_activity_signs = _NullList()
+        arb_skip_steps = _NullList()
+        mint_widths = _NullList()
+        w_ticks_series = _NullList()
+        w_unclipped_series = _NullList()
+        w_noise_series = _NullList()
+        liq_history = _NullList()
+        tick_history = _NullList()
+        delta_a_cex_series = _NullList()
+        cex_sigma_series = _NullList()
+        cex_regime_series = _NullList()
+        band_lo_target = _NullList()
+        band_hi_target = _NullList()
+        micro_steps = _NullList()
+        M_micro = _NullList()
+        P_micro = _NullList()
+        micro_valid_steps = _NullList()
+        micro_valid_prices = _NullList()
+        trader_pnl_steps = _NullList()
+        lp_pnl_total_series = _NullList()
+        lp_unhedged_total_series = _NullList()
+        lp_rebal_total_series = _NullList()
+        lp_rebal_active_series = _NullList()
+        lp_rebal_passive_series = _NullList()
+        lp_rebal_value_total_series = _NullList()
+        lp_rebal_value_active_series = _NullList()
+        lp_rebal_value_passive_series = _NullList()
+        lp_fee_value_total_series = _NullList()
+        lp_fee_value_active_series = _NullList()
+        lp_fee_value_passive_series = _NullList()
+        lp_lvr_total_series = _NullList()
+        lp_lvr_active_series = _NullList()
+        lp_lvr_passive_series = _NullList()
+        trader_exec_count = _NullList()
+        arb_exec_count = _NullList()
+        sr_exec_count = _NullList()
+        noise_exec_count = _NullList()
+        sr_y_series = _NullList()
+        noise_y_series = _NullList()
+        lp_wallet_series = _NullList()
+        lp_wallet_active_series = _NullList()
+        lp_wallet_passive_series = _NullList()
+        lp_wealth_series = _NullList()
+        lp_wealth_active_series = _NullList()
+        lp_wealth_passive_series = _NullList()
+        fee_sigma_series = _NullList()
+        fee_basis_ticks_series = _NullList()
+        fee_imb_series = _NullList()
+        fee_signal_series = _NullList()
     # --- EWMA(B_t) state for LP width rule ---
     ewma_B = EWMA(half_life_steps=basis_half_life)
 
@@ -604,8 +701,6 @@ def simulate(
     ewma_sigma_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # |log m_t - log m_{t-1}|
     ewma_basis_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # fee-adjusted log gap
     prev_m_for_vol = ref.m
-    # GAS log-variance state (f_t = log σ_t^2)
-    gas_f = math.log(max(1e-18, float(sigma_for_ref) ** 2))
 
     # ------------------ LVR rebalancer helpers ------------------
     REBAL_EPS = 1e-18
@@ -673,30 +768,57 @@ def simulate(
         bucket = positions_by_tick.get(tick_snapshot)
         if not bucket:
             return
-        total_L = math.fsum(pos.L for pos in bucket if pos.L > 0.0)
+        total_L = 0.0
+        for pos in bucket:
+            L_pos = pos.L
+            if L_pos > 0.0:
+                total_L += L_pos
         if total_L <= 0.0:
             return
+
+        inv_total_L = 1.0 / total_L
+        owner_fee: Dict[int, float] = {}
         touched_lp_ids: Set[int] = set()
-        for pos in bucket:
-            share = pos.L / total_L
-            if share <= 0.0:
-                continue
-            if token == "x":
-                delta_fee0 = share * fee_amt
-                pos.fees0 += delta_fee0
-                owner = lp_lookup.get(pos.owner)
-                if owner is not None:
-                    owner.fees0_earned = getattr(owner, "fees0_earned", 0.0) + delta_fee0
-                if delta_fee0 != 0.0:
-                    touched_lp_ids.add(pos.owner)
-            else:
-                delta_fee1 = share * fee_amt
-                pos.fees1 += delta_fee1
-                owner = lp_lookup.get(pos.owner)
-                if owner is not None:
-                    owner.fees1_earned = getattr(owner, "fees1_earned", 0.0) + delta_fee1
-                if delta_fee1 != 0.0:
-                    touched_lp_ids.add(pos.owner)
+
+        if token == "x":
+            for pos in bucket:
+                L_pos = pos.L
+                if L_pos <= 0.0:
+                    continue
+                fee_for_pos = fee_amt * L_pos * inv_total_L
+                if fee_for_pos == 0.0:
+                    continue
+                pos.fees0 += fee_for_pos
+                owner_id = pos.owner
+                owner_fee[owner_id] = owner_fee.get(owner_id, 0.0) + fee_for_pos
+
+            for owner_id, fee in owner_fee.items():
+                if fee == 0.0:
+                    continue
+                lp = lp_lookup.get(owner_id)
+                if lp is not None:
+                    lp.fees0_earned = getattr(lp, "fees0_earned", 0.0) + fee
+                touched_lp_ids.add(owner_id)
+        else:
+            for pos in bucket:
+                L_pos = pos.L
+                if L_pos <= 0.0:
+                    continue
+                fee_for_pos = fee_amt * L_pos * inv_total_L
+                if fee_for_pos == 0.0:
+                    continue
+                pos.fees1 += fee_for_pos
+                owner_id = pos.owner
+                owner_fee[owner_id] = owner_fee.get(owner_id, 0.0) + fee_for_pos
+
+            for owner_id, fee in owner_fee.items():
+                if fee == 0.0:
+                    continue
+                lp = lp_lookup.get(owner_id)
+                if lp is not None:
+                    lp.fees1_earned = getattr(lp, "fees1_earned", 0.0) + fee
+                touched_lp_ids.add(owner_id)
+
         if touched_lp_ids:
             _rebalance_by_ids(touched_lp_ids, ref.m, pool.S)
 
@@ -1870,6 +1992,21 @@ def simulate(
             M_micro.append(ref.m)
             micro_counter += 1
             for _k in range(block_time):
+                # In block mode, allow volatility_oracle fees to react at
+                # micro-step granularity based on the *current* CEX volatility.
+                if fee_mode == "volatility_oracle":
+                    sigma_signal_micro = float(ref.sigma)
+                    f_raw_micro = f0 + k_sigma * sigma_signal_micro * math.sqrt(block_time)
+                    f_tgt_micro = clamp(f_raw_micro, f_min, f_max)
+                    min_step_micro = fee_step_bps_min / 1e4
+                    max_step_micro = fee_step_bps_max / 1e4
+                    delta_f_micro = f_tgt_micro - pool.f
+                    if abs(delta_f_micro) >= min_step_micro:
+                        step_micro = math.copysign(min(abs(delta_f_micro), max_step_micro), delta_f_micro)
+                        f_new_micro = clamp(pool.f + step_micro, f_min, f_max)
+                        if abs(f_new_micro - pool.f) >= 1e-12:
+                            pool.f = f_new_micro
+
                 maybe_enqueue_smart_router_intent(cex_ref_for_agents)
                 maybe_enqueue_noise_trader_intent(cex_ref_for_agents)
                 ref.diffuse_only()
@@ -2005,26 +2142,22 @@ def simulate(
         arb_pnl_this = arb_acc.pnl
 
         # ================== Dynamic fee controller  ==================
-        # Signals based on END-OF-STEP state; new fee applies NEXT step.
+        # By default, signals are based on END-OF-STEP state and the new
+        # fee applies NEXT step. For fee_mode == "volatility_oracle" in
+        # block mode (block_time > 1), the fee has already been allowed
+        # to react at micro-step granularity inside the block; the logic
+        # below is then used only for recording diagnostics.
 
-        # 1) Volatility of CEX (abs log-return) and GAS log-return
+        # 1) Volatility of CEX (abs log-return / oracle)
         try:
             log_m_now = math.log(max(ref.m, 1e-18))
             log_m_prev = math.log(max(prev_m_for_vol, 1e-18))
             vol_obs = abs(log_m_now - log_m_prev)
-            gas_logret = log_m_now - log_m_prev
         except ValueError:
-            print("[fee_mode] ValueError in log computation for volatility/GAS observation")
+            _vprint("[fee_mode] ValueError in log computation for volatility observation")
             vol_obs = 0.0
-            gas_logret = 0.0
         prev_m_for_vol = ref.m
-        sigma_hat = ewma_sigma_fee.update(vol_obs)
-
-        # GAS update: f_t = log σ_t^2
-        sigma2_gas = max(1e-18, math.exp(gas_f))
-        score_t = 0.5 * ((gas_logret * gas_logret / sigma2_gas) - 1.0)
-        gas_f = gas_omega + gas_beta * gas_f + gas_alpha * score_t
-        sigma_gas = math.sqrt(max(1e-18, math.exp(gas_f)))
+        sigma_hat_ewma = ewma_sigma_fee.update(vol_obs)
 
         # 2) Toxicity / basis (fee-adjusted log gap)
         fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f))
@@ -2034,46 +2167,59 @@ def simulate(
         basis_ticks = B_hat / TICK_LN   # convert log-gap to "ticks"
 
         # Record raw signals for diagnostics/plotting
-        fee_sigma_series.append(sigma_hat)
+        # For volatility-based fee modes, fee_sigma_series tracks the sigma
+        # signal actually fed into the controller:
+        #   - "volatility": EWMA(|log-return|),
+        #   - "volatility_oracle": ReferenceMarket.sigma (per-step, no smoothing).
+        if fee_mode == "volatility_oracle":
+            sigma_signal = float(ref.sigma)
+        else:
+            sigma_signal = sigma_hat_ewma
+        fee_sigma_series.append(sigma_signal)
         fee_basis_ticks_series.append(basis_ticks)
-        gas_sigma_series.append(sigma_gas)
-        gas_score_series.append(score_t)
 
         # Select controller
         f_raw = pool.f
         if fee_mode == "volatility":
-            f_raw = f0 + k_sigma * sigma_hat * np.sqrt(block_time)
+            f_raw = f0 + k_sigma * sigma_signal * np.sqrt(block_time)
+        elif fee_mode == "volatility_oracle":
+            # In non-block mode, or when block_time == 1, volatility_oracle
+            # behaves like a per-step oracle fee using ref.sigma. In block
+            # mode we already reacted per micro-step, so keep f_raw as the
+            # current pool.f for update logic below.
+            if block_time == 1:
+                f_raw = f0 + k_sigma * sigma_signal * np.sqrt(block_time)
         elif fee_mode == "toxicity":
             f_raw = f0 + k_basis * basis_ticks
-        elif fee_mode == "gas":
-            f_raw = f0 + k_gas_sigma * sigma_gas# + k_gas_score * max(0.0, score_t)
         else:
             f_raw = pool.f  # "static": no change
 
 
         # Controller signal used for plotting (depends on fee_mode)
-        if fee_mode == "volatility":
-            ctrl_sig = sigma_hat
+        if fee_mode in ("volatility", "volatility_oracle"):
+            ctrl_sig = sigma_signal
         elif fee_mode == "toxicity":
             ctrl_sig = basis_ticks
-        elif fee_mode == "gas":
-            ctrl_sig = sigma_gas
         else:
             ctrl_sig = 0.0
         fee_signal_series.append(ctrl_sig)
-        # Clip and apply hysteresis (min/max step in bps, cooldown)
-        f_tgt = clamp(f_raw, f_min, f_max)
-        min_step = fee_step_bps_min / 1e4
-        max_step = fee_step_bps_max / 1e4
-        delta_f = f_tgt - pool.f
-        if abs(delta_f) >= min_step:
-            step = math.copysign(min(abs(delta_f), max_step), delta_f)
-            f_new = clamp(pool.f + step, f_min, f_max)
-            if abs(f_new - pool.f) >= 1e-12:
-                fee_next = f_new
-                # Only start the cooldown when scheduling a new change; otherwise countdown would restart every step.
-                if fee_cooldown_left <= 0:
-                    fee_cooldown_left = max(0, int(fee_cooldown))
+        # Clip and apply hysteresis (min/max step in bps, cooldown). In
+        # volatility_oracle + block_time > 1 mode, micro-step updates
+        # already adjusted pool.f directly, so we only stage changes here
+        # for other modes (or for non-block volatility_oracle).
+        if not (fee_mode == "volatility_oracle" and block_time > 1):
+            f_tgt = clamp(f_raw, f_min, f_max)
+            min_step = fee_step_bps_min / 1e4
+            max_step = fee_step_bps_max / 1e4
+            delta_f = f_tgt - pool.f
+            if abs(delta_f) >= min_step:
+                step = math.copysign(min(abs(delta_f), max_step), delta_f)
+                f_new = clamp(pool.f + step, f_min, f_max)
+                if abs(f_new - pool.f) >= 1e-12:
+                    fee_next = f_new
+                    # Only start the cooldown when scheduling a new change; otherwise countdown would restart every step.
+                    if fee_cooldown_left <= 0:
+                        fee_cooldown_left = max(0, int(fee_cooldown))
 
         # record current fee (before next-step commit)
         fee_series.append(pool.f)
@@ -2232,30 +2378,47 @@ def simulate(
         validated_tick = pool.tick
         validated_cex = ref.m
 
-    summary_lines = [
-        "# Run summary",
-        f"total_mints = {len(mint_steps)}",
-        f"total_burns = {len(burn_steps)}",
-        f"total_noise_trader_swaps = {total_noise_swaps_executed}",
-        f"noise_trader_swaps_rejected_slippage = {total_noise_swaps_skipped}",
-        f"total_smart_router_swaps = {total_smart_swaps_executed}",
-        f"smart_router_swaps_rejected_slippage = {total_smart_swaps_skipped}",
-        f"smart_router_swaps_X_to_Y (price down) = {smart_swaps_x_to_y}",
-        f"smart_router_swaps_Y_to_X (price up) = {smart_swaps_y_to_x}",
-        f"noise_trader_swaps_X_to_Y (price down) = {noise_swaps_x_to_y}",
-        f"noise_trader_swaps_Y_to_X (price up) = {noise_swaps_y_to_x}",
-        "----------------------------------------------------------\n",
-    ]
+    if not light_mode:
+        summary_lines = [
+            "# Run summary",
+            f"total_mints = {len(mint_steps)}",
+            f"total_burns = {len(burn_steps)}",
+            f"total_noise_trader_swaps = {total_noise_swaps_executed}",
+            f"noise_trader_swaps_rejected_slippage = {total_noise_swaps_skipped}",
+            f"total_smart_router_swaps = {total_smart_swaps_executed}",
+            f"smart_router_swaps_rejected_slippage = {total_smart_swaps_skipped}",
+            f"smart_router_swaps_X_to_Y (price down) = {smart_swaps_x_to_y}",
+            f"smart_router_swaps_Y_to_X (price up) = {smart_swaps_y_to_x}",
+            f"noise_trader_swaps_X_to_Y (price down) = {noise_swaps_x_to_y}",
+            f"noise_trader_swaps_Y_to_X (price up) = {noise_swaps_y_to_x}",
+            "----------------------------------------------------------\n",
+        ]
 
-    flush_log_buffer()
-    verbose_log.flush()
-    verbose_log.close()
-    verbose_path = Path(verbose_log_path_str)
-    try:
-        original_text = verbose_path.read_text()
-    except FileNotFoundError:
-        original_text = ""
-    verbose_path.write_text("\n".join(summary_lines) + original_text)
+        flush_log_buffer()
+        assert verbose_log is not None
+        verbose_log.flush()
+        verbose_log.close()
+        verbose_path = Path(verbose_log_path_str)
+        try:
+            original_text = verbose_path.read_text()
+        except FileNotFoundError:
+            original_text = ""
+        verbose_path.write_text("\n".join(summary_lines) + original_text)
+
+    if light_mode:
+        sr_pnl_steps_arr = np.asarray(sr_pnl_steps, dtype=float)
+        noise_pnl_steps_arr = np.asarray(noise_pnl_steps, dtype=float)
+        arb_pnl_steps_arr = np.asarray(arb_pnl_steps, dtype=float)
+        return {
+            "smart_router_pnl_cum": np.cumsum(sr_pnl_steps_arr).tolist(),
+            "noise_trader_pnl_cum": np.cumsum(noise_pnl_steps_arr).tolist(),
+            "arb_pnl_cum": np.cumsum(arb_pnl_steps_arr).tolist(),
+            "lp_pnl_active": list(lp_pnl_active_series),
+            "lp_pnl_passive": list(lp_pnl_passive_series),
+            "lp_unhedged_active": list(lp_unhedged_active_series),
+            "lp_unhedged_passive": list(lp_unhedged_passive_series),
+            "fee_series": list(fee_series),
+        }
 
     # =============================================================================
     # Plotting
@@ -2309,8 +2472,6 @@ def simulate(
     lp_wealth_passive_series = np.array(lp_wealth_passive_series)
     fee_sigma_series = np.array(fee_sigma_series)
     fee_basis_ticks_series = np.array(fee_basis_ticks_series)
-    gas_sigma_series = np.array(gas_sigma_series)
-    gas_score_series = np.array(gas_score_series)
     fee_imb_series = np.array(fee_imb_series)
     fee_signal_series = np.array(fee_signal_series)
     cex_sigma_series = np.array(cex_sigma_series)
@@ -2377,8 +2538,6 @@ def simulate(
     fee_series_v = fee_series[s0:]
     fee_sigma_series_v = fee_sigma_series[s0:]
     fee_basis_ticks_series_v = fee_basis_ticks_series[s0:]
-    gas_sigma_series_v = gas_sigma_series[s0:]
-    gas_score_series_v = gas_score_series[s0:]
     fee_signal_series_v = fee_signal_series[s0:]
     cex_sigma_series_v = cex_sigma_series[s0:]
     arb_y_v = np.array(arb_y_series)[s0:]
@@ -2635,6 +2794,8 @@ def simulate(
             lp_active_activity_cum_v,
             lp_passive_activity_cum_v,
         ]
+        boot_iters = 100
+        alpha = 0.05
 
         def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
             if a.size == 0 or b.size == 0:
@@ -2645,13 +2806,39 @@ def simulate(
                 return 0.0
             return float(np.corrcoef(a, b)[0, 1])
 
+        def _bootstrap_pvalue(a: np.ndarray, b: np.ndarray, obs_corr: float) -> float:
+            n = min(a.size, b.size)
+            if n < 2:
+                return 1.0
+            a_std = a.std()
+            b_std = b.std()
+            if a_std < 1e-12 or b_std < 1e-12:
+                return 1.0
+            exceed = 0
+            for _ in range(boot_iters):
+                idx = np.random.randint(0, n, size=n)
+                c_boot = _safe_corr(a[idx], b[idx])
+                if abs(c_boot) >= abs(obs_corr):
+                    exceed += 1
+            return exceed / boot_iters
+
         corr_matrix = np.zeros((len(activity_series), len(activity_series)), dtype=float)
+        pval_matrix = np.ones_like(corr_matrix)
         for i, arr_i in enumerate(activity_series):
             for j, arr_j in enumerate(activity_series):
                 if i == j:
                     corr_matrix[i, j] = 1.0 if arr_i.size > 0 else 0.0
+                    pval_matrix[i, j] = 0.0
                 else:
-                    corr_matrix[i, j] = _safe_corr(arr_i, arr_j)
+                    corr_obs = _safe_corr(arr_i, arr_j)
+                    corr_matrix[i, j] = corr_obs
+                    pval_matrix[i, j] = _bootstrap_pvalue(arr_i, arr_j, corr_obs)
+
+        def _cell_text(i: int, j: int) -> str:
+            val = corr_matrix[i, j]
+            signif = (i != j) and (pval_matrix[i, j] <= alpha)
+            star = "*" if signif else ""
+            return f"{val:.3f}{star}"
 
         fig2c = go.Figure(
             data=go.Heatmap(
@@ -2661,7 +2848,7 @@ def simulate(
                 colorscale="RdBu",
                 zmin=-1,
                 zmax=1,
-                text=[[f"{val:.3f}" for val in row] for row in corr_matrix],
+                text=[[ _cell_text(i, j) for j in range(len(activity_series)) ] for i in range(len(activity_series))],
                 texttemplate="%{text}",
                 textfont=dict(color="black"),
                 colorbar=dict(title="Corr"),
@@ -2947,12 +3134,12 @@ def simulate(
         if fee_mode == "volatility":
             secondary_vals = fee_sigma_series_v
             secondary_label = "σ̂ (abs log-return)"
+        elif fee_mode == "volatility_oracle":
+            secondary_vals = fee_sigma_series_v
+            secondary_label = "σ_oracle (CEX σ_t)"
         elif fee_mode == "toxicity":
             secondary_vals = fee_basis_ticks_series_v
             secondary_label = "Basis (ticks)"
-        elif fee_mode == "gas":
-            secondary_vals = gas_sigma_series_v
-            secondary_label = "σ̂ (GAS)"
         else:
             secondary_vals = fee_signal_series_v
             secondary_label = "Controller signal"
@@ -3046,8 +3233,6 @@ def simulate(
         "fee_basis_ticks_series": fee_basis_ticks_series.tolist(),
         "fee_imb_series": fee_imb_series.tolist(),
         "fee_signal_series": fee_signal_series.tolist(),
-        "gas_sigma_series": gas_sigma_series.tolist(),
-        "gas_score_series": gas_score_series.tolist(),
         "lp_wallet_series": lp_wallet_series.tolist(),
         "lp_wealth_series": lp_wealth_series.tolist(),
         "lp_wallet_active_series": lp_wallet_active_series.tolist(),

@@ -109,8 +109,7 @@ Structurally, they are exactly on the wrong side of:
 
 - `fee_mode: volatility` uses an EWMA of absolute log‑returns to push fees up when \(|\log m_t - \log m_{t-1}|\) is large.
 - `fee_mode: toxicity` uses an EWMA of **fee‑adjusted basis** (DEX–CEX log gap) in ticks.
-- `fee_mode: gas` uses a **GAS (score‑driven) volatility state**, updating \(f_t = \log \sigma_t^2\) via the score of the Gaussian log‑likelihood and mapping the level/surprise into the fee.
-- Both are:
+- Both modes are:
   - **lagged** (EWMA with half‑life over multiple blocks),
   - **step‑capped** (`fee_step_bps_max`),
   - and optionally throttled (`fee_cooldown`).
@@ -253,7 +252,7 @@ These are more speculative and model‑dependent, but they are levers you alread
 To systematically explore “can I make hedged PnL positive?”:
 
 1. Define a small set of **target scenarios** (e.g., low‑vol / high‑noise / frictional arb).
-2. For each scenario, use `run_parameter_grid_mean_std.py` or `run_fee_sweep.py` to grid over:
+2. For each scenario, use `run_parameter_grid_mean_std_parallel.py` (or a similar grid runner) to sweep over:
    - `noise_trades_per_block`, `smart_trades_per_block`, `theta_T`,
    - `f0`, `f_min`, `f_max`, `k_sigma`, `k_basis`, `fee_half_life`,
    - `flash_loan_fee` or additional arb costs.

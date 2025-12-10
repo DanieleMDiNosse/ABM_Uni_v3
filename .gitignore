@@ -199,11 +199,17 @@ personal.ipynb
 # TXT
 *.txt
 
+# parquet, csv, pickle, pkl
+*.parquet
+*.csv
+*.pickle
+*.pkl
+
 # Zone.Identifiers
 *:Zone.Identifier
 
 # test config
 abm_mempool_config.yml
 
-# binance_data folder
-binance_data/*
+# data
+data/

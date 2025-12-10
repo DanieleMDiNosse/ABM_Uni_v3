@@ -10,8 +10,8 @@ There are four supported fee modes:
 
 1.  **Static** (`static`)
 2.  **Volatility-based** (`volatility`)
-3.  **Toxicity-based** (`toxicity`)
-4.  **GAS-based** (`gas`)
+3.  **Volatility-oracle-based** (`volatility_oracle`)
+4.  **Toxicity-based** (`toxicity`)
 
 ### 1. Static Fee
 
@@ -43,7 +43,55 @@ $$ f_{raw} = f_0 + k_\sigma \cdot \hat{\sigma}_t \cdot \sqrt{\text{block\_time}}
     *   $f_0$: Baseline fee.
     *   $k_\sigma$: Scaling factor for volatility (parameter `k_sigma`).
 
-### 3. Toxicity-based Fee
+### 3. Volatility-Oracle-Based Fee
+
+This mode adjusts the fee using the *instantaneous* CEX volatility signal from the reference market, without any additional smoothing. Instead of estimating volatility from realized log-returns, the controller directly consumes the per-step volatility path \( \sigma_t \) used by the CEX process (e.g. regime, noisy-sine, or Heston).
+
+**Per-step formula (conceptual):**
+
+$$ f_{raw} = f_0 + k_\sigma \cdot \sigma_t \cdot \sqrt{\text{block\_time}} $$
+
+where:
+
+*   **Oracle volatility:**
+    $$ \sigma_t = \text{ReferenceMarket.sigma at step } t $$
+    which is exactly the volatility used when diffusing the CEX price in
+    `utils.ReferenceMarket` (static / regime / noisy-sine / Heston).
+*   **Parameters:**
+    *   $f_0$: Baseline fee.
+    *   $k_\sigma$: Scaling factor for volatility (parameter `k_sigma`),
+        re-used from the standard volatility mode.
+
+**Timing behaviour:**
+
+*   **Non-block mode (`block_time == 1`):**  
+    - At the end of step \(t\), after the CEX update, the controller reads
+      the current \(\sigma_t\), computes \(f_{raw}\) as above, and stages a
+      new fee via the same clamped / step-limited / cooldown mechanism used
+      in the standard volatility mode.  
+    - The staged fee becomes active on step \(t+1\), so there is a
+      one-step lag between \(\sigma_t\) and the fee actually seen by trades.
+
+*   **Block mode (`block_time > 1`):**  
+    - In addition to the end-of-step diagnostics, the simulator lets the
+      fee react *within* each block at micro-step granularity. At each
+      micro-step \(k\) inside block \(t\), **before** enqueuing smart/noise
+      intents, it:
+        1. reads the current oracle volatility \(\sigma_{t,k} = \text{ReferenceMarket.sigma}\);
+        2. computes a micro-step raw fee
+           \[
+             f_{raw}^{(micro)} = f_0 + k_\sigma \cdot \sigma_{t,k} \cdot \sqrt{\text{block\_time}};
+           \]
+        3. clamps and step-limits this value using the same
+           `f_min` / `f_max` / `fee_step_bps_min` / `fee_step_bps_max`
+           logic; if the implied change is large enough, it updates
+           `pool.f` **immediately** (no `fee_next`, no cooldown gating).  
+    - As a result, trades within the same block can experience different
+      fees as \(\sigma_{t,k}\) evolves. The block-level controller at the
+      end of the step records the volatility signal and fee path for
+      plotting but does not stage an additional fee move in this mode.
+
+### 4. Toxicity-based Fee
 
 This mode adjusts the fee based on the "toxic" flow, measured by the arbitrage opportunity size (basis) that exceeds the current fee band. This effectively measures how far the DEX price is lagging behind the CEX price.
 
@@ -75,31 +123,6 @@ $$ f_{raw} = f_0 + k_{basis} \cdot \text{basis\_ticks}_t $$
 *   **Parameters:**
     *   $f_0$: Baseline fee.
     *   $k_{basis}$: Scaling factor for basis ticks (parameter `k_basis`).
-
-### 4. GAS-based Fee
-
-This mode replaces the EWMA with a **score-driven (GAS) volatility state** and charges based on both the level of that state and the “surprise” in the most recent return.
-
-**State and score (Gaussian log-variance):**
-
-*   Observation: $r_t = \log m_t - \log m_{t-1}$.
-*   State: $f_t = \log \sigma_t^2$.
-*   Score: $s_t = \tfrac{1}{2}\left(\frac{r_t^2}{\sigma_t^2} - 1\right)$ with $\sigma_t^2 = e^{f_t}$.
-*   Update: $f_{t+1} = \omega + \beta f_t + \alpha s_t$.
-*   Derived level: $\hat{\sigma}_t = \exp(\tfrac{1}{2} f_t)$.
-
-**Fee mapping:**
-
-$$ f_{raw} = f_0 + k_{\text{gas\_sigma}} \cdot \hat{\sigma}_t . $$
-<!-- $$ f_{raw} = f_0 + k_{\text{gas\_sigma}} \cdot \hat{\sigma}_t + k_{\text{gas\_score}} \cdot \max(0, s_t). $$ -->
-
-**Parameters:**
-
-*   `gas_alpha` ($\alpha$): score weight.
-*   `gas_beta` ($\beta$): persistence of the log-variance state.
-*   `gas_omega` ($\omega$): drift term.
-*   `k_gas_sigma`: fee sensitivity to the GAS volatility level $\hat{\sigma}_t$.
-<!-- *   `k_gas_score`: fee sensitivity to positive surprises $s_t$. -->
 
 ## Fee Update Mechanism (Controller)
 

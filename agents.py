@@ -51,7 +51,7 @@ class RebalancerState:
         self.initialized = False
 
 
-@dataclass
+@dataclass(eq=False)
 class Position:
     """
     A concentrated liquidity position [lower, upper) with liquidity L.

@@ -1,8 +1,9 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: gas
+fee_mode: volatility1
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
+  verbose: true
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
   # Total number of simulation blocks to execute
@@ -14,7 +15,7 @@ simulate:
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.00
   # Choose between static, regime (regime switching), noisy-sine, or Heston volatility modes
-  cex_sigma_mode: noisy_sine
+  cex_sigma_mode: heston
   # Volatility of the reference CEX price process (per step/second)
   # 1e-4 ~= 56% annualized; 1e-5 ~= 5.6% annualized; 2e-4 ~= 112% annualized
   cex_sigma: 0.00015
@@ -32,17 +33,17 @@ simulate:
   cex_sigma_sine_phase: 0.0
   cex_sigma_floor: 0.0
   # Heston volatility parameters (used when cex_sigma_mode: heston)
-  # cex_heston_kappa: 1.0       # mean reversion speed of variance
-  # cex_heston_theta: 1.0e-6    # long-run variance level
-  # cex_heston_sigma_v: 0.1     # volatility of variance
-  # cex_heston_rho: -0.5        # correlation between price and variance shocks
-  # cex_heston_v0: 2.25e-8      # optional initial variance; defaults to cex_sigma^2 when omitted
+  cex_heston_kappa: 1.0       # mean reversion speed of variance
+  cex_heston_theta: 1.0e-8    # long-run variance level
+  cex_heston_sigma_v: 0.001     # volatility of variance
+  cex_heston_rho: -0.5        # correlation between price and variance shocks
+  cex_heston_v0: 2.25e-8      # optional initial variance; defaults to cex_sigma^2 when omitted
 
   ##### TRADERS #####
   # Expected number of smart-router trade intents per block
   smart_trades_per_block: 1
   # Expected number of noise trader intents per block
-  noise_trades_per_block: 1
+  noise_trades_per_block: 3
   # Mean of log-normal order size distribution for traders
   trader_mean: 2.5
   # Standard deviation of log-normal order size distribution for traders
@@ -61,7 +62,7 @@ simulate:
   # Total number of LP agents instantiated in the simulation
   N_LP: 10
   # Fraction of LP agents designated as passive baseline providers
-  passive_lp_share: 1
+  passive_lp_share: 0
   # Expected number of narrow LP mints per block (total across narrow LPs)
   narrow_mints_per_block: 10
   # Expected number of passive LP mints per block (total across passive LPs)
@@ -70,21 +71,21 @@ simulate:
   passive_burns_per_block: 5
   # Range width in ticks used for passive LP positions
   passive_width_ticks: 1000 # 500 corresponds to ~2% of the initial price
-  # Average cadence (in steps) between LP reviews of their positions
-  tau: 3
+  # Average cadence (in steps) between LP reviews of their positions. On average, 1/tau LPs are active per block
+  tau: 10
   # Minimum and maximum width in ticks for programmatic LP mints
-  w_min_ticks: 10 # 10 corresponds to ~0.2% of the initial price
-  w_max_ticks: 1774540
-  # Half-life (steps) of the EWMA basis signal driving LP widths
-  basis_half_life: 20
+  w_min_ticks: 10 # 10 corresponds to ~0.1% width
+  w_max_ticks: 1774540 
+  # Half-life (in blocks) of the EWMA basis signal driving LP widths
+  basis_half_life: 10
   # Sensitivity of LP width (ticks per unit of basis signal)
-  slope_s: 0.15
+  slope_s: 1
   # Number of trials for the binomial noise component on LP width
-  binom_n: 10
+  binom_n: 70
   # Success probability for the binomial noise component on LP width
   binom_p: 0.5
   # Range for consecutive out-of-range steps before a narrow LP recenters (sampled per LP)
-  k_out_min: 10
+  k_out_min: 20
   k_out_max: 30
   # Mean of log-normal draw scaling LP mint sizes
   mint_mu: 2.5
@@ -93,7 +94,7 @@ simulate:
   # Take-profit ratio (relative to initial HODL value) for LP burn decisions
   theta_TP: 0.1
   # Stop-loss ratio (relative to initial HODL value) for LP burn decisions
-  theta_SL: 0.25
+  theta_SL: 0.20
 
 
   #### INITIALIZATION & VISUALIZATION #####
@@ -116,15 +117,9 @@ simulate:
   # Half-life (n blocks) of the EWMA used for fee controller signals
   fee_half_life: 2
   # Multiplier converting EWMA volatility into a fee adjustment (volatility mode)
-  k_sigma: 1
+  k_sigma: 3
   # Multiplier converting EWMA basis (ticks) into a fee adjustment (toxicity mode)
   k_basis: 0.01
-  # GAS fee mode parameters (volatility level and surprise)
-  gas_alpha: 0.1
-  gas_beta: 0.1
-  gas_omega: 0.0
-  k_gas_sigma: 0.05
-  # k_gas_score: 0.005
   # Minimum absolute fee change (in bps) required before committing an update. A value of 0.001 corresponds to 0.00001 = 0.001% of the previous fee
   fee_step_bps_min: 0.0005
   # Maximum fee change (in bps) allowed per update step

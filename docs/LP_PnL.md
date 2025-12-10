@@ -295,4 +295,4 @@ The pair **(unhedged PnL, hedged PnL)** gives you:
 - `lp_rebal_value_*_series` and `lp_rebal_*_series`: rebalancing benchmark value \(V^{\text{reb}}_t\) and its PnL path.
 - `lp_pnl_*` (hedged) = \(F_t - \text{LVR}_t\); `lp_lvr_*` = \(\text{LVR}_t\).
 
-All series are split into total/active/passive cohorts for easier cohort-level analysis and are consumed by the batch runners (`run_scenarios_mean_std.py`, `run_fee_sweep.py`, etc.).
+All series are split into total/active/passive cohorts for easier cohort-level analysis and are consumed by the batch runners (`run_scenarios_mean_std.py`, `run_parameter_grid_mean_std_parallel.py`, etc.).

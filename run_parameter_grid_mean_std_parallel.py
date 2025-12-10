@@ -30,17 +30,37 @@ def _silent_tqdm(iterable=None, **kwargs):
 run_module.tqdm = _silent_tqdm  # type: ignore[attr-defined]
 simulate = run_module.simulate
 
-PNL_KEYS = [
-    ("arb_pnl_cum", "Arbitrageur PnL"),
-    ("lp_pnl_passive", "Passive LP hedged PnL"),
-]
+PNL_ARBITRAGEUR_KEY: Tuple[str, str] = ("arb_pnl_cum", "Arbitrageur PnL")
+PNL_PASSIVE_KEY: Tuple[str, str] = ("lp_pnl_passive", "Passive LP hedged PnL")
+PNL_ACTIVE_KEY: Tuple[str, str] = ("lp_pnl_active", "Active LP hedged PnL")
 PNL_COLORS = {
     "arb_pnl_cum": "#2ca02c",
     "lp_pnl_passive": "#8c564b",
+    "lp_pnl_active": "#9467bd",
 }
 
+
+def resolve_pnl_keys(params: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """
+    Include only the PnL violins for LP cohorts that actually exist in the scenario.
+    - passive_lp_share = 1.0 => only passive LP PnL
+    - passive_lp_share = 0.0 => only active LP PnL
+    - otherwise include both LP cohorts
+    """
+    try:
+        passive_share = float(params.get("passive_lp_share", 1.0))
+    except (TypeError, ValueError):
+        passive_share = 1.0
+    passive_share = max(0.0, min(1.0, passive_share))
+    keys = [PNL_ARBITRAGEUR_KEY]
+    if passive_share > 0.0:
+        keys.append(PNL_PASSIVE_KEY)
+    if passive_share < 1.0:
+        keys.append(PNL_ACTIVE_KEY)
+    return keys
+
 # --- configuration -----------------------------------------------------------
-BASE_CONFIG_PATH = Path("tests/test.yml")
+BASE_CONFIG_PATH = Path("abm_results/scenarios/test.yml")
 FEE_MODE_CONFIG = {
     "static": {
         "param_name": None,
@@ -57,15 +77,11 @@ FEE_MODE_CONFIG = {
         "values": np.linspace(1e-5, 1e-1, 10),
         "xlabel": r"$k_{b}$ (toxicity)",
     },
-    # "gas": {
-    #     "param_name": "k_gas_sigma",
-    #     "values": np.linspace(1e-2, 10, 10),
-    #     "xlabel": "k_gas_sigma (GAS volatility sensitivity)",
-    # },
 }
 
-RUNS_PER_POINT = 15
+RUNS_PER_POINT = 3
 SEED_BASE = 1
+PREFIX = "only_active"
 OUTPUT_DIR = Path("abm_results") / "grid_search"
 SUMMARY_CSV = OUTPUT_DIR / "grid_summary.csv"
 PLOTS_DIR = OUTPUT_DIR / "plots"
@@ -157,6 +173,7 @@ def build_grid(base_params: Dict[str, Any]) -> List[GridPoint]:
 def run_grid_point(
     base_params: Dict[str, Any],
     point: GridPoint,
+    pnl_keys: Sequence[Tuple[str, str]],
 ) -> Tuple[np.ndarray, Dict[str, List[np.ndarray]], Dict[str, Any], Dict[str, List[float]], List[float]]:
     params = dict(base_params)
     params.update(fee_mode=point.fee_mode)
@@ -164,11 +181,14 @@ def run_grid_point(
         params[point.param_name] = point.sensitivity
     if not KEEP_VISUALS:
         params["visualize"] = False
+    params["light_mode"] = True
+    if not VERBOSE_RUNS:
+        params["verbose"] = False
 
     skip_step = max(0, int(params.get("skip_step", 0)))
     series_data = {key: [] for key, *_ in SERIES_DEFS}
     series_data["fee_series"] = []
-    pnl_samples: Dict[str, List[float]] = {key: [] for key, _ in PNL_KEYS}
+    pnl_samples: Dict[str, List[float]] = {key: [] for key, _ in pnl_keys}
     fee_samples: List[float] = []
     steps_ref: Optional[np.ndarray] = None
 
@@ -190,7 +210,7 @@ def run_grid_point(
             if series.size != reference.size:
                 raise ValueError(f"Series '{key}' length mismatch.")
             series_data[key].append(series)
-        for key, _ in PNL_KEYS:
+        for key, _ in pnl_keys:
             series = _slice_series(out[key], skip_step)
             if series.size == 0:
                 raise ValueError(f"Series '{key}' empty after skip_step.")
@@ -233,7 +253,7 @@ def summarise(point: GridPoint, stats: Dict[str, tuple[np.ndarray, np.ndarray]],
     return rows
 
 
-def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
+def plot_per_sigma(plot_data: Sequence[Dict[str, Any]], pnl_keys: Sequence[Tuple[str, str]]) -> None:
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
     sigma_values = sorted({entry["sigma_label"] for entry in plot_data})
@@ -267,9 +287,10 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
             sens_values = list(cfg["values"])
             labels = ["const" if v is None else str(v)[:6] for v in sens_values]
             pos_base = np.arange(len(sens_values)) + 1
-            width = 0.18
+            offsets = np.linspace(-0.2, 0.2, num=len(pnl_keys)) if pnl_keys else np.array([0.0])
+            width = 0.35 / max(1, len(pnl_keys))
 
-            for offset, (key, label) in zip([-0.12, 0.12], PNL_KEYS):
+            for offset, (key, label) in zip(offsets, pnl_keys):
                 positions = pos_base + offset
                 samples_per_sens = []
                 for sens in sens_values:
@@ -335,12 +356,16 @@ def plot_per_sigma(plot_data: Sequence[Dict[str, Any]]) -> None:
 
         axes[0, 0].set_ylabel("Final PnL")
         fig.tight_layout()
-        fig.savefig(PLOTS_DIR / f"sigma_{sigma_value}.png", dpi=200)
+        fig.savefig(PLOTS_DIR / f"{PREFIX}_sigma_{sigma_value}.png", dpi=200)
         plt.close(fig)
 
 
-def _evaluate_point(point: GridPoint, base_params: Dict[str, Any]) -> Dict[str, Any]:
-    steps, series_data, metadata, pnl_samples, fee_samples = run_grid_point(base_params, point)
+def _evaluate_point(
+    point: GridPoint,
+    base_params: Dict[str, Any],
+    pnl_keys: Sequence[Tuple[str, str]],
+) -> Dict[str, Any]:
+    steps, series_data, metadata, pnl_samples, fee_samples = run_grid_point(base_params, point, pnl_keys)
     stats = aggregate_runs(series_data)
     summary_rows = summarise(point, stats, metadata)
     plot_entry = {
@@ -372,7 +397,10 @@ def main() -> None:
     # Route all underlying runs into a scenario-specific root under abm_results/scenarios/<base_name>/grid_search
     scenario_root = scenario_output_root(BASE_CONFIG_PATH)
     base_params = dict(base_params)
-    base_params["results_root"] = scenario_root / "grid_search_runs"
+    base_params["results_root"] = scenario_root / "grid_search" # The / operator here is used for path joining
+    pnl_keys = resolve_pnl_keys(base_params)
+    include_active_lp_pnl = PNL_ACTIVE_KEY in pnl_keys
+    pnl_labels = ", ".join(label for _, label in pnl_keys)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary_rows: List[Dict[str, Any]] = []
@@ -389,17 +417,20 @@ def main() -> None:
     fee_block = "\n".join(fee_lines)
     print(
         "Grid search parameters:\n"
+        f"  prefix: {PREFIX}\n"
         f"  base scenario: {scenario_label} (output -> {scenario_root})\n"
         f"  sigma profile: {_sigma_label_from_params(base_params)}\n"
         "  fee_mode from YAML will be overridden\n"
         f"  combinations: {total} ({len(FEE_MODE_CONFIG)} fee modes)\n"
         f"  runs per point: {RUNS_PER_POINT}\n"
+        f"  active LP violins: {'enabled' if include_active_lp_pnl else 'disabled (passive_lp_share=1)'}\n"
+        f"  PnL violins plotted: {pnl_labels}\n"
         "  sweeps:\n"
         f"{fee_block}"
     )
     with ProcessPoolExecutor(max_workers=args.workers) as executor:
         futures = {
-            executor.submit(_evaluate_point, point, base_params): point
+            executor.submit(_evaluate_point, point, base_params, pnl_keys): point
             for point in grid
         }
         for fut in tqdm(as_completed(futures), total=total, desc="Grid combinations", unit="combo"):
@@ -465,7 +496,7 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(summary_rows)
 
-    plot_per_sigma(plot_data)
+    plot_per_sigma(plot_data, pnl_keys)
 
     # Copy per-sigma plots into scenario-local grid_search as well
     scenario_plots_dir = scenario_grid_dir / "plots"
