@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>
+      {% if page.title %}{{ page.title }} · {% endif %}{{ site.title }}
+    </title>
+    <meta name="description" content="{{ site.description }}" />
+
+    <link rel="stylesheet" href="assets/css/site.css" />
+
+    <script src="javascripts/mathjax.js"></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"
+    ></script>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <a class="brand-link" href="./">{{ site.title }}</a>
+          <div class="brand-subtitle">{{ site.description }}</div>
+        </div>
+
+        <nav class="nav">
+          {% assign nav_pages = site.pages | where_exp: "p", "p.nav_exclude != true" | sort: "nav_order" %}
+          <ul class="nav-list">
+            {% for p in nav_pages %}
+              {% assign href = p.url %}
+              {% if href == "/" %}
+                {% assign href = "index.html" %}
+              {% else %}
+                {% assign href = href | remove_first: "/" %}
+              {% endif %}
+              <li class="nav-item{% if p.url == page.url %} active{% endif %}">
+                <a class="nav-link" href="{{ href }}">{{ p.title | default: p.name }}</a>
+              </li>
+            {% endfor %}
+          </ul>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <article class="page">
+          {{ content }}
+        </article>
+
+        <footer class="footer">
+          <span class="footer-left">{{ site.title }}</span>
+          <span class="footer-right"
+            >Built with GitHub Pages · Rendered with MathJax</span
+          >
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

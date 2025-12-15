@@ -1,3 +1,8 @@
+---
+title: Hedged PnL vs LVR
+nav_order: 5
+---
+
 # Hedged PnL vs LVR in the ABM Uni v3 Simulator
 
 This note explains why, under the **current model and parameter choices**, it is difficult to obtain **positive hedged PnL** for passive LPs (i.e. `fees > LVR`), and sketches realistic strategies that could move the system toward `fees − LVR > 0`.

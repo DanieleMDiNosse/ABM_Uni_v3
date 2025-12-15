@@ -1,3 +1,8 @@
+---
+title: Fee Schedules
+nav_order: 6
+---
+
 # Fee Schedules
 
 This document explains the fee schedules implemented in the simulation, including the mathematical formulas and their implementation details.

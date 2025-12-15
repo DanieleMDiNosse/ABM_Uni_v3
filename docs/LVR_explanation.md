@@ -1,3 +1,8 @@
+---
+title: Loss-Versus-Rebalancing (LVR)
+nav_order: 4
+---
+
 # Loss-Versus-Rebalancing (LVR)
 
 ## 1. What is LVR?

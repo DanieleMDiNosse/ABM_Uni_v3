@@ -146,6 +146,10 @@ venv.bak/
 # mkdocs documentation
 /site
 
+# Jekyll (GitHub Pages) build output
+docs/_site/
+docs/.jekyll-cache/
+
 # mypy
 .mypy_cache/
 .dmypy.json
@@ -213,3 +217,7 @@ abm_mempool_config.yml
 
 # data
 data/
+
+# GitHub Pages site assets/layouts (tracked under docs/)
+!docs/**/*.html
+!docs/**/*.png

@@ -1,3 +1,8 @@
+---
+title: LP PnL
+nav_order: 3
+---
+
 # PnL Measurement for Uniswap v3 Liquidity Providers
 
 This note summarizes how to define and interpret **unhedged** and **hedged** PnL for Uniswap v3 LPs, and how these objects relate to **fees**, **LVR** and **impermanent loss**.

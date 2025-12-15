@@ -1,3 +1,8 @@
+---
+title: Simulation Outputs
+nav_order: 8
+---
+
 # Simulation Outputs from `simulate(...)`
 
 This document describes, series by series, what the main simulation routine

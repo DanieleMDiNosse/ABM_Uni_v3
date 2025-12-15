@@ -1,3 +1,8 @@
+---
+title: Sigma Calibration
+nav_order: 7
+---
+
 # Calibrating `cex_sigma` from Binance ETH/USDC Data
 
 This note explains how to calibrate the CEX volatility parameter `cex_sigma`

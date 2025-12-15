@@ -1,0 +1,15 @@
+title: ABM Uni v3
+description: Agent-based Uniswap v3 simulator documentation
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+defaults:
+  - scope:
+      path: ""
+      type: pages
+    values:
+      layout: default
+      nav_exclude: false

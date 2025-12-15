@@ -1,3 +1,8 @@
+---
+title: Results
+nav_order: 9
+---
+
 # ABM Uni v3 — Noisy-Sine Fee Experiments (Preliminary Results)
 
 This note summarizes the outcomes of three single-seed scenarios in the **noisy-sine volatility regime** (center `cex_sigma = 0.00015`, amp `0.0001`, period `10,000` steps, `block_time = 5`, `T = 10,000`, seed `7`) using:
