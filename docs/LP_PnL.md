@@ -14,7 +14,7 @@ The goal is to use a PnL framework that:
 Consider a v3 pool with two tokens, which we call **X** and **Y**.  
 Let all values be expressed in a chosen **numéraire** (e.g. USDC).
 
-At time \(t\):
+At time $t$:
 
 - External (CEX) prices:
   \[
@@ -46,7 +46,7 @@ We define:
    V^{\text{LP}}_t := V^{\text{liq}}_t + F_t.
    \]
 
-At the initial time \(t=0\):
+At the initial time $t=0$:
 
 \[
 V^{\text{liq}}_0 = x_0 P^X_0 + y_0 P^Y_0, 
@@ -83,7 +83,7 @@ Replacing with the definitions:
 
 If you prefer to think in terms of “mark-to-market of liquidity” and “fees” separately, you can rewrite:
 
-- **Mark-to-market of liquidity (principal) at time \(t\)**:
+- **Mark-to-market of liquidity (principal) at time $t$**:
   \[
   \text{MtM}^{\text{liq}}_t := V^{\text{liq}}_t = x_t P^X_t + y_t P^Y_t.
   \]
@@ -105,7 +105,8 @@ provided that “mark-to-market” refers to the value of the **principal** only
 
 ### Interpretation
 
-\(\text{PnL}^{\text{LP}}_t\) includes:
+
+$\text{PnL}^{\text{LP}}_t$ includes:
 
 - pure **price moves** (beta exposure to X and Y),
 - the effect of **being in an AMM**:
@@ -126,13 +127,10 @@ To understand how much of the LP’s PnL comes from **liquidity provision** vs *
 
 ### 3.1. Rebalancing strategy
 
-Let \((x_t, y_t)\) be the LP’s pool balances at each time \(t\).  
-Define a **rebalancing portfolio** that continuously adjusts its holdings to match this path, but trades at \(P^X_t, P^Y_t\):
+Let $(x_t, y_t)$ be the LP’s pool balances at each time $t$.  
+Define a **rebalancing portfolio** that continuously adjusts its holdings to match this path, but trades at $P^X_t, P^Y_t$:
 
-- Value of the rebalancing strategy:
-  \[
-  V^{\text{reb}}_t.
-  \]
+- Value of the rebalancing strategy: $V^{\text{reb}}_t$
 
 We choose the initial condition so that:
 
@@ -150,7 +148,7 @@ This strategy carries exactly the **same market exposure** as the LP, but withou
 
 ### 3.2. LVR: loss from adverse selection
 
-Define **Loss-Versus-Rebalancing (LVR)**, denoted \(\text{LVR}_t\), as the cumulative loss the LP suffers from being forced to trade at mispriced AMM quotes instead of at fair CEX prices, along the entire path up to time \(t\).
+Define **Loss-Versus-Rebalancing (LVR)**, denoted $\text{LVR}_t$, as the cumulative loss the LP suffers from being forced to trade at mispriced AMM quotes instead of at fair CEX prices, along the entire path up to time $t$.
 
 The key result (in the continuous-time / frictionless framework) is:
 
@@ -169,7 +167,7 @@ V^{\text{LP}}_t - V^{\text{reb}}_t = F_t - \text{LVR}_t.
 
 This decomposition says:
 
-- Start from what you’d have with a purely **rebalancing trader** \((V^{\text{reb}}_t)\),
+- Start from what you’d have with a purely **rebalancing trader** $(V^{\text{reb}}_t)$,
 - Then add **fees** (a positive contribution for LPs),
 - Then subtract **LVR** (a negative contribution, equal to arbitrageur profits coming from adverse selection).
 
@@ -186,7 +184,7 @@ To remove market risk and focus on the **economics of liquidity provision**, def
 := \text{PnL}^{\text{LP}}_t - \text{PnL}^{\text{reb}}_t.
 \]
 
-Using the initial condition \(V^{\text{reb}}_0 = V^{\text{LP}}_0\),
+Using the initial condition $V^{\text{reb}}_0 = V^{\text{LP}}_0$,
 
 \[
 \text{PnL}^{\text{hedged}}_t
@@ -214,11 +212,13 @@ Therefore:
 
 ### Why does mark-to-market disappear here?
 
-The **mark-to-market (principal) component** appears in both \(V^{\text{LP}}_t\) and \(V^{\text{reb}}_t\).  
-By construction, the rebalancing strategy holds the **same path of token balances** \((x_t, y_t)\) as the LP (up to fees), and trades at the same external prices for those holdings.
+The **mark-to-market (principal) component** appears in both 
+$V^{\text{LP}}_t$ and $V^{\text{reb}}_t$.  
+By construction, the rebalancing strategy holds the **same path of token balances** $(x_t, y_t)$ as the LP (up to fees), and trades at the same external prices for those holdings.
 
 - The **pure price risk** (beta) is **shared** by both strategies.
-- When we take the difference \(V^{\text{LP}}_t - V^{\text{reb}}_t\), the **beta effect cancels**.
+- When we take the difference $V^{\text{LP}}_t - V^{\text{reb}}_t$,
+  the **beta effect cancels**.
 - What remains is the **net liquidity-provision PnL**:
   \[
   \text{PnL}^{\text{hedged}}_t = \underbrace{F_t}_{\text{fees}} - \underbrace{\text{LVR}_t}_{\text{adverse selection}}.
@@ -252,7 +252,7 @@ Define a **HODL strategy** that just keeps these tokens in a wallet, never tradi
 V^{\text{HODL}}_t := x^{\text{init}} P^X_t + y^{\text{init}} P^Y_t.
 \]
 
-Then IL at time \(t\) is:
+Then IL at time $t$ is:
 
 \[
 \boxed{
@@ -262,7 +262,7 @@ Then IL at time \(t\) is:
 
 Interpretation:
 
-- \(\text{IL}_t\) measures how much better or worse the LP is compared to **just HODLing** the initial tokens.
+- $\text{IL}_t$ measures how much better or worse the LP is compared to **just HODLing** the initial tokens.
 - It mixes:
   - **market-direction risk** (price movements of X, Y),
   - and **AMM-specific effects** (fees, slippage, adverse selection).
@@ -289,10 +289,10 @@ The pair **(unhedged PnL, hedged PnL)** gives you:
 `run.py` keeps LP wealth self-consistent by debiting wallets on mint, crediting full value (principal + fees) on burn, and delta-hedging via `RebalancerState`. The returned series map directly to the objects above:
 
 - `lp_wallet_series`, `lp_wallet_active_series`, `lp_wallet_passive_series`: realized token1 wallet after mints/burns.
-- `lp_wealth_series` (+ active/passive splits): wallet + mark-to-market of open positions, i.e., \(V^{\text{LP}}_t\).
-- `lp_fee_value_*_series`: \(F_t\) (fees marked to the CEX price).
-- `lp_unhedged_*`: unhedged PnL \(V^{\text{LP}}_t - V^{\text{LP}}_0\).
-- `lp_rebal_value_*_series` and `lp_rebal_*_series`: rebalancing benchmark value \(V^{\text{reb}}_t\) and its PnL path.
-- `lp_pnl_*` (hedged) = \(F_t - \text{LVR}_t\); `lp_lvr_*` = \(\text{LVR}_t\).
+- `lp_wealth_series` (+ active/passive splits): wallet + mark-to-market of open positions, i.e., $V^{\text{LP}}_t$.
+- `lp_fee_value_*_series`: fees marked to the CEX price.
+- `lp_unhedged_*`: unhedged PnL $V^{\text{LP}}_t - V^{\text{LP}}_0$.
+- `lp_rebal_value_*_series` and `lp_rebal_*_series`: rebalancing benchmark value $V^{\text{reb}}_t$ and its PnL path.
+- `lp_pnl_*` (hedged) = $F_t - \text{LVR}_t$; `lp_lvr_*` = $\text{LVR}_t$.
 
 All series are split into total/active/passive cohorts for easier cohort-level analysis and are consumed by the batch runners (`run_scenarios_mean_std.py`, `run_parameter_grid_mean_std_parallel.py`, etc.).

@@ -51,9 +51,16 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 
 #### Heston Volatility Mode (details)
 - **Continuous-time model** (conceptual): in Heston mode the CEX price `m_t` and variance `v_t` are thought of as solving
-  - \( \mathrm{d}\log m_t = (\mu - \tfrac{1}{2} v_t)\,\mathrm{d}t + \sqrt{v_t}\,\mathrm{d}W_t^{(1)} \)
-  - \( \mathrm{d}v_t = \kappa(\theta - v_t)\,\mathrm{d}t + \sigma_v \sqrt{v_t}\,\mathrm{d}W_t^{(2)} \)
-  with correlation \( \mathrm{corr}(W^{(1)}, W^{(2)}) = \rho \).
+    $$
+    \mathrm{d}\log m_t = (\mu - \tfrac{1}{2} v_t)\,\mathrm{d}t + \sqrt{v_t}\,\mathrm{d}W_t^{(1)} \\
+    \mathrm{d}v_t = \kappa(\theta - v_t)\,\mathrm{d}t + \sigma_v \sqrt{v_t}\,\mathrm{d}W_t^{(2)}
+    $$
+    
+  with correlation 
+  $$
+  \mathrm{corr}(W^{(1)}, W^{(2)}) = \rho
+  $$
+  
 - **Discrete-time implementation** (per micro-step, `Δt = 1` second):
   - The simulator stores the variance as `_heston_v = v_t` and uses `σ_t = sqrt(v_t)` in plots and outputs (`cex_sigma_series`).
   - Each diffusion step (`ReferenceMarket._diffuse_heston`) draws `z1, z2 ~ N(0, 1)` i.i.d. and performs:
@@ -91,26 +98,40 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 
 ### Arbitrageur
 - Encoded in `arbitrage_to_target` and the `arb` branch of `execute_mempool_orders` in `run.py`.
-- Let \(m^{\text{ref}}_t\) be the **validated** CEX snapshot seen by agents at step \(t\) (`cex_ref_for_agents`) and let \(f_t\) be the taker fee, \(r_t = 1 - f_t\). The arbitrageur defines a **no‑arb band**
+- Let $m^{\text{ref}}_t$ be the **validated** CEX snapshot seen by agents at step $t$ (`cex_ref_for_agents`) and let $f_t$ be the taker fee, $r_t = 1 - f_t$
+  . The arbitrageur defines a **no‑arb band**
   \[
     [P^{\min}_t, P^{\max}_t] = [m^{\text{ref}}_t r_t,\; m^{\text{ref}}_t / r_t].
   \]
-  With current DEX price \(P_t\):
-  - If \(P_t < P^{\min}_t\) (DEX **cheap**), an “up” arb buys token0 on the DEX and sells token0 on the CEX until \(P_t\) is pushed back up to \(P^{\min}_t\) (or liquidity is exhausted).
-  - If \(P_t > P^{\max}_t\) (DEX **expensive**), a “down” arb sells token0 on the DEX and buys it back on the CEX until \(P_t\) is pushed back down to \(P^{\max}_t\).
+  With current DEX price $P_t$:
+  - If $P_t < P^{\min}_t$ (DEX **cheap**), an “up” arb buys token0 on the DEX and sells token0 on the CEX until $P_t$ is pushed back up to $P^{\min}_t$(or liquidity is exhausted).
+  - If $P_t > P^{\max}_t$ (DEX **expensive**), a “down” arb sells token0 on the DEX and buys it back on the CEX until $P_t$ is pushed back down to $P^{\max}_t$.
   The target trade is computed via `swap_exact_to_target`, which integrates the Uniswap v3 price–liquidity curve span‑by‑span.
-- In non-block mode, the arbitrageur acts directly on the live pool using the current `ref.m`. In block mode, an `arb` intent is inserted into the mempool against the snapshot \(m^{\text{ref}}_t\) and executed **first** when the mempool is replayed for that block.
+- In non-block mode, the arbitrageur acts directly on the live pool using the current `ref.m`. In block mode, an `arb` intent is inserted into the mempool against the snapshot $m^{\text{ref}}_t$ and executed **first** when the mempool is replayed for that block.
 - Profit preview (on a cloned pool) is explicitly path‑based:
-  - **Cheap DEX (up arb)**: the preview returns a DEX input \(d^{\text{DEX}}_t\) in token1 and an output \(x^{\text{DEX}}_t\) in token0. Selling \(x^{\text{DEX}}_t\) on the CEX at \(m^{\text{ref}}_t\) yields \(x^{\text{DEX}}_t m^{\text{ref}}_t\). Net token1 profit before funding is
+  - **Cheap DEX (up arb)**: the preview returns a DEX input $d^{\text{DEX}}_t$ in token1 and an output $x^{\text{DEX}}_t$ in token0. Selling $x^{\text{DEX}}_t$ on the CEX at $m^{\text{ref}}_t$ yields 
+    $x^{\text{DEX}}_t m^{\text{ref}}_t$. Net token1 profit before funding is
     \[
       \Pi^{\text{up}}_t = x^{\text{DEX}}_t m^{\text{ref}}_t - d^{\text{DEX}}_t.
     \]
-  - **Expensive DEX (down arb)**: the preview returns a DEX input \(x^{\text{DEX}}_t\) (token0) and output \(y^{\text{DEX}}_t\) (token1). To hedge, the arb must **buy** \(x^{\text{DEX}}_t\) on the CEX, paying \(x^{\text{DEX}}_t m^{\text{ref}}_t\). Net profit is
+  - **Expensive DEX (down arb)**: the preview returns a DEX input $x^{\text{DEX}}_t$ (token0) and output $y^{\text{DEX}}_t$ (token1). To hedge, the arb must **buy** 
+    $$
+    x^{\text{DEX}}_t
+    $$
+     on the CEX, paying 
+    $$
+    x^{\text{DEX}}_t m^{\text{ref}}_t
+    $$
+    . Net profit is
     \[
       \Pi^{\text{down}}_t = y^{\text{DEX}}_t - x^{\text{DEX}}_t m^{\text{ref}}_t.
     \]
 - A configurable `flash_loan_fee` parameter models per-notional funding cost for the arb; before executing, the arbitrageur previews the trade’s PnL **including** this fee and will skip the arbitrage entirely whenever the expected profit (after flash cost) is non-positive.
-- Concretely, with funding rate \(\phi = \text{flash\_loan\_fee}\),
+- Concretely, with funding rate 
+  $$
+  \phi = \text{flash\_loan\_fee}
+  $$
+  ,
   \[
     \Pi^{\text{up, net}}_t = x^{\text{DEX}}_t m^{\text{ref}}_t
       - d^{\text{DEX}}_t
@@ -121,7 +142,11 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
       - x^{\text{DEX}}_t m^{\text{ref}}_t
       - \phi\,x^{\text{DEX}}_t m^{\text{ref}}_t.
   \]
-  The arb executes only if the previewed \(\Pi^{\text{net}}_t > 0\); otherwise the intent is logged as an “unprofitable” skip.
+  The arb executes only if the previewed 
+  $$
+  \Pi^{\text{net}}_t > 0
+  $$
+  ; otherwise the intent is logged as an “unprofitable” skip.
 - PnL is measured in token1 by tracking token flows vs. the **end-of-step** CEX price *after* impact is applied for that block (i.e., at `settlement_m = ref.m`), not the snapshot price used to decide whether to trade.
 - As a consequence, the arbitrageur’s cumulative PnL series can exhibit **small downward blips** even though each individual arb is ex-ante profitable at the snapshot: the arb previews and filters trades using the frozen CEX mark (`arb_ref_m`), but realized PnL is later marked to the updated CEX price, so adverse CEX moves between `arb_ref_m` and `settlement_m` can make a given step’s realized arb PnL slightly negative.
 
@@ -134,7 +159,7 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
     \]
     and a direction `side ∈ {X_to_Y, Y_to_X}` with equal probability.
   - For `X_to_Y` (sell token0 / price‑down):
-    - Let \(m_t\) be the CEX price seen by agents at submission time. The intended token0 input is
+    - Let $m_t$ be the CEX price seen by agents at submission time. The intended token0 input is
       \[
         \Delta x^{\text{int}} = \frac{Y^{\text{not}}}{m_t}.
       \]
@@ -143,33 +168,44 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
         \widehat{\Delta y}^{\text{DEX}}
           = \text{quote\_x\_to\_y}(\Delta x^{\text{int}}),
       \]
-      and compares it to the **CEX benchmark** \(\Delta y^{\text{CEX}} = \Delta x^{\text{int}} m_t\).
+      and compares it to the **CEX benchmark** 
+      $$
+      \Delta y^{\text{CEX}} = \Delta x^{\text{int}} m_t
+      $$
+      .
     - Best‑execution constraint:
       \[
         \widehat{\Delta y}^{\text{DEX}}
           \ge \theta_T \,\Delta y^{\text{CEX}}.
       \]
-      If this fails, the trade is routed **entirely to the CEX** (no AMM leg): the trader swaps \(\Delta x^{\text{int}}\) at price \(m_t\), and the corresponding token flows are recorded in the smart‑router PnL and CEX impact.
+      If this fails, the trade is routed **entirely to the CEX** (no AMM leg): the trader swaps 
+      $\Delta x^{\text{int}}$ at price $m_t$, and the corresponding token flows are recorded in the smart‑router PnL and CEX impact.
   - For `Y_to_X` (buy token0 / price‑up):
-    - The trader fixes a token1 input \(\Delta y^{\text{int}} = Y^{\text{not}}\).
+    - The trader fixes a token1 input $\Delta y^{\text{int}} = Y^{\text{not}}$
+      .
     - The DEX quote is
       \[
         \widehat{\Delta x}^{\text{DEX}}
           = \text{quote\_y\_to\_x}(\Delta y^{\text{int}}),
       \]
-      and the CEX benchmark is \(\Delta x^{\text{CEX}} = \Delta y^{\text{int}} / m_t\).
+      and the CEX benchmark is 
+      $$\Delta x^{\text{CEX}} = \Delta y^{\text{int}} / m_t$$
     - Best‑execution requirement:
       \[
         \widehat{\Delta x}^{\text{DEX}}
           \ge \theta_T \,\Delta x^{\text{CEX}}.
       \]
       If not satisfied, the trade is executed on the CEX only.
-  - Slippage control at **execution time**: when mempool orders are replayed the engine re‑quotes the pool against a baseline computed from the last validated DEX price \(P^{\text{ref}}_t = S_{\text{ref}}^2\) and current fee:
-    - For `X_to_Y` with input \(\Delta x\), the baseline output is
+  - Slippage control at **execution time**: when mempool orders are replayed the engine re‑quotes the pool against a baseline computed from the last validated DEX price 
+    $$
+    P^{\text{ref}}_t = S_{\text{ref}}^2
+    $$
+     and current fee:
+    - For `X_to_Y` with input $\Delta x$, the baseline output is
       \[
         \Delta y^{\text{base}} = \Delta x \, r_t \, P^{\text{ref}}_t.
       \]
-    - For `Y_to_X` with input \(\Delta y\),
+    - For `Y_to_X` with input $\Delta y$, the baseline input is
       \[
         \Delta x^{\text{base}} = \frac{\Delta y \, r_t}{P^{\text{ref}}_t}.
       \]
@@ -178,13 +214,33 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
       \frac{\text{actual}}{\text{baseline}} < 1 - \text{slippage\_tolerance},
     \]
     i.e. if the trader would lose more than the configured relative slippage.
-- Trade *arrival rates* are configured via `smart_trades_per_block`, interpreted as the **expected number of smart-router intents per block**. Internally this is converted to a per-step/per-micro-step Bernoulli probability `p_smart ≈ smart_trades_per_block / block_time` (clipped to `[0,1]`) that is sampled each micro-step in block mode and each step in non-block mode.
+- Trade *arrival rates* are configured via `smart_trades_per_block`, interpreted as the **expected number of smart-router intents per block**. Internally this is implemented as a **Poisson process**:
+  - in non-block mode (`block_time = 1`), the number of smart-router intents per block is drawn as 
+    $$
+    N_{\text{smart}} \sim \text{Poisson}(\lambda = \text{smart\_trades\_per\_block})
+    $$
+    ;
+  - in block mode (`block_time = B > 1`), each micro-step draws 
+    $$
+    N_{\text{smart},k} \sim \text{Poisson}(\lambda = \text{smart\_trades\_per\_block} / B)
+    $$
+    , so the expected total per block remains `smart_trades_per_block` but multiple intents can arrive in the same micro-step.
 - In non-block mode, smart-router trades execute immediately in the step schedule. In block mode, the smart router simply enqueues intents into the mempool during micro-steps; those intents are executed later in random order when the mempool is replayed.
 
 ### Noise Trader
 - Implemented via `execute_trader("noise", ...)` and noise branches in `execute_mempool_orders`.
-- Shares the same log-normal size process as the smart router (same \(Y^{\text{not}}\) distribution) and chooses direction with equal probability, but **does not** enforce best execution vs. CEX: it always attempts to trade against the AMM, subject only to the same slippage constraint as above.
-- Trade arrival is controlled by `noise_trades_per_block`, interpreted as the **expected number of noise intents per block** and converted to a per-step/per-micro-step Bernoulli probability `p_noise ≈ noise_trades_per_block / block_time` (clipped to `[0,1]`) applied at the same cadence as the smart router.
+- Shares the same log-normal size process as the smart router (same $Y^{\text{not}}$ distribution) and chooses direction with equal probability, but **does not** enforce best execution vs. CEX: it always attempts to trade against the AMM, subject only to the same slippage constraint as above.
+- Trade arrival is controlled by `noise_trades_per_block`, interpreted as the **expected number of noise intents per block** and implemented with the same Poisson arrival scheme:
+  - non-block mode: 
+    $$
+    N_{\text{noise}} \sim \text{Poisson}(\lambda = \text{noise\_trades\_per\_block})
+    $$
+     per block;
+  - block mode: 
+    $$
+    N_{\text{noise},k} \sim \text{Poisson}(\lambda = \text{noise\_trades\_per\_block} / B)
+    $$
+     per micro-step.
 - Provides “uninformed” flow that stresses spreads and liquidity. In block mode these trades are also enqueued into the mempool during micro-steps and executed during the mempool replay.
 
 ### Liquidity Providers
@@ -213,7 +269,7 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
     - Remaining budget: `cap_left = max(0, L_budget - L_live)` so total live liquidity never exceeds the budget.
   - The actual mint size is `L_new = min(want, cap_step, cap_left)` . After mint, `L_live` increases by `L_new`; burns and re-centers decrease `L_live` by the burned liquidity, freeing budget for future mints.
 - **Width rule for narrow LPs (mathematical form)**:
-  - Let \(P_t\) and \(m_t\) be the DEX and CEX prices at the start of step \(t\), and \(f_t\) the taker fee. Define the **fee band in log space**
+  - Let $P_t$ and $m_t$ be the DEX and CEX prices at the start of step $t$, and $f_t$ the taker fee. Define the **fee band in log space**
     \[
       \ell^{\text{fee}}_t = \log\Bigl(\frac{1}{1 - f_t}\Bigr)
     \]
@@ -233,6 +289,33 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
     \[
       \text{basis\_ticks}_t = \frac{D_t}{\log(1.0001)}.
     \]
+  - **Time scale: EWMA vs. Heston variance**:
+    - Heston variance mean reversion with speed 
+      $$
+      \kappa = \text{cex\_heston\_kappa}
+      $$
+       has autocorrelation
+      \[
+        \rho_v(\Delta) = e^{-\kappa\Delta},\qquad
+        \tau_v = \frac{1}{\kappa},\qquad
+        t_{1/2,v} = \frac{\ln 2}{\kappa}.
+      \]
+    - The EWMA decay $\lambda$ is parameterized by half-life $H = \text{basis\_half\_life}$:
+      \[
+        \lambda = \exp\!\Bigl(-\frac{\ln 2}{H}\Bigr),\qquad
+        \rho_{\text{EWMA}}(\ell) \propto \lambda^\ell,\qquad
+        \tau_{\text{EWMA}} = \frac{H}{\ln 2}.
+      \]
+    - Matching the per-update decay to the Heston variance time scale gives
+      \[
+        \lambda \approx e^{-\kappa\,\Delta t_{\text{step}}}
+        \quad\Longrightarrow\quad
+        H \approx \frac{\ln 2}{\kappa\,\Delta t_{\text{step}}}.
+      \]
+      With Heston updated per micro-step ($\Delta t = 1$) and the width EWMA updated once per outer step spanning `block_time` micro-steps, a practical rule (in blocks) is
+      \[
+        \text{basis\_half\_life} \approx \frac{\ln 2}{\text{cex\_heston\_kappa}\cdot\text{block\_time}}.
+      \]
   - A binomial width noise term is drawn each step (if `binom_n > 0` and `0 < binom_p < 1`):
     \[
       K_t \sim \text{Binomial}(\text{binom\_n}, \text{binom\_p}),\qquad
@@ -246,8 +329,16 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
           + \text{noise\_ticks}_t,
     \]
     where `w_min_ticks = w_min`, `w_max_ticks = w_max` are configuration bounds.
-  - Let \(\Delta = \text{tick\_spacing}\). The simulator snaps to the grid and enforces integer‑band constraints:
-    - Number of bands \(n_b = \max\bigl(1,\;\text{round}(w^{\text{raw}}_t / \Delta)\bigr)\).
+  - Let 
+    $$
+    \Delta = \text{tick\_spacing}
+    $$
+    . The simulator snaps to the grid and enforces integer‑band constraints:
+    - Number of bands 
+      $$
+      n_b = \max\bigl(1,\;\text{round}(w^{\text{raw}}_t / \Delta)\bigr)
+      $$
+      .
     - Minimum and maximum bands
       \[
         n_{\min} = \left\lceil \frac{w_{\min}}{\Delta} \right\rceil,\qquad
@@ -258,13 +349,13 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
         w^{\text{ticks}}_t = \min\bigl(\max(n_{\min}, n_b), n_{\max}\bigr)\,\Delta.
       \]
     This `w_ticks` is the width used for **new narrow mints** and **recentered bands** in that step.
-  - Given a target sqrt‑price \(S^{\text{ref}}_t\) and number of bands \(n_b\), the code solves for a lower tick index \(i_{\text{low}}\) such that the resulting band \([i_{\text{low}}, i_{\text{low}} + n_b \Delta)\) is approximately centered around \(S^{\text{ref}}_t\); the corresponding price band is then
+  - Given a target sqrt‑price $S^{\text{ref}}_t$ and number of bands $n_b$, the code solves for a lower tick index $i_{\text{low}}$ such that the resulting band $[i_{\text{low}}, i_{\text{low}} + n_b \Delta)$ is approximately centered around $S^{\text{ref}}_t$; the corresponding price band is then
     \[
       [P^{\min}_{\text{band}}, P^{\max}_{\text{band}}]
         = \bigl((\text{base\_s}\,g^{i_{\text{low}}})^2,\;
                 (\text{base\_s}\,g^{i_{\text{low}} + n_b \Delta})^2\bigr),
     \]
-    where \(g\) is the tick ratio in sqrt‑price.
+    where $g$ is the tick ratio in sqrt‑price.
 - **Wealth tracking**:
   - `RebalancerState` maintains a self-financing benchmark that delta-hedges the LP’s token0 exposure using the CEX price; LVR is computed as the difference between LP wealth (wallet plus open position mark-to-market) and this benchmark.
   - Simulation outputs track total and cohort-level PnLs (active vs. passive), rebalancer PnL, wallet balances, and mark-to-market wealth.

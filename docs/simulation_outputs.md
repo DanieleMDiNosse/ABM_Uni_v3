@@ -41,7 +41,11 @@ section.
 - `cex_sigma_series[t]`  
   Per‑step volatility of CEX log‑returns used in the diffusion step at `t`
   (see `ReferenceMarket.diffuse_only`). In Heston mode this is
-  \(\sigma_t = \sqrt{v_t}\).
+  
+  $$
+  \sigma_t = \sqrt{v_t}
+  $$
+  .
 
 - `cex_regime_series[t]`  
   Regime label at step `t`. In regime‑switching mode this is `"L"` or `"H"`;
@@ -51,7 +55,15 @@ section.
 - `band_lo_pre[t]`, `band_hi_pre[t]`  
   No‑arb band at the **start** of step `t`, based on the validated snapshot
   (`agent_S_ref`, `cex_ref_for_agents`) and the fee in force at that point.
-  If the current taker fee is \(f_t\) and \(r_t = 1 - f_t\), then
+  If the current taker fee is 
+  $$
+  f_t
+  $$
+   and 
+  $$
+  r_t = 1 - f_t
+  $$
+  , then
   \[
     \text{band\_lo\_pre}[t] = m_t\,r_t,\qquad
     \text{band\_hi\_pre}[t] = \frac{m_t}{r_t}.
@@ -104,8 +116,16 @@ section.
   Grid parameters for the AMM:
   - `base_s` is the base sqrt‑price,
   - `g > 1` is the geometric tick ratio in sqrt‑price.  
-  Tick `i` has sqrt‑price interval \([s_i, s_{i+Δ})\) with
-  \(s_i = \text{base\_s} \cdot g^i\), `Δ = tick_spacing`.
+  Tick `i` has sqrt‑price interval 
+  $$
+  [s_i, s_{i+Δ})
+  $$
+   with
+  
+  $$
+  s_i = \text{base\_s} \cdot g^i
+  $$
+  , `Δ = tick_spacing`.
 
 ---
 
@@ -119,9 +139,17 @@ perspective (positive = profit).
 - `trader_notional_y[t]`  
   Net signed notional of **smart + noise** traders at step `t`, expressed in
   token1 units using the pre‑trade reference price:
-  - For `X_to_Y` trades we aggregate \(\Delta_y = -P_{\text{ref}} \cdot \Delta x\)
+  - For `X_to_Y` trades we aggregate 
+    $$
+    \Delta_y = -P_{\text{ref}} \cdot \Delta x
+    $$
+    
     (price‑down direction, negative sign),
-  - For `Y_to_X` trades we aggregate \(\Delta_y = +\Delta y\)
+  - For `Y_to_X` trades we aggregate 
+    $$
+    \Delta_y = +\Delta y
+    $$
+    
     (price‑up direction, positive sign),
   and sum across all trader legs (both DEX and CEX) in that step.
 
@@ -143,7 +171,11 @@ perspective (positive = profit).
 
 - `smart_router_pnl_steps[t]`, `noise_trader_pnl_steps[t]`  
   Per‑step PnL increments for smart router and noise trader, settled at the
-  end‑of‑step CEX price \(m_t^{\text{post}}\). Internally these are computed
+  end‑of‑step CEX price 
+  $$
+  m_t^{\text{post}}
+  $$
+  . Internally these are computed
   from token flows as
   \[
     \text{PnL}_t = (\Delta y_{\text{out}} - \Delta y_{\text{in}})
@@ -184,14 +216,38 @@ perspective (positive = profit).
 
 ## 4. LP Wealth, PnL, Fees, and LVR
 
-For each LP \(i\) at step \(t\):
+For each LP 
+$$
+i
+$$
+ at step 
+$$
+t
+$$
+:
 
-- Let \(V^{\text{LP},i}_t\) be its wealth in token1 (wallet + mark‑to‑market of
+- Let 
+  $$
+  V^{\text{LP},i}_t
+  $$
+   be its wealth in token1 (wallet + mark‑to‑market of
   open positions), as defined in `LP_PnL.md`.
-- Let \(V^{\text{reb},i}_t\) be the value of its rebalancing benchmark
+- Let 
+  $$
+  V^{\text{reb},i}_t
+  $$
+   be the value of its rebalancing benchmark
   (self‑financing delta‑hedging portfolio) in token1.
-- Let \(F^i_t\) be cumulative fees in token1.
-- Let \(\text{LVR}^i_t\) be Loss‑Versus‑Rebalancing.
+- Let 
+  $$
+  F^i_t
+  $$
+   be cumulative fees in token1.
+- Let 
+  $$
+  \text{LVR}^i_t
+  $$
+   be Loss‑Versus‑Rebalancing.
 
 The simulator enforces, per LP,
 \[
@@ -237,18 +293,30 @@ Series below aggregate these quantities across LP cohorts.
 
 - `lp_rebal_total_series[t]`, `lp_rebal_active_series[t]`,
   `lp_rebal_passive_series[t]`  
-  Benchmark PnL \(\sum_i (V^{\text{reb},i}_t - V^{\text{reb},i}_0)\) for
+  Benchmark PnL 
+  $$
+  \sum_i (V^{\text{reb},i}_t - V^{\text{reb},i}_0)
+  $$
+   for
   total/active/passive cohorts.
 
 - `lp_rebal_value_total_series[t]`,
   `lp_rebal_value_active_series[t]`,
   `lp_rebal_value_passive_series[t]`  
-  Benchmark value \(\sum_i V^{\text{reb},i}_t\) for each cohort.
+  Benchmark value 
+  $$
+  \sum_i V^{\text{reb},i}_t
+  $$
+   for each cohort.
 
 - `lp_fee_value_total_series[t]`,
   `lp_fee_value_active_series[t]`,
   `lp_fee_value_passive_series[t]`  
-  Cumulative fees \(F_t\) aggregated per cohort.
+  Cumulative fees 
+  $$
+  F_t
+  $$
+   aggregated per cohort.
 
 - `lp_lvr_total_series[t]`, `lp_lvr_active_series[t]`,
   `lp_lvr_passive_series[t]`  
@@ -287,7 +355,11 @@ The fee controller is described in detail in `docs/fee_schedules.md`. The
 series below expose its internal signals.
 
 - `fee_series[t]`  
-  Taker fee \(f_t\) on the AMM at step `t` (fraction, e.g. 0.003 = 30 bps).  
+  Taker fee 
+  $$
+  f_t
+  $$
+   on the AMM at step `t` (fraction, e.g. 0.003 = 30 bps).  
   In block mode with `fee_mode: volatility_oracle`, the fee can vary
   within a block at micro-step resolution; `fee_series[t]` records the
   **end-of-step** value of `pool.f` after all intra-block updates.
@@ -307,7 +379,11 @@ series below expose its internal signals.
     \]
     with half-life `fee_half_life`;
   - in `"volatility_oracle"` mode, this is the per-step CEX volatility path
-    \(\sigma_t\) taken directly from `ReferenceMarket.sigma` (no smoothing).
+    
+    $$
+    \sigma_t
+    $$
+     taken directly from `ReferenceMarket.sigma` (no smoothing).
 
 - `fee_basis_ticks_series[t]`  
   EWMA of fee‑adjusted log basis (in ticks) used in toxicity mode:
@@ -323,7 +399,11 @@ series below expose its internal signals.
 - `fee_imb_series[t]`  
   Imbalance proxy in token1 units within the active band at step `t`, defined
   from active reserves
-  \((x_t, y_t) = \text{reserves\_in\_active\_tick}(t)\) as
+  
+  $$
+  (x_t, y_t) = \text{reserves\_in\_active\_tick}(t)
+  $$
+   as
   \[
     \text{fee\_imb\_series}[t]
       = \frac{y_t - x_t P_t}{\max(10^{-12},\, y_t + x_t P_t)}.
@@ -332,7 +412,11 @@ series below expose its internal signals.
 
 - `fee_signal_series[t]`  
   The controller’s primary signal:
-  - volatility signal (`sigma_hat` or \(\sigma_t\)) in `"volatility"` / `"volatility_oracle"` modes,
+  - volatility signal (`sigma_hat` or 
+    $$
+    \sigma_t
+    $$
+    ) in `"volatility"` / `"volatility_oracle"` modes,
   - `basis_ticks` in `"toxicity"` mode,
   - `0` in `"static"` mode.
 
@@ -375,7 +459,11 @@ When `light_mode=True`, `simulate` returns a reduced dictionary:
   Unhedged LP PnL series for active and passive cohorts.
 
 - `fee_series`  
-  Fee path \(f_t\).
+  Fee path 
+  $$
+  f_t
+  $$
+  .
 
 All other detailed telemetry (price paths, liquidity, fees, activity counts,
 etc.) is omitted in light mode to reduce memory and serialization overhead. For

@@ -15,17 +15,17 @@ It is meant to complement:
 
 From `LP_PnL.md` and `LVR_explanation.md`:
 
-- Let \(V_t^{LP}\) be LP wealth (wallet + mark‑to‑market of open positions) at CEX price \(m_t\).
-- Let \(V_t^{reb}\) be the value of the **rebalancing benchmark** that:
+- Let $V_t^{LP}$ be LP wealth (wallet + mark‑to‑market of open positions) at CEX price $m_t$
+- Let $V_t^{reb}$ be the value of the **rebalancing benchmark** that:
   - holds the same token0 exposure path as the LP,
   - but always trades at the **CEX mid** instead of the DEX price.
-- Let \(F_t\) be cumulative fees (token0/1 fees valued at \(m_t\)).
-- Let \(LVR_t\) be **loss‑versus‑rebalancing**, i.e. the cumulative adverse selection cost of trading at stale/mispriced DEX quotes instead of at the CEX.
+- Let $F_t$ be cumulative fees (token0/1 fees valued at $m_t$)
+- Let $\text{LVR}_t$ be **loss‑versus‑rebalancing**, i.e. the cumulative adverse selection cost of trading at stale/mispriced DEX quotes instead of at the CEX.
 
 The theory (and the simulator) enforce
 
 \[
-V_t^{LP} = V_t^{reb} + F_t - LVR_t,
+V_t^{LP} = V_t^{reb} + F_t - \text{LVR}_t,
 \]
 
 so that
@@ -33,13 +33,21 @@ so that
 \[
 \text{PnL}^{\text{hedged}}_t
 = V_t^{LP} - V_t^{reb}
-= F_t - LVR_t.
+= F_t - \text{LVR}_t.
 \]
 
 Thus:
 
-- **Unhedged PnL** = \(V_t^{LP} - V_0^{LP}\) (full economic outcome, includes market beta).
-- **Hedged PnL** = \(F_t − LVR_t\) (liquidity‑provision economics only).
+- **Unhedged PnL** = 
+  $$
+  V_t^{LP} - V_0^{LP}
+  $$
+   (full economic outcome, includes market beta).
+- **Hedged PnL** = 
+  $$
+  F_t - \text{LVR}_t
+  $$
+   (liquidity‑provision economics only).
 
 You can never improve hedged PnL by taking more price risk; only the balance between **fees collected** and **adverse selection costs** matters.
 
@@ -58,9 +66,15 @@ The simulator implements a fairly harsh environment for passive LPs:
 ### 2.2 Arbitrageur: Nearly Frictionless and Always Present
 
 - The arbitrageur (`arbitrage_to_target` plus arb branches in `run.py`) sees a **validated snapshot** of the CEX price and trades the pool back into a **no‑arb band**:
-  - lower bound: \(m_t (1 - f_t)\),
-  - upper bound: \(m_t / (1 - f_t)\),
-  where \(f_t\) is the current taker fee.
+  - lower bound: 
+$$
+    m_t (1 - f_t)
+    $$
+  - upper bound: 
+    $$
+    m_t / (1 - f_t)
+    $$
+  where $f_t$ is the current taker fee.
 - Without extra costs, this arb is:
   - perfectly myopic and well‑capitalized,
   - permitted to trade every block,
@@ -84,7 +98,7 @@ So the *informed* or “non‑noise” trader flow hitting the AMM is **systemat
 
 - The noise trader submits random orders with no valuation discipline, governed by `noise_trades_per_block`, lognormal size parameters, and the same slippage checks.
 - Noise trades:
-  - do pay fees and thus boost \(F_t\),
+  - do pay fees and thus boost $F_t$
   - but they also move price away from the CEX and create mispricings, which the arbitrageur then clears.
 - Because LVR is path‑dependent, *every* cycle “noise trade → mispricing → arb” contributes positive LVR, and only a fraction of the noise trades generate fees large enough to counter it.
 
@@ -107,7 +121,7 @@ Structurally, they are exactly on the wrong side of:
 
 ### 2.6 Dynamic Fee Controller: Mostly Reactive
 
-- `fee_mode: volatility` uses an EWMA of absolute log‑returns to push fees up when \(|\log m_t - \log m_{t-1}|\) is large.
+- `fee_mode: volatility` uses an EWMA of absolute log‑returns to push fees up when $|\log m_t - \log m_{t-1}|$ is large.
 - `fee_mode: toxicity` uses an EWMA of **fee‑adjusted basis** (DEX–CEX log gap) in ticks.
 - Both modes are:
   - **lagged** (EWMA with half‑life over multiple blocks),
@@ -119,7 +133,7 @@ In practice, this means:
 - LVR often starts increasing as volatility or basis widens **before** the controller has time to raise fees.
 - Once fees rise enough to protect LPs, the smart router routes away a lot of competitive flow; arb frequency may fall, but so does fee income.
 
-The controller is “fair” in the sense of responding to observed toxicity, but it rarely gets ahead of LVR in a way that would make \(F_t - LVR_t\) positive on average.
+The controller is “fair” in the sense of responding to observed toxicity, but it rarely gets ahead of LVR in a way that would make $F_t - \text{LVR}_t$ positive on average.
 
 ---
 
@@ -140,9 +154,9 @@ Under these conditions, the model is very close to the **idealized LVR upper bou
 
 As a result, for passive LPs you empirically observe:
 
-- \(F_t\) increasing over time but
-- \(LVR_t\) increasing at least as fast,
-- so that \(F_t - LVR_t \leq 0\) on most long runs.
+- $F_t$ increasing over time but
+- $\text{LVR}_t$ increasing at least as fast,
+- so that $F_t - \text{LVR}_t \leq 0$ on most long runs.
 
 This is not a coding bug; it is the expected outcome given:
 

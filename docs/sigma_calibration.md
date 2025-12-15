@@ -69,7 +69,15 @@ class ReferenceMarket:
         self.m *= math.exp(self.mu - 0.5 * self.sigma**2 + self.sigma * z)
 ```
 
-If we denote the price at (discrete) time step \( t \) by \( m_t \), then
+If we denote the price at (discrete) time step 
+$$
+t
+$$
+ by 
+$$
+m_t
+$$
+, then
 
 \[
 \log m_{t+1} - \log m_t
@@ -78,8 +86,16 @@ If we denote the price at (discrete) time step \( t \) by \( m_t \), then
 
 where:
 
-- \( \mu \) is the **drift per step** (here, per second),
-- \( \sigma \) is the **volatility per step** of log‑returns (here, per second).
+- 
+  $$
+  \mu
+  $$
+   is the **drift per step** (here, per second),
+- 
+  $$
+  \sigma
+  $$
+   is the **volatility per step** of log‑returns (here, per second).
 
 Since one micro‑step is **1 second**, we interpret `cex_sigma` as:
 
@@ -101,7 +117,15 @@ Assume the raw CSV contains at least:
 
 ### 2.1. Time Index and Sorting
 
-Let \( P_t \) be the close price at second \( t \). In pandas:
+Let 
+$$
+P_t
+$$
+ be the close price at second 
+$$
+t
+$$
+. In pandas:
 
 ```python
 import pandas as pd
@@ -124,9 +148,21 @@ df = (
 df['Close'] = df['Close'].astype(float)
 ```
 
-This gives a time‑indexed series \( P_t = \text{Close}_t \) at (approximately)
+This gives a time‑indexed series 
+$$
+P_t = \text{Close}_t
+$$
+ at (approximately)
 1‑second intervals. Minor gaps (missing seconds) are acceptable; log‑returns
-are only computed where both \( P_{t-1} \) and \( P_t \) exist.
+are only computed where both 
+$$
+P_{t-1}
+$$
+ and 
+$$
+P_t
+$$
+ exist.
 
 ### 2.2. Log‑Returns at 1‑Second Frequency
 
@@ -145,7 +181,11 @@ log_ret_1s = log_price.diff()
 log_ret_1s = log_ret_1s.replace([np.inf, -np.inf], np.nan)
 ```
 
-The sequence \( \{ r_t \} \) is the empirical counterpart of the GBM
+The sequence 
+$$
+\{ r_t \}
+$$
+ is the empirical counterpart of the GBM
 log‑returns driven by `mu` and `sigma` in the simulator.
 
 ---
@@ -153,14 +193,38 @@ log‑returns driven by `mu` and `sigma` in the simulator.
 ## 3. Estimating Per‑Second Volatility
 
 We want an estimate of the **instantaneous per‑second volatility**
-\( \sigma_{\text{1s}} \), not a multi‑hour/day volatility. A standard
+
+$$
+\sigma_{\text{1s}}
+$$
+, not a multi‑hour/day volatility. A standard
 approach is to use a **rolling window** of recent log‑returns.
 
 ### 3.1. Rolling Realized Variance
 
-Fix a window length \( N \) in seconds (e.g. \( N = 300 \) for 5 minutes,
-or \( N = 900 \) for 15 minutes). For each time \( t \ge N \), define the
-rolling empirical variance over the last \( N \) returns:
+Fix a window length 
+$$
+N
+$$
+ in seconds (e.g. 
+$$
+N = 300
+$$
+ for 5 minutes,
+or 
+$$
+N = 900
+$$
+ for 15 minutes). For each time 
+$$
+t \ge N
+$$
+, define the
+rolling empirical variance over the last 
+$$
+N
+$$
+ returns:
 
 \[
 \hat{\sigma}^2_{t,\text{1s}}
@@ -183,7 +247,11 @@ deviation is:
 \]
 
 Under the GBM model with small drift, this rolling standard deviation is
-an estimator of the **per‑second volatility** \( \sigma_{\text{1s}} \).
+an estimator of the **per‑second volatility** 
+$$
+\sigma_{\text{1s}}
+$$
+.
 
 In pandas, using a time‑based rolling window:
 
@@ -197,8 +265,16 @@ sigma_1s = (
 )
 ```
 
-This produces a **time series** \( \{ \hat{\sigma}_{t,\text{1s}} \} \),
-each value being an estimate of the per‑second volatility at time \( t \),
+This produces a **time series** 
+$$
+\{ \hat{\sigma}_{t,\text{1s}} \}
+$$
+,
+each value being an estimate of the per‑second volatility at time 
+$$
+t
+$$
+,
 based on the recent window of returns.
 
 ### 3.2. Link to Annualized Volatility (Optional)
@@ -206,8 +282,16 @@ based on the recent window of returns.
 Sometimes it is convenient to express volatility in **annualized** units.
 If:
 
-- \( \hat{\sigma}_{t,\text{1s}} \) is the per‑second volatility estimate,
-- there are \( S_{\text{year}} = 365 \cdot 24 \cdot 60 \cdot 60 \) seconds
+- 
+  $$
+  \hat{\sigma}_{t,\text{1s}}
+  $$
+   is the per‑second volatility estimate,
+- there are 
+  $$
+  S_{\text{year}} = 365 \cdot 24 \cdot 60 \cdot 60
+  $$
+   seconds
   per year,
 
 then the corresponding **annualized volatility** is:
@@ -225,15 +309,27 @@ sigma_annualized = sigma_1s * np.sqrt(seconds_per_year)
 ```
 
 **Important:** in the simulator, `cex_sigma` is *per micro‑step* (per
-second), so you should feed the **per‑second** value \( \hat{\sigma}_{t,\text{1s}} \)
+second), so you should feed the **per‑second** value 
+$$
+\hat{\sigma}_{t,\text{1s}}
+$$
+
 directly, not the annualized one.
 
 ---
 
 ## 4. Using the 2‑Year Dataset to Define “Low” and “High” Volatility
 
-Given the 2‑year series of 1‑second returns \( \{ r_t \} \), and the derived
-rolling volatility \( \{ \hat{\sigma}_{t,\text{1s}} \} \), we can use
+Given the 2‑year series of 1‑second returns 
+$$
+\{ r_t \}
+$$
+, and the derived
+rolling volatility 
+$$
+\{ \hat{\sigma}_{t,\text{1s}} \}
+$$
+, we can use
 **quantiles** of this volatility series to define empirical volatility
 regimes.
 
@@ -267,7 +363,15 @@ print(q)
 ```
 
 Conceptually, if we denote the random per‑second volatility by
-\( \Sigma_{\text{1s}} \), the empirical quantile function \( Q(p) \)
+
+$$
+\Sigma_{\text{1s}}
+$$
+, the empirical quantile function 
+$$
+Q(p)
+$$
+
 such that
 
 \[
@@ -288,11 +392,27 @@ over the 2‑year historical period.
 A simple and robust regime definition is:
 
 - **Low volatility regime:**  
-  per‑second volatility below a lower quantile \( Q(p_{\text{low}}) \),
-  e.g. \( p_{\text{low}} = 0.2 \) (20th percentile).
+  per‑second volatility below a lower quantile 
+  $$
+  Q(p_{\text{low}})
+  $$
+  ,
+  e.g. 
+  $$
+  p_{\text{low}} = 0.2
+  $$
+   (20th percentile).
 - **High volatility regime:**  
-  per‑second volatility above an upper quantile \( Q(p_{\text{high}}) \),
-  e.g. \( p_{\text{high}} = 0.8 \) (80th percentile).
+  per‑second volatility above an upper quantile 
+  $$
+  Q(p_{\text{high}})
+  $$
+  ,
+  e.g. 
+  $$
+  p_{\text{high}} = 0.8
+  $$
+   (80th percentile).
 
 Formally:
 
@@ -392,7 +512,11 @@ used directly as `cex_sigma`.
 ## 6. Practical Notes for a 2‑Year, 1‑Second Dataset
 
 - **Memory considerations:** 2 years of 1‑second data is on the order of
-  \( 2 \times 365 \times 24 \times 3600 \approx 63 \times 10^6 \) rows.
+  
+  $$
+  2 \times 365 \times 24 \times 3600 \approx 63 \times 10^6
+  $$
+   rows.
   If loading the full dataset at once is heavy, you can:
   - Process data in chunks, accumulating the distribution of
     `sigma_1s` (e.g. storing quantile summaries or random subsamples).
