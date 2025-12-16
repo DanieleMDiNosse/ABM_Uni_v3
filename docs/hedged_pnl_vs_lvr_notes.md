@@ -29,17 +29,17 @@ From `LP_PnL.md` and `LVR_explanation.md`:
 
 The theory (and the simulator) enforce
 
-\[
+$$
 V_t^{LP} = V_t^{reb} + F_t - \text{LVR}_t,
-\]
+$$
 
 so that
 
-\[
+$$
 \text{PnL}^{\text{hedged}}_t
 = V_t^{LP} - V_t^{reb}
 = F_t - \text{LVR}_t.
-\]
+$$
 
 Thus:
 

@@ -5,11 +5,11 @@ nav_order: 1
 
 # ABM Uni v3 Documentation
 
-This site is built with **GitHub Pages (Jekyll)** and renders math with **MathJax**, so inline `$...$` and display `$$...$$` equations work in all notes.
+Documentation for an Agent Based Model (ABM) simulating Uniswap v3, with equations rendered via MathJax (inline `$...$`, display `$$...$$`).
 
 ## Pages
 
-{% assign nav_pages = site.pages | where_exp: "p", "p.nav_exclude != true" | sort: "nav_order" %}
+{% assign nav_pages = site.pages | where_exp: "p", "p.nav_exclude != true and p.title" | sort: "nav_order" %}
 <ul>
   {% for p in nav_pages %}
     {% if p.url != page.url %}

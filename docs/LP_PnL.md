@@ -22,50 +22,50 @@ Let all values be expressed in a chosen **numéraire** (e.g. USDC).
 At time $t$:
 
 - External (CEX) prices:
-  \[
+  $$
   P^X_t, \quad P^Y_t
-  \]
+  $$
 - LP’s **principal (liquidity) balances** in the pool:
-  \[
+  $$
   x_t \text{ units of X}, \qquad y_t \text{ units of Y}.
-  \]
+  $$
 - LP’s **fee balances** (uncollected or notionally in the “fee bucket”):
-  \[
+  $$
   f^X_t \text{ units of X}, \qquad f^Y_t \text{ units of Y}.
-  \]
+  $$
 
 We define:
 
 1. **Mark-to-market value of the principal (liquidity) only**
-   \[
+   $$
    V^{\text{liq}}_t := x_t P^X_t + y_t P^Y_t.
-   \]
+   $$
 
 2. **Mark-to-market value of fees**
-   \[
+   $$
    F_t := f^X_t P^X_t + f^Y_t P^Y_t.
-   \]
+   $$
 
 3. **Total LP position value (principal + fees)**
-   \[
+   $$
    V^{\text{LP}}_t := V^{\text{liq}}_t + F_t.
-   \]
+   $$
 
 At the initial time $t=0$:
 
-\[
+$$
 V^{\text{liq}}_0 = x_0 P^X_0 + y_0 P^Y_0, 
 \quad
 F_0 = f^X_0 P^X_0 + f^Y_0 P^Y_0,
 \quad
 V^{\text{LP}}_0 = V^{\text{liq}}_0 + F_0.
-\]
+$$
 
 In many v3 setups, fees start at zero:
-\[
+$$
 f^X_0 = f^Y_0 = 0, \quad F_0 = 0,
 \quad \Rightarrow \quad V^{\text{LP}}_0 = V^{\text{liq}}_0.
-\]
+$$
 
 ---
 
@@ -73,34 +73,34 @@ f^X_0 = f^Y_0 = 0, \quad F_0 = 0,
 
 The **unhedged PnL** is simply the change in total mark-to-market value of the LP position:
 
-\[
+$$
 \boxed{
 \text{PnL}^{\text{LP}}_t := V^{\text{LP}}_t - V^{\text{LP}}_0.
 }
-\]
+$$
 
 Replacing with the definitions:
 
-\[
+$$
 \text{PnL}^{\text{LP}}_t 
 = (V^{\text{liq}}_t + F_t) - V^{\text{LP}}_0.
-\]
+$$
 
 If you prefer to think in terms of “mark-to-market of liquidity” and “fees” separately, you can rewrite:
 
 - **Mark-to-market of liquidity (principal) at time $t$**:
-  \[
+  $$
   \text{MtM}^{\text{liq}}_t := V^{\text{liq}}_t = x_t P^X_t + y_t P^Y_t.
-  \]
+  $$
 
 Then:
 
-\[
+$$
 \boxed{
 \text{PnL}^{\text{LP}}_t 
 = \text{MtM}^{\text{liq}}_t + F_t - V^{\text{LP}}_0.
 }
-\]
+$$
 
 This is exactly the informal description:
 
@@ -139,15 +139,15 @@ Define a **rebalancing portfolio** that continuously adjusts its holdings to mat
 
 We choose the initial condition so that:
 
-\[
+$$
 V^{\text{reb}}_0 = V^{\text{LP}}_0.
-\]
+$$
 
 Then its PnL is:
 
-\[
+$$
 \text{PnL}^{\text{reb}}_t := V^{\text{reb}}_t - V^{\text{reb}}_0.
-\]
+$$
 
 This strategy carries exactly the **same market exposure** as the LP, but without adverse selection or fee income from AMM trades.
 
@@ -157,18 +157,18 @@ Define **Loss-Versus-Rebalancing (LVR)**, denoted $\text{LVR}_t$, as the cumulat
 
 The key result (in the continuous-time / frictionless framework) is:
 
-\[
+$$
 \boxed{
 V^{\text{LP}}_t
 = V^{\text{reb}}_t + F_t - \text{LVR}_t.
 }
-\]
+$$
 
 Rearranging:
 
-\[
+$$
 V^{\text{LP}}_t - V^{\text{reb}}_t = F_t - \text{LVR}_t.
-\]
+$$
 
 This decomposition says:
 
@@ -184,36 +184,36 @@ LVR is closely related to arbitrage profits between CEX and AMM: in many setting
 
 To remove market risk and focus on the **economics of liquidity provision**, define the **hedged PnL** as:
 
-\[
+$$
 \text{PnL}^{\text{hedged}}_t
 := \text{PnL}^{\text{LP}}_t - \text{PnL}^{\text{reb}}_t.
-\]
+$$
 
 Using the initial condition $V^{\text{reb}}_0 = V^{\text{LP}}_0$,
 
-\[
+$$
 \text{PnL}^{\text{hedged}}_t
 = (V^{\text{LP}}_t - V^{\text{LP}}_0) - (V^{\text{reb}}_t - V^{\text{reb}}_0)
 = V^{\text{LP}}_t - V^{\text{reb}}_t.
-\]
+$$
 
 Now plug in the LVR decomposition:
 
-\[
+$$
 V^{\text{LP}}_t = V^{\text{reb}}_t + F_t - \text{LVR}_t
 \quad \Rightarrow \quad
 V^{\text{LP}}_t - V^{\text{reb}}_t = F_t - \text{LVR}_t.
-\]
+$$
 
 Therefore:
 
-\[
+$$
 \boxed{
 \text{PnL}^{\text{hedged}}_t 
 = V^{\text{LP}}_t - V^{\text{reb}}_t
 = F_t - \text{LVR}_t.
 }
-\]
+$$
 
 ### Why does mark-to-market disappear here?
 
@@ -225,9 +225,9 @@ By construction, the rebalancing strategy holds the **same path of token balance
 - When we take the difference $V^{\text{LP}}_t - V^{\text{reb}}_t$,
   the **beta effect cancels**.
 - What remains is the **net liquidity-provision PnL**:
-  \[
+  $$
   \text{PnL}^{\text{hedged}}_t = \underbrace{F_t}_{\text{fees}} - \underbrace{\text{LVR}_t}_{\text{adverse selection}}.
-  \]
+  $$
 
 So:
 - **Unhedged PnL** answers:  
@@ -245,25 +245,25 @@ For completeness, recall the standard **impermanent loss** definition.
 
 Let the LP’s initial token amounts (principal + any initial fees) be:
 
-\[
+$$
 x^{\text{init}} := x_0 + f^X_0,
 \quad
 y^{\text{init}} := y_0 + f^Y_0.
-\]
+$$
 
 Define a **HODL strategy** that just keeps these tokens in a wallet, never trading:
 
-\[
+$$
 V^{\text{HODL}}_t := x^{\text{init}} P^X_t + y^{\text{init}} P^Y_t.
-\]
+$$
 
 Then IL at time $t$ is:
 
-\[
+$$
 \boxed{
 \text{IL}_t := V^{\text{LP}}_t - V^{\text{HODL}}_t.
 }
-\]
+$$
 
 Interpretation:
 

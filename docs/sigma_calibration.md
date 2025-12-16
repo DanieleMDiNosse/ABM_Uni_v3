@@ -84,10 +84,10 @@ m_t
 $$
 , then
 
-\[
+$$
 \log m_{t+1} - \log m_t
   = \mu - \tfrac{1}{2}\sigma^2 + \sigma Z_t, \quad Z_t \sim \mathcal{N}(0,1)
-\]
+$$
 
 where:
 
@@ -104,9 +104,9 @@ where:
 
 Since one micro‑step is **1 second**, we interpret `cex_sigma` as:
 
-\[
+$$
 \sigma_{\text{1s}} := \text{standard deviation of 1‑second log returns}.
-\]
+$$
 
 This is exactly what we should estimate from the Binance 1‑second ETH/USDC
 time series and then feed into the simulator.
@@ -173,10 +173,10 @@ $$
 
 Define the **1‑second log‑return**:
 
-\[
+$$
 r_t := \log P_t - \log P_{t-1}
      = \log \left( \frac{P_t}{P_{t-1}} \right).
-\]
+$$
 
 In pandas:
 
@@ -231,25 +231,25 @@ N
 $$
  returns:
 
-\[
+$$
 \hat{\sigma}^2_{t,\text{1s}}
   := \frac{1}{N - 1}
      \sum_{i=t-N+1}^{t}
      \left( r_i - \bar{r}_{t} \right)^2,
-\]
+$$
 
 where
 
-\[
+$$
 \bar{r}_{t} = \frac{1}{N} \sum_{i=t-N+1}^{t} r_i
-\]
+$$
 
 is the sample mean over the window. The corresponding rolling standard
 deviation is:
 
-\[
+$$
 \hat{\sigma}_{t,\text{1s}} := \sqrt{\hat{\sigma}^2_{t,\text{1s}}}.
-\]
+$$
 
 Under the GBM model with small drift, this rolling standard deviation is
 an estimator of the **per‑second volatility** 
@@ -301,10 +301,10 @@ If:
 
 then the corresponding **annualized volatility** is:
 
-\[
+$$
 \hat{\sigma}_{t,\text{ann}}
   = \hat{\sigma}_{t,\text{1s}} \sqrt{S_{\text{year}}}.
-\]
+$$
 
 In pandas:
 
@@ -379,15 +379,15 @@ $$
 
 such that
 
-\[
+$$
 Q(p) \approx \inf \{ x : \mathbb{P}(\Sigma_{\text{1s}} \le x) \ge p \},
-\]
+$$
 
 can be estimated from the sample as:
 
-\[
+$$
 Q(p) \approx \text{quantile}_p(\{\hat{\sigma}_{t,\text{1s}}\}_t).
-\]
+$$
 
 This lets us define volatility regimes in terms of **probability mass**
 over the 2‑year historical period.
@@ -421,10 +421,10 @@ A simple and robust regime definition is:
 
 Formally:
 
-\[
+$$
 \text{low‑vol regime}  := \{\hat{\sigma}_{t,\text{1s}} \le Q(0.2)\}, \\
 \text{high‑vol regime} := \{\hat{\sigma}_{t,\text{1s}} \ge Q(0.8)\}.
-\]
+$$
 
 You can pick slightly different quantiles (e.g. 10% / 90%, or 25% / 75%)
 depending on how “extreme” you want the regimes to be.
@@ -436,24 +436,24 @@ YAML scenarios. A natural choice is to take the **median** of the
 volatility estimates within the regime:
 
 - Let
-  \[
+  $$
     \mathcal{S}_{\text{low}}
       := \{ \hat{\sigma}_{t,\text{1s}} : \hat{\sigma}_{t,\text{1s}} \le Q(p_{\text{low}}) \},
-  \]
+  $$
   and define
-  \[
+  $$
     \sigma_{\text{1s, low}} := \text{median}(\mathcal{S}_{\text{low}}).
-  \]
+  $$
 
 - Let
-  \[
+  $$
     \mathcal{S}_{\text{high}}
       := \{ \hat{\sigma}_{t,\text{1s}} : \hat{\sigma}_{t,\text{1s}} \ge Q(p_{\text{high}}) \},
-  \]
+  $$
   and define
-  \[
+  $$
     \sigma_{\text{1s, high}} := \text{median}(\mathcal{S}_{\text{high}}).
-  \]
+  $$
 
 In pandas:
 

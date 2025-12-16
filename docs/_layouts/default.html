@@ -25,7 +25,7 @@
         </div>
 
         <nav class="nav">
-          {% assign nav_pages = site.pages | where_exp: "p", "p.nav_exclude != true" | sort: "nav_order" %}
+          {% assign nav_pages = site.pages | where_exp: "p", "p.nav_exclude != true and p.title" | sort: "nav_order" %}
           <ul class="nav-list">
             {% for p in nav_pages %}
               {% assign href = p.url %}

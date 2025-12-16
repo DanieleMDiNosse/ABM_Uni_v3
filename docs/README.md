@@ -105,9 +105,9 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 - Encoded in `arbitrage_to_target` and the `arb` branch of `execute_mempool_orders` in `run.py`.
 - Let $m^{\text{ref}}_t$ be the **validated** CEX snapshot seen by agents at step $t$ (`cex_ref_for_agents`) and let $f_t$ be the taker fee, $r_t = 1 - f_t$
   . The arbitrageur defines a **no‑arb band**
-  \[
+  $$
     [P^{\min}_t, P^{\max}_t] = [m^{\text{ref}}_t r_t,\; m^{\text{ref}}_t / r_t].
-  \]
+  $$
   With current DEX price $P_t$:
   - If $P_t < P^{\min}_t$ (DEX **cheap**), an “up” arb buys token0 on the DEX and sells token0 on the CEX until $P_t$ is pushed back up to $P^{\min}_t$(or liquidity is exhausted).
   - If $P_t > P^{\max}_t$ (DEX **expensive**), a “down” arb sells token0 on the DEX and buys it back on the CEX until $P_t$ is pushed back down to $P^{\max}_t$.
@@ -116,9 +116,9 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 - Profit preview (on a cloned pool) is explicitly path‑based:
   - **Cheap DEX (up arb)**: the preview returns a DEX input $d^{\text{DEX}}_t$ in token1 and an output $x^{\text{DEX}}_t$ in token0. Selling $x^{\text{DEX}}_t$ on the CEX at $m^{\text{ref}}_t$ yields 
     $x^{\text{DEX}}_t m^{\text{ref}}_t$. Net token1 profit before funding is
-    \[
+    $$
       \Pi^{\text{up}}_t = x^{\text{DEX}}_t m^{\text{ref}}_t - d^{\text{DEX}}_t.
-    \]
+    $$
   - **Expensive DEX (down arb)**: the preview returns a DEX input $x^{\text{DEX}}_t$ (token0) and output $y^{\text{DEX}}_t$ (token1). To hedge, the arb must **buy** 
     $$
     x^{\text{DEX}}_t
@@ -128,25 +128,25 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
     x^{\text{DEX}}_t m^{\text{ref}}_t
     $$
     . Net profit is
-    \[
+    $$
       \Pi^{\text{down}}_t = y^{\text{DEX}}_t - x^{\text{DEX}}_t m^{\text{ref}}_t.
-    \]
+    $$
 - A configurable `flash_loan_fee` parameter models per-notional funding cost for the arb; before executing, the arbitrageur previews the trade’s PnL **including** this fee and will skip the arbitrage entirely whenever the expected profit (after flash cost) is non-positive.
 - Concretely, with funding rate 
   $$
   \phi = \text{flash\_loan\_fee}
   $$
   ,
-  \[
+  $$
     \Pi^{\text{up, net}}_t = x^{\text{DEX}}_t m^{\text{ref}}_t
       - d^{\text{DEX}}_t
       - \phi\,d^{\text{DEX}}_t,
-  \]
-  \[
+  $$
+  $$
     \Pi^{\text{down, net}}_t = y^{\text{DEX}}_t
       - x^{\text{DEX}}_t m^{\text{ref}}_t
       - \phi\,x^{\text{DEX}}_t m^{\text{ref}}_t.
-  \]
+  $$
   The arb executes only if the previewed 
   $$
   \Pi^{\text{net}}_t > 0
@@ -159,47 +159,47 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 - Implemented via `execute_trader("smart", ...)` and smart-router branches in `execute_mempool_orders`.
 - Per potential trade:
   - Draws a **token1 notional**
-    \[
+    $$
       Y^{\text{not}} \sim \exp\bigl(\mathcal{N}(\text{trader\_mean},\;\text{trader\_sigma}^2)\bigr)
-    \]
+    $$
     and a direction `side ∈ {X_to_Y, Y_to_X}` with equal probability.
   - For `X_to_Y` (sell token0 / price‑down):
     - Let $m_t$ be the CEX price seen by agents at submission time. The intended token0 input is
-      \[
+      $$
         \Delta x^{\text{int}} = \frac{Y^{\text{not}}}{m_t}.
-      \]
+      $$
     - The simulator queries the DEX quote
-      \[
+      $$
         \widehat{\Delta y}^{\text{DEX}}
           = \text{quote\_x\_to\_y}(\Delta x^{\text{int}}),
-      \]
+      $$
       and compares it to the **CEX benchmark** 
       $$
       \Delta y^{\text{CEX}} = \Delta x^{\text{int}} m_t
       $$
       .
     - Best‑execution constraint:
-      \[
+      $$
         \widehat{\Delta y}^{\text{DEX}}
           \ge \theta_T \,\Delta y^{\text{CEX}}.
-      \]
+      $$
       If this fails, the trade is routed **entirely to the CEX** (no AMM leg): the trader swaps 
       $\Delta x^{\text{int}}$ at price $m_t$, and the corresponding token flows are recorded in the smart‑router PnL and CEX impact.
   - For `Y_to_X` (buy token0 / price‑up):
     - The trader fixes a token1 input $\Delta y^{\text{int}} = Y^{\text{not}}$
       .
     - The DEX quote is
-      \[
+      $$
         \widehat{\Delta x}^{\text{DEX}}
           = \text{quote\_y\_to\_x}(\Delta y^{\text{int}}),
-      \]
+      $$
       and the CEX benchmark is 
       $$\Delta x^{\text{CEX}} = \Delta y^{\text{int}} / m_t$$
     - Best‑execution requirement:
-      \[
+      $$
         \widehat{\Delta x}^{\text{DEX}}
           \ge \theta_T \,\Delta x^{\text{CEX}}.
-      \]
+      $$
       If not satisfied, the trade is executed on the CEX only.
   - Slippage control at **execution time**: when mempool orders are replayed the engine re‑quotes the pool against a baseline computed from the last validated DEX price 
     $$
@@ -207,17 +207,17 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
     $$
      and current fee:
     - For `X_to_Y` with input $\Delta x$, the baseline output is
-      \[
+      $$
         \Delta y^{\text{base}} = \Delta x \, r_t \, P^{\text{ref}}_t.
-      \]
+      $$
     - For `Y_to_X` with input $\Delta y$, the baseline input is
-      \[
+      $$
         \Delta x^{\text{base}} = \frac{\Delta y \, r_t}{P^{\text{ref}}_t}.
-      \]
+      $$
     The actual execution is skipped if the realized DEX quote violates
-    \[
+    $$
       \frac{\text{actual}}{\text{baseline}} < 1 - \text{slippage\_tolerance},
-    \]
+    $$
     i.e. if the trader would lose more than the configured relative slippage.
 - Trade *arrival rates* are configured via `smart_trades_per_block`, interpreted as the **expected number of smart-router intents per block**. Internally this is implemented as a **Poisson process**:
   - in non-block mode (`block_time = 1`), the number of smart-router intents per block is drawn as 
@@ -275,64 +275,64 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
   - The actual mint size is `L_new = min(want, cap_step, cap_left)` . After mint, `L_live` increases by `L_new`; burns and re-centers decrease `L_live` by the burned liquidity, freeing budget for future mints.
 - **Width rule for narrow LPs (mathematical form)**:
   - Let $P_t$ and $m_t$ be the DEX and CEX prices at the start of step $t$, and $f_t$ the taker fee. Define the **fee band in log space**
-    \[
+    $$
       \ell^{\text{fee}}_t = \log\Bigl(\frac{1}{1 - f_t}\Bigr)
-    \]
+    $$
     and the absolute log basis
-    \[
+    $$
       g_t = \bigl|\log P_t - \log m_t\bigr|.
-    \]
+    $$
     The **excess basis** (beyond the fee band) is
-    \[
+    $$
       B_t = \max(0,\; g_t - \ell^{\text{fee}}_t).
-    \]
+    $$
   - An EWMA with half‑life `basis_half_life` smooths this:
-    \[
+    $$
       D_t = \text{EWMA}(B_t),
-    \]
+    $$
     and the corresponding “basis in ticks” is
-    \[
+    $$
       \text{basis\_ticks}_t = \frac{D_t}{\log(1.0001)}.
-    \]
+    $$
   - **Time scale: EWMA vs. Heston variance**:
     - Heston variance mean reversion with speed 
       $$
       \kappa = \text{cex\_heston\_kappa}
       $$
        has autocorrelation
-      \[
+      $$
         \rho_v(\Delta) = e^{-\kappa\Delta},\qquad
         \tau_v = \frac{1}{\kappa},\qquad
         t_{1/2,v} = \frac{\ln 2}{\kappa}.
-      \]
+      $$
     - The EWMA decay $\lambda$ is parameterized by half-life $H = \text{basis\_half\_life}$:
-      \[
+      $$
         \lambda = \exp\!\Bigl(-\frac{\ln 2}{H}\Bigr),\qquad
         \rho_{\text{EWMA}}(\ell) \propto \lambda^\ell,\qquad
         \tau_{\text{EWMA}} = \frac{H}{\ln 2}.
-      \]
+      $$
     - Matching the per-update decay to the Heston variance time scale gives
-      \[
+      $$
         \lambda \approx e^{-\kappa\,\Delta t_{\text{step}}}
         \quad\Longrightarrow\quad
         H \approx \frac{\ln 2}{\kappa\,\Delta t_{\text{step}}}.
-      \]
+      $$
       With Heston updated per micro-step ($\Delta t = 1$) and the width EWMA updated once per outer step spanning `block_time` micro-steps, a practical rule (in blocks) is
-      \[
+      $$
         \text{basis\_half\_life} \approx \frac{\ln 2}{\text{cex\_heston\_kappa}\cdot\text{block\_time}}.
-      \]
+      $$
   - A binomial width noise term is drawn each step (if `binom_n > 0` and `0 < binom_p < 1`):
-    \[
+    $$
       K_t \sim \text{Binomial}(\text{binom\_n}, \text{binom\_p}),\qquad
       \text{noise\_ticks}_t = (K_t - \text{binom\_n}\,\text{binom\_p}) \cdot \text{tick\_spacing},
-    \]
+    $$
     which has mean zero in “tick‑spacing units”.
   - The raw width in ticks is then
-    \[
+    $$
       w^{\text{raw}}_t
         = w_{\min} + \text{slope\_s} \cdot \text{basis\_ticks}_t
           + \text{noise\_ticks}_t,
-    \]
+    $$
     where `w_min_ticks = w_min`, `w_max_ticks = w_max` are configuration bounds.
   - Let 
     $$
@@ -345,21 +345,21 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
       $$
       .
     - Minimum and maximum bands
-      \[
+      $$
         n_{\min} = \left\lceil \frac{w_{\min}}{\Delta} \right\rceil,\qquad
         n_{\max} = \max\Bigl(1,\; \left\lfloor \frac{w_{\max}}{\Delta} \right\rfloor\Bigr).
-      \]
+      $$
     - Final width in ticks
-      \[
+      $$
         w^{\text{ticks}}_t = \min\bigl(\max(n_{\min}, n_b), n_{\max}\bigr)\,\Delta.
-      \]
+      $$
     This `w_ticks` is the width used for **new narrow mints** and **recentered bands** in that step.
   - Given a target sqrt‑price $S^{\text{ref}}_t$ and number of bands $n_b$, the code solves for a lower tick index $i_{\text{low}}$ such that the resulting band $[i_{\text{low}}, i_{\text{low}} + n_b \Delta)$ is approximately centered around $S^{\text{ref}}_t$; the corresponding price band is then
-    \[
+    $$
       [P^{\min}_{\text{band}}, P^{\max}_{\text{band}}]
         = \bigl((\text{base\_s}\,g^{i_{\text{low}}})^2,\;
                 (\text{base\_s}\,g^{i_{\text{low}} + n_b \Delta})^2\bigr),
-    \]
+    $$
     where $g$ is the tick ratio in sqrt‑price.
 - **Wealth tracking**:
   - `RebalancerState` maintains a self-financing benchmark that delta-hedges the LP’s token0 exposure using the CEX price; LVR is computed as the difference between LP wealth (wallet plus open position mark-to-market) and this benchmark.

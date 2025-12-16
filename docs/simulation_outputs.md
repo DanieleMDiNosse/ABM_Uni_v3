@@ -32,16 +32,16 @@ section.
 
 - `DEX_price[t]`  
   Mid‑price on the AMM at the **end** of step `t`, in token1 per token0:
-  \[
+  $$
     P_t := S_t^2,
-  \]
+  $$
   where `S_t` is the pool’s active sqrt‑price.
 
 - `CEX_price[t]`  
   Mid‑price on the reference market at the end of step `t`:
-  \[
+  $$
     m_t.
-  \]
+  $$
 
 - `cex_sigma_series[t]`  
   Per‑step volatility of CEX log‑returns used in the diffusion step at `t`
@@ -69,18 +69,18 @@ section.
   r_t = 1 - f_t
   $$
   , then
-  \[
+  $$
     \text{band\_lo\_pre}[t] = m_t\,r_t,\qquad
     \text{band\_hi\_pre}[t] = \frac{m_t}{r_t}.
-  \]
+  $$
 
 - `band_lo_post[t]`, `band_hi_post[t]`  
   No‑arb band at the **end** of step `t`, using the post‑impact CEX price
   `ref.m` and the same fee `f_t`:
-  \[
+  $$
     \text{band\_lo\_post}[t] = m_t^{\text{post}} r_t,\qquad
     \text{band\_hi\_post}[t] = \frac{m_t^{\text{post}}}{r_t}.
-  \]
+  $$
 
 ---
 
@@ -105,9 +105,9 @@ section.
 - `x_active_reserves[t]`, `y_active_reserves[t]`  
   Token0 and token1 reserves *inside the active band* at the end of step `t`,
   computed as
-  \[
+  $$
     (x_t, y_t) = \text{reserves\_in\_active\_tick}(L_{\text{active},t}, S_t),
-  \]
+  $$
   using the standard Uniswap v3 formulas in sqrt‑price space.
 
 - `liq_history[t]`  
@@ -182,10 +182,10 @@ perspective (positive = profit).
   $$
   . Internally these are computed
   from token flows as
-  \[
+  $$
     \text{PnL}_t = (\Delta y_{\text{out}} - \Delta y_{\text{in}})
                   + (\Delta x_{\text{out}} - \Delta x_{\text{in}}) \, m_t^{\text{post}}.
-  \]
+  $$
 
 - `smart_router_pnl_cum[t]`, `noise_trader_pnl_cum[t]`  
   Cumulative sums of the above up to step `t`.
@@ -208,11 +208,11 @@ perspective (positive = profit).
 
 - `trader_pnl_steps[t]`, `trader_pnl_cum[t]`  
   Aggregated trader PnL (smart + noise) per step and cumulative:
-  \[
+  $$
     \text{trader\_pnl\_steps}[t]
       = \text{smart\_router\_pnl\_steps}[t]
       + \text{noise\_trader\_pnl\_steps}[t].
-  \]
+  $$
 
 - `trader_exec_count[t]`, `arb_exec_count[t]`  
   Total number of trader executions and arbitrage trades in step `t`.
@@ -255,20 +255,20 @@ $$
    be Loss‑Versus‑Rebalancing.
 
 The simulator enforces, per LP,
-\[
+$$
   V^{\text{LP},i}_t = V^{\text{reb},i}_t + F^i_t - \text{LVR}^i_t
-\]
+$$
 so that **hedged PnL** is
-\[
+$$
   \text{PnL}^{\text{hedged},i}_t
     := V^{\text{LP},i}_t - V^{\text{reb},i}_t
     = F^i_t - \text{LVR}^i_t,
-\]
+$$
 and **unhedged PnL** is
-\[
+$$
   \text{PnL}^{\text{unhedged},i}_t
     := V^{\text{LP},i}_t - V^{\text{LP},i}_0.
-\]
+$$
 
 Series below aggregate these quantities across LP cohorts.
 
@@ -276,10 +276,10 @@ Series below aggregate these quantities across LP cohorts.
 
 - `lp_pnl_total[t]`  
   Total hedged LP PnL across all strategic (non‑seed) LPs:
-  \[
+  $$
     \text{lp\_pnl\_total}[t]
       = \sum_i \left(F^i_t - \text{LVR}^i_t\right).
-  \]
+  $$
 
 - `lp_pnl_active[t]`, `lp_pnl_passive[t]`  
   Hedged PnL aggregated over active narrow (`is_active_narrow=True`) and
@@ -288,10 +288,10 @@ Series below aggregate these quantities across LP cohorts.
 - `lp_unhedged_total[t]`, `lp_unhedged_active[t]`,
   `lp_unhedged_passive[t]`  
   Unhedged PnL (wealth change) aggregated over the same cohorts:
-  \[
+  $$
     \text{lp\_unhedged\_total}[t]
       = \sum_i \left(V^{\text{LP},i}_t - V^{\text{LP},i}_0\right),
-  \]
+  $$
   and analogously for active/passive splits.
 
 ### 4.2. Rebalancing benchmark and LVR
@@ -326,11 +326,11 @@ Series below aggregate these quantities across LP cohorts.
 - `lp_lvr_total_series[t]`, `lp_lvr_active_series[t]`,
   `lp_lvr_passive_series[t]`  
   Aggregated LVR per cohort, computed by the identity
-  \[
+  $$
     \text{lp\_lvr\_total\_series}[t]
       = \text{lp\_fee\_value\_total\_series}[t]
         - \text{lp\_pnl\_total}[t],
-  \]
+  $$
   and analogously for active/passive.
 
 ### 4.3. Wallet and wealth
@@ -344,10 +344,10 @@ Series below aggregate these quantities across LP cohorts.
   `lp_wealth_passive_series[t]`  
   Aggregated wealth in token1 (wallet + mark‑to‑market of open positions) per
   cohort:
-  \[
+  $$
     \text{lp\_wealth\_total}[t]
       = \sum_i V^{\text{LP},i}_t.
-  \]
+  $$
 
 Seed LPs (`is_seed=True`) created by `bootstrap_initial_binomial_hill_sharded`
 are **excluded** from all strategic LP cohorts.
@@ -379,9 +379,9 @@ series below expose its internal signals.
 - `fee_sigma_series[t]`  
   Volatility signal used by volatility-based fee modes:
   - in `"volatility"` mode, this is the EWMA of absolute CEX log-returns
-    \[
+    $$
       \hat{\sigma}_t = \text{EWMA}\bigl(|\log m_t - \log m_{t-1}|\bigr),
-    \]
+    $$
     with half-life `fee_half_life`;
   - in `"volatility_oracle"` mode, this is the per-step CEX volatility path
     
@@ -392,14 +392,14 @@ series below expose its internal signals.
 
 - `fee_basis_ticks_series[t]`  
   EWMA of fee‑adjusted log basis (in ticks) used in toxicity mode:
-  \[
+  $$
     B_{\text{obs},t}
       = \max\bigl(0,\; |\log P_t - \log m_t| - \log(1/(1-f_t))\bigr),
-  \]
-  \[
+  $$
+  $$
     B_{\hat{t}} = \text{EWMA}(B_{\text{obs},t}),\qquad
     \text{basis\_ticks}_t = \frac{B_{\hat{t}}}{\log(1.0001)}.
-  \]
+  $$
 
 - `fee_imb_series[t]`  
   Imbalance proxy in token1 units within the active band at step `t`, defined
@@ -409,10 +409,10 @@ series below expose its internal signals.
   (x_t, y_t) = \text{reserves\_in\_active\_tick}(t)
   $$
    as
-  \[
+  $$
     \text{fee\_imb\_series}[t]
       = \frac{y_t - x_t P_t}{\max(10^{-12},\, y_t + x_t P_t)}.
-  \]
+  $$
   (This is tracked for diagnostics; the current controllers do not use it.)
 
 - `fee_signal_series[t]`  

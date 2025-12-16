@@ -83,9 +83,9 @@ where:
            \sigma_{t,k} = \text{ReferenceMarket.sigma}
            $$
         2. computes a micro-step raw fee
-           \[
+           $$
              f_{raw}^{(micro)} = f_0 + k_\sigma \cdot \sigma_{t,k} \cdot \sqrt{\text{block\_time}};
-           \]
+           $$
         3. clamps and step-limits this value using the same `f_min` / `f_max` / `fee_step_bps_min` / `fee_step_bps_max` logic; if the implied change is large enough, it updates `pool.f` **immediately** (no `fee_next`, no cooldown gating).  
     - As a result, trades within the same block can experience different fees as $\sigma_{t,k}$ evolves. The block-level controller at the end of the step records the volatility signal and fee path for plotting but does not stage an additional fee move in this mode.
 
