@@ -9,17 +9,21 @@ Documentation for an Agent Based Model (ABM) simulating Uniswap v3, with equatio
 
 ## Pages
 
-{% assign nav_pages = site.pages | where_exp: "p", "p.nav_exclude != true and p.title" | sort: "nav_order" %}
+{% assign nav_pages = site.html_pages | sort: "nav_order" %}
 <ul>
   {% for p in nav_pages %}
-    {% if p.url != page.url %}
-      {% assign href = p.url %}
-      {% if href == "/" %}
-        {% assign href = "index.html" %}
-      {% else %}
-        {% assign href = href | remove_first: "/" %}
-      {% endif %}
-      <li><a href="{{ href }}">{{ p.title | default: p.name }}</a></li>
+    {% if p.nav_order and p.title %}
+      {% unless p.nav_exclude %}
+        {% if p.url != page.url %}
+          {% assign href = p.url %}
+          {% if href == "/" %}
+            {% assign href = "index.html" %}
+          {% else %}
+            {% assign href = href | remove_first: "/" %}
+          {% endif %}
+          <li><a href="{{ href }}">{{ p.title | default: p.name }}</a></li>
+        {% endif %}
+      {% endunless %}
     {% endif %}
   {% endfor %}
 </ul>

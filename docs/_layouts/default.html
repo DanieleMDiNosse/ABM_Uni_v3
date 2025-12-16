@@ -25,18 +25,24 @@
         </div>
 
         <nav class="nav">
-          {% assign nav_pages = site.pages | where_exp: "p", "p.nav_exclude != true and p.title" | sort: "nav_order" %}
+          {% assign nav_pages = site.html_pages | sort: "nav_order" %}
           <ul class="nav-list">
             {% for p in nav_pages %}
-              {% assign href = p.url %}
-              {% if href == "/" %}
-                {% assign href = "index.html" %}
-              {% else %}
-                {% assign href = href | remove_first: "/" %}
+              {% if p.nav_order and p.title %}
+                {% unless p.nav_exclude %}
+                  {% assign href = p.url %}
+                  {% if href == "/" %}
+                    {% assign href = "index.html" %}
+                  {% else %}
+                    {% assign href = href | remove_first: "/" %}
+                  {% endif %}
+                  <li class="nav-item{% if p.url == page.url %} active{% endif %}">
+                    <a class="nav-link" href="{{ href }}"
+                      >{{ p.title | default: p.name }}</a
+                    >
+                  </li>
+                {% endunless %}
               {% endif %}
-              <li class="nav-item{% if p.url == page.url %} active{% endif %}">
-                <a class="nav-link" href="{{ href }}">{{ p.title | default: p.name }}</a>
-              </li>
             {% endfor %}
           </ul>
         </nav>
