@@ -251,9 +251,11 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 ### Liquidity Providers
 - Defined in `agents.py` (`LPAgent`, `Position`, and `RebalancerState`) with management logic in `run.py`.
 - **Types**:
-  - *Passive baselines* (`is_passive=True` for a fraction `passive_lp_share` of the `N_LP` **strategic** LPs): wide fixed-width ranges, probabilistic mint/burn rules driven by the block-level targets `passive_mints_per_block`, `passive_burns_per_block`, and width `passive_width_ticks`.
+  - *Passive baselines* (`is_passive=True` for a fraction `passive_lp_share` of the `N_LP` **strategic** LPs): wide ranges, probabilistic mint/burn rules driven by the block-level targets `passive_mints_per_block`, `passive_burns_per_block`, and width `passive_width_pct` (falls back to `passive_width_ticks` when omitted).
   - *Active narrow LPs* (`is_active_narrow=True` and `is_passive=False`): concentrate liquidity near the current mid, recenter after they have been out of range for a random number of steps between `k_out_min` and `k_out_max`, and follow an EWMA-driven width signal with binomial noise.
   - *Seed/background LPs* (`is_seed=True`, always passive): created by `bootstrap_initial_binomial_hill_sharded` to form the initial binomial hill; they provide background liquidity and evolve via the same passive mint/burn rules but are excluded from `N_LP` counts and from the active/passive LP PnL and wealth series.
+- **Passive width parameterization (why percent matters)**:
+  - Uniswap v3 ticks are log-spaced, so a “symmetric” range in ticks is not symmetric in price. `passive_width_pct` defines the passive LP band as a symmetric ±% around the agent reference price (after snapping to tick spacing), which makes the left/right tick distances generally *asymmetric* but the *price* band symmetric.
 - **Decision process** (per LP):
   - Each LP carries an internal review clock with inter-review times drawn from a geometric distribution with mean `tau`. In any block an LP is either *not due* (clock has not fired yet) or *due* (clock hits zero); only due LPs are allowed to act.
   - LP activity knobs are specified as **target counts per block** across the population: `narrow_mints_per_block`, `passive_mints_per_block`, and `passive_burns_per_block`. Given `block_time = B`, the passive share, and `N_LP`, the simulator converts these into per-LP Bernoulli probabilities, e.g. `p_narrow_mint ≈ narrow_mints_per_block / (B · N_narrow)`, `p_passive_mint ≈ passive_mints_per_block / (B · N_passive)`, and `p_passive_burn ≈ passive_burns_per_block / (B · N_passive)` (clipped to `[0,1]`), and flips these coins only for LPs whose review clock is due and that are not in cooldown. Realized mint/burn counts therefore fluctuate around the targets and also scale with how many LPs happen to be due in that block (≈ `1/τ` fraction on average) and with cooldowns.
@@ -420,6 +422,7 @@ simulate:
   passive_lp_share: 0.2
   passive_mints_per_block: 60.0  # expected passive LP mints per block (total across passive LPs)
   passive_burns_per_block: 10.0  # expected passive LP burns per block (total across passive LPs)
+  passive_width_pct: 5.0
   passive_width_ticks: 500
   N_LP: 500                # number of strategic LP agents (excluding the seed binomial-hill LPs)
   tau: 20

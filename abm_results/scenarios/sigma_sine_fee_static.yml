@@ -68,8 +68,10 @@ simulate:
   passive_mints_per_block: 10
   # Expected number of passive LP burns per block (total across passive LPs)
   passive_burns_per_block: 5
-  # Range width in ticks used for passive LP positions
-  passive_width_ticks: 1000 # 500 corresponds to ~2% of the initial price
+  # Passive LP width as a total percentage (± width/2 around the reference price)
+  passive_width_pct: 10.0
+  # Legacy tick-based width (used only when passive_width_pct is omitted)
+  passive_width_ticks: 1000
   # Average cadence (in steps) between LP reviews of their positions
   tau: 3
   # Minimum and maximum width in ticks for programmatic LP mints

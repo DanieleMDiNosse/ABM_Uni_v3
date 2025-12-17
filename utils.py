@@ -1,8 +1,7 @@
 """
 Utility functions, constants, and helper classes for the ABM simulation.
 """
-from __future__ import annotations
-
+#from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field

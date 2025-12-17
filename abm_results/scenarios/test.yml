@@ -1,8 +1,9 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: static
+fee_mode: volatility
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
+  config_name: test
   verbose: true
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
@@ -69,15 +70,17 @@ simulate:
   passive_mints_per_block: 10
   # Expected number of passive LP burns per block (total across passive LPs)
   passive_burns_per_block: 5
-  # Range width in ticks used for passive LP positions
-  passive_width_ticks: 1000 # 500 corresponds to ~2% of the initial price
+  # Passive LP width as a total percentage (± width/2 around the reference price)
+  passive_width_pct: 10.0
+  # Legacy tick-based width fallback (set a value here only when omitting passive_width_pct)
+  passive_width_ticks: null
   # Average cadence (in steps) between LP reviews of their positions. On average, 1/tau LPs are active per block
   tau: 5
   # Minimum and maximum width in ticks for programmatic LP mints
   w_min_ticks: 10 # 10 corresponds to ~0.1% width
   w_max_ticks: 1774540 
   # Half-life (in blocks) of the EWMA basis signal driving LP widths
-  basis_half_life: 10
+  basis_half_life: 1
   # Sensitivity of LP width (ticks per unit of basis signal)
   slope_s: 1
   # Number of trials for the binomial noise component on LP width

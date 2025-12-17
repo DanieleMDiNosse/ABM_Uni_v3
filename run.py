@@ -2,7 +2,7 @@
 Main simulation runner for the ABM model.
 X (token0) is like ETH and Y (token1) is like USDC.
 """
-from __future__ import annotations
+# from __future__ import annotations
 
 import argparse
 import math
@@ -131,46 +131,57 @@ class _NullList(list):
         return self
 
 def simulate(
+    # === Core simulation parameters ===
+    config_name: str,
     block_time: int,
     T: int,
     seed: int,
+    
+    # === Market parameters ===
     cex_mu: float,
     cex_sigma: float,
+    
+    # === Trade flow parameters ===
     smart_trades_per_block: float,
     noise_trades_per_block: float,
+    
+    # === LP population parameters ===
+    N_LP: int,
+    passive_lp_share: float,
+    tau: int,
     narrow_mints_per_block: float,
     passive_mints_per_block: float,
     passive_burns_per_block: float,
-    passive_lp_share: float,
-    passive_width_ticks: int,
-    N_LP: int,
-    tau: int,
-    # --- LP width via EWMA(B_t) + binomial noise ---
+    
+    # === LP width parameters ===
     w_min_ticks: int,
     w_max_ticks: int,
     basis_half_life: int,   # steps
     slope_s: float,        # ticks per (basis-in-ticks)
-    # --- binomial noise parameters (already present; now used) ---
     binom_n: int,
     binom_p: float,
-    # --- lognormal noise parameters (new; not yet used) ---
+    
+    # === Trader parameters ===
     trader_mean: float,
     trader_sigma: float,
     theta_T: float,
-    # --- slippage ---
     slippage_tolerance: float,
-    # --- other params ---
+    passive_width_pct: Optional[float],  # total width percentage (± half around price) for passive LPs
+    passive_width_ticks: Optional[int],
+    
+    # === LP behavior parameters ===
     mint_mu: float,
     mint_sigma: float,
     theta_TP: float,
     theta_SL: float,
-    initial_binom_N: int,
-    initial_total_L: float,
     k_out_min: int,
     k_out_max: int,
-    visualize: bool,
-    skip_step: int,
-    # --- Dynamic fee controller (new) ---
+    
+    # === Initial conditions ===
+    initial_binom_N: int,
+    initial_total_L: float,
+    
+    # === Fee controller parameters ===
     fee_mode: str,      # "static" | "volatility" | "volatility_oracle" | "toxicity"
     f0: float,             # baseline fee (e.g., 30 bps)
     f_min: float,         # 5 bps
@@ -178,12 +189,14 @@ def simulate(
     fee_half_life: int,       # EWMA half-life (steps) for signals
     k_sigma: float,         # adds ~k_sigma * EWMA(|logret|) to fee
     k_basis: float,         # fee per tick of dislocation (basis in ticks)
-    # k_imb: float = 0.002,          # fee += k_imb * |imbalance|, imbalance in [0,1]
     fee_step_bps_min: float, # do not change fee unless ≥ 0.5 bps move
     fee_step_bps_max: float, # max step per update (bps)
     fee_cooldown: int,         # blocks between fee changes (hysteresis)
+    
+    # === Cost parameters ===
     flash_loan_fee: float = 0.0,  # percentage cost on arbitrage notional (e.g., 0.0005 = 5 bps)
-    # --- CEX volatility (static / regime / noisy-sine / Heston) ---
+    
+    # === CEX volatility modes ===
     cex_sigma_mode: str = "static",    # "static" | "regime" | "noisy_sine" | "heston"
     cex_sigma_low: Optional[float] = None,
     cex_sigma_high: Optional[float] = None,
@@ -195,17 +208,21 @@ def simulate(
     cex_sigma_sine_noise: float = 0.0,
     cex_sigma_floor: float = 0.0,
     cex_sigma_sine_phase: float = 0.0,
-    # --- CEX Heston-like volatility (stochastic variance over σ_t^2) ---
+    
+    # === CEX Heston-like volatility parameters ===
     cex_heston_kappa: Optional[float] = None,
     cex_heston_theta: Optional[float] = None,
     cex_heston_sigma_v: Optional[float] = None,
     cex_heston_rho: Optional[float] = None,
     cex_heston_v0: Optional[float] = None,
-    # --- Output root (for logs/plots); defaults to 'abm_results' ---
+    
+    # === Output and visualization ===
+    visualize: bool = True,
+    skip_step: int = 100,
     results_root: Optional[str | Path] = None,
     verbose: bool = True,
     light_mode: bool = False,
-):
+) -> Dict[str, Any]:
     valid_fee_modes = {"static", "volatility", "volatility_oracle", "toxicity"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
@@ -215,6 +232,22 @@ def simulate(
         raise ValueError("k_out_min cannot exceed k_out_max.")
 
     slippage_tolerance = clamp(slippage_tolerance, 0.0, 1.0)
+    if passive_width_pct is not None:
+        try:
+            passive_width_pct = float(passive_width_pct)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"passive_width_pct must be a number: got {passive_width_pct!r}") from exc
+        if not (0.0 < passive_width_pct < 200.0):
+            raise ValueError(f"passive_width_pct must be in (0, 200): got {passive_width_pct}")
+    if passive_width_ticks is not None:
+        try:
+            passive_width_ticks = int(passive_width_ticks)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"passive_width_ticks must be an integer: got {passive_width_ticks!r}") from exc
+        if passive_width_ticks <= 0:
+            raise ValueError(f"passive_width_ticks must be positive: got {passive_width_ticks}")
+    if passive_width_pct is None and passive_width_ticks is None:
+        raise ValueError("Provide passive_width_pct (preferred) or passive_width_ticks for passive LP ranges.")
     initial_params = dict(locals())
 
     def _vprint(*args, **kwargs):
@@ -351,6 +384,29 @@ def simulate(
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
+
+    def _snap_up_tick(tick: int) -> int:
+        spacing = int(pool.tick_spacing)
+        tick_int = int(tick)
+        return -((-tick_int) // spacing) * spacing
+
+    def _passive_range_ticks_from_pct(S_now: float) -> Tuple[int, int]:
+        if passive_width_pct is None:
+            raise RuntimeError("Internal error: passive_width_pct is None.")
+        half = float(passive_width_pct) / 200.0
+        if half <= 0.0 or half >= 1.0:
+            raise ValueError(f"passive_width_pct must be in (0, 200): got {passive_width_pct}")
+        S_now_f = float(S_now)
+        S_low = S_now_f * math.sqrt(1.0 - half)
+        S_high = S_now_f * math.sqrt(1.0 + half)
+        tick_low_real = math.log(max(S_low, 1e-18) / pool.base_s, pool.g)
+        tick_high_real = math.log(max(S_high, 1e-18) / pool.base_s, pool.g)
+        lower = pool._snap(int(math.floor(tick_low_real)))
+        upper = _snap_up_tick(int(math.ceil(tick_high_real)))
+        if upper <= lower:
+            upper = lower + pool.tick_spacing
+        return lower, upper
+
     ref = ReferenceMarket(
         m=m0,
         mu=cex_mu,
@@ -1843,11 +1899,14 @@ def simulate(
                     continue
                 if getattr(lp, "cooldown", 0) > 0:
                     continue
-                if lp.is_passive:
+                is_passive_mint = bool(lp.is_passive)
+                if is_passive_mint:
                     if random.random() >= passive_mint_prob:
                         continue
-                    width_ticks = max(passive_width_ticks, pool.tick_spacing)
-                    n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
+                    n_bands = None
+                    if passive_width_pct is None:
+                        width_ticks = max(int(passive_width_ticks), pool.tick_spacing)
+                        n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
                 else:
                     if random.random() >= lp.mintProb:
                         continue
@@ -1864,16 +1923,20 @@ def simulate(
                 if L_new <= 0.0:
                     continue
                 S_now = agent_S_ref
-                sps = pool.tick_spacing
-                nb = n_bands
-                denom = (1.0 + (pool.g ** (nb * sps + sps)))
-                if denom <= 0.0:
-                    denom = 1.0
-                lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-                lower = pool._snap(int(round(lower_real)))
-                upper = lower + nb * sps
-                if upper <= lower:
-                    upper = lower + pool.tick_spacing
+                if is_passive_mint and passive_width_pct is not None:
+                    lower, upper = _passive_range_ticks_from_pct(S_now)
+                else:
+                    assert n_bands is not None
+                    sps = pool.tick_spacing
+                    nb = n_bands
+                    denom = (1.0 + (pool.g ** (nb * sps + sps)))
+                    if denom <= 0.0:
+                        denom = 1.0
+                    lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
+                    lower = pool._snap(int(round(lower_real)))
+                    upper = lower + nb * sps
+                    if upper <= lower:
+                        upper = lower + pool.tick_spacing
                 mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'L': L_new})
 
             if -1e-9 < pool.L_active < 0.0:
@@ -2081,11 +2144,14 @@ def simulate(
                 lp = LPs[lp_idx]
                 if not lp.can_act or getattr(lp, "cooldown", 0) > 0:
                     continue
-                if lp.is_passive:
+                is_passive_mint = bool(lp.is_passive)
+                if is_passive_mint:
                     if random.random() >= passive_mint_prob:
                         continue
-                    width_ticks = max(passive_width_ticks, pool.tick_spacing)
-                    n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
+                    n_bands = None
+                    if passive_width_pct is None:
+                        width_ticks = max(int(passive_width_ticks), pool.tick_spacing)
+                        n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
                 else:
                     if random.random() >= lp.mintProb:
                         continue
@@ -2102,16 +2168,20 @@ def simulate(
                 if L_new <= 0.0:
                     continue
                 S_now = agent_S_ref
-                sps = pool.tick_spacing
-                nb = n_bands
-                denom = (1.0 + (pool.g ** (nb * sps + sps)))
-                if denom <= 0.0:
-                    denom = 1.0
-                lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-                lower = pool._snap(int(round(lower_real)))
-                upper = lower + nb * sps
-                if upper <= lower:
-                    upper = lower + pool.tick_spacing
+                if is_passive_mint and passive_width_pct is not None:
+                    lower, upper = _passive_range_ticks_from_pct(S_now)
+                else:
+                    assert n_bands is not None
+                    sps = pool.tick_spacing
+                    nb = n_bands
+                    denom = (1.0 + (pool.g ** (nb * sps + sps)))
+                    if denom <= 0.0:
+                        denom = 1.0
+                    lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
+                    lower = pool._snap(int(round(lower_real)))
+                    upper = lower + nb * sps
+                    if upper <= lower:
+                        upper = lower + pool.tick_spacing
                 mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'L': L_new})
 
             # Execute all mempool intents (traders + LPs) in random order

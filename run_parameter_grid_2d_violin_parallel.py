@@ -112,7 +112,8 @@ SEED_BASE = 1
 # - "ratio"                  (smart_trades_per_block / noise_trades_per_block)
 # - "noise_trades_per_block"
 # - "smart_trades_per_block"
-# - "passive_width_ticks"
+# - "passive_width_pct"
+# - "passive_width_ticks"  # legacy tick widths
 #
 # Grid modes:
 # - "single": use GRID_AXIS_X / GRID_AXIS_Y
@@ -122,7 +123,7 @@ GRID_ALL_AXES: Tuple[str, ...] = (
     "sensitivity",
     "noise_trades_per_block",
     # "smart_trades_per_block",
-    "passive_width_ticks",
+    "passive_width_pct",
 )
 GRID_AXIS_X = "sensitivity"
 GRID_AXIS_Y = "ratio"
@@ -134,6 +135,7 @@ GRID_SWEEP_VALUES: Dict[str, Sequence[float]] = {
     "ratio": np.linspace(0.0, 1.0, 5),
     "noise_trades_per_block": [1.0, 3.0, 10.0, 20.0],
     "smart_trades_per_block": [0.0, 5.0, 10.0, 20.0],
+    "passive_width_pct": [1.0, 2.0, 5.0, 10.0, 20.0],
     # passive_width_ticks are ticks (ints), but we store them as floats for plotting.
     "passive_width_ticks": [50.0, 100.0, 500.0, 1_000.0],
 }
@@ -205,6 +207,7 @@ GRID_AXIS_LABELS: Dict[str, str] = {
     "ratio": "Smart/noise ratio",
     "noise_trades_per_block": "Noise trades per block",
     "smart_trades_per_block": "Smart trades per block",
+    "passive_width_pct": "Passive LP width (%)",
     "passive_width_ticks": "Passive LP width (ticks)",
 }
 
@@ -301,6 +304,12 @@ def _apply_axis_value(
 
     if axis == "passive_width_ticks":
         params["passive_width_ticks"] = int(round(float(value)))
+        params["passive_width_pct"] = None
+        return
+
+    if axis == "passive_width_pct":
+        params["passive_width_pct"] = float(value)
+        params["passive_width_ticks"] = None
         return
 
     if axis == "ratio":

@@ -49,9 +49,11 @@ BASE_CONFIG_PATH = Path("abm_results/scenarios/test.yml")
 
 DEFAULT_WIDTH_PCTS: Tuple[float, ...] = (1.0, 2.0, 5.0, 10.0, 20.0, 40.0)
 DEFAULT_NOISE_VALUES: Tuple[float, ...] = (1.0, 3.0, 5.0, 10.0, 15.0, 20.0)
+# DEFAULT_WIDTH_PCTS: Tuple[float, ...] = (1.0, 2.0, 5.0)
+# DEFAULT_NOISE_VALUES: Tuple[float, ...] = (1.0, 3.0, 5.0)
 DEFAULT_K_SIGMA_VALUES = np.linspace(1e-2, 10.0, 20)
 
-RUNS_PER_POINT_DEFAULT = 10
+RUNS_PER_POINT_DEFAULT = 20
 SEED_BASE_DEFAULT = 1
 
 
@@ -144,6 +146,7 @@ def _point_to_row(result: Dict[str, Any]) -> Dict[str, Any]:
         "runs_per_point": int(result["runs_per_point"]),
         "seed_base": int(result["seed_base"]),
         "median_final_lp_pnl_passive": float(result["median_pnl"]),
+        "median_fee": float(result["median_fee"]),
     }
 
 
@@ -165,6 +168,7 @@ def _evaluate_grid_point(
 
     skip_step = max(0, int(params.get("skip_step", 0)))
     pnl_samples: List[float] = []
+    fee_medians: List[float] = []
     for run_index in range(int(runs_per_point)):
         params["seed"] = int(point.cell.run_seed_base + run_index)
         output = simulate(**params)
@@ -172,8 +176,13 @@ def _evaluate_grid_point(
         if series.size == 0:
             raise ValueError("lp_pnl_passive is empty after applying skip_step.")
         pnl_samples.append(float(series[-1]))
+        fee_series = _slice_series(output["fee_series"], skip_step)
+        if fee_series.size == 0:
+            raise ValueError("fee_series is empty after applying skip_step.")
+        fee_medians.append(float(np.median(fee_series)))
 
     median_pnl = float(np.median(np.asarray(pnl_samples, dtype=float)))
+    median_fee = float(np.median(np.asarray(fee_medians, dtype=float)))
     return {
         "k_sigma_index": point.k_sigma_index,
         "k_sigma": point.k_sigma,
@@ -183,6 +192,7 @@ def _evaluate_grid_point(
         "runs_per_point": runs_per_point,
         "seed_base": point.cell.run_seed_base,
         "median_pnl": median_pnl,
+        "median_fee": median_fee,
     }
 
 
@@ -202,12 +212,20 @@ def _load_cache(csv_path: Path) -> pd.DataFrame:
 
 
 def _existing_keys(dataframe: pd.DataFrame) -> set[Tuple[int, float, float]]:
-    required = {"k_sigma_index", "passive_width_pct", "noise_trades_per_block"}
+    required = {
+        "k_sigma_index",
+        "passive_width_pct",
+        "noise_trades_per_block",
+        "median_final_lp_pnl_passive",
+        "median_fee",
+    }
     if dataframe.empty or not required.issubset(set(dataframe.columns)):
         return set()
     keys: set[Tuple[int, float, float]] = set()
     for _, row in dataframe.iterrows():
         try:
+            if not (np.isfinite(row["median_final_lp_pnl_passive"]) and np.isfinite(row["median_fee"])):
+                continue
             keys.add(
                 (
                     int(row["k_sigma_index"]),
@@ -226,9 +244,12 @@ def _build_frames(
     width_pcts: Sequence[float],
     noise_values: Sequence[float],
     width_ticks_by_pct: Dict[float, int],
-    z_by_k: np.ndarray,
-    z_min: float,
-    z_max: float,
+    pnl_by_k: np.ndarray,
+    pnl_min: float,
+    pnl_max: float,
+    fee_by_k: np.ndarray,
+    fee_min: float,
+    fee_max: float,
 ) -> Tuple[List[go.Frame], List[Dict[str, Any]]]:
     frames: List[go.Frame] = []
     steps: List[Dict[str, Any]] = []
@@ -236,10 +257,18 @@ def _build_frames(
     width_ticks_matrix = np.tile(np.asarray(width_ticks_ordered, dtype=float), (len(noise_values), 1))
 
     for k_idx, k_val in enumerate(k_sigma_values):
-        z = z_by_k[k_idx]
-        customdata = np.dstack(
+        z_pnl = pnl_by_k[k_idx]
+        z_fee = fee_by_k[k_idx]
+
+        customdata_pnl = np.dstack(
             [
-                np.full_like(z, float(k_val), dtype=float),
+                np.full_like(z_pnl, float(k_val), dtype=float),
+                width_ticks_matrix,
+            ]
+        )
+        customdata_fee = np.dstack(
+            [
+                np.full_like(z_fee, float(k_val), dtype=float),
                 width_ticks_matrix,
             ]
         )
@@ -247,15 +276,25 @@ def _build_frames(
             name=f"k_sigma_{k_idx}",
             data=[
                 go.Surface(
+                    scene="scene",
                     x=np.asarray(width_pcts, dtype=float),
                     y=np.asarray(noise_values, dtype=float),
-                    z=z,
-                    customdata=customdata,
-                    cmin=z_min,
-                    cmax=z_max,
-                )
+                    z=z_pnl,
+                    customdata=customdata_pnl,
+                    cmin=pnl_min,
+                    cmax=pnl_max,
+                ),
+                go.Surface(
+                    scene="scene2",
+                    x=np.asarray(width_pcts, dtype=float),
+                    y=np.asarray(noise_values, dtype=float),
+                    z=z_fee,
+                    customdata=customdata_fee,
+                    cmin=fee_min,
+                    cmax=fee_max,
+                ),
             ],
-            layout=go.Layout(title=f"Median final hedged passive LP PnL (k_sigma={k_val:.4g})"),
+            layout=go.Layout(title=f"Median passive LP PnL and fee (k_sigma={k_val:.4g})"),
         )
         frames.append(frame)
         steps.append(
@@ -282,36 +321,65 @@ def build_figure(
     width_pcts: Sequence[float],
     noise_values: Sequence[float],
     width_ticks_by_pct: Dict[float, int],
-    z_by_k: np.ndarray,
+    pnl_by_k: np.ndarray,
+    fee_by_k: np.ndarray,
 ) -> go.Figure:
-    z_min = float(np.nanmin(z_by_k))
-    z_max = float(np.nanmax(z_by_k))
+    pnl_min = float(np.nanmin(pnl_by_k))
+    pnl_max = float(np.nanmax(pnl_by_k))
+    fee_min = float(np.nanmin(fee_by_k))
+    fee_max = float(np.nanmax(fee_by_k))
 
     width_ticks_ordered = [float(width_ticks_by_pct[float(pct)]) for pct in width_pcts]
     width_ticks_matrix = np.tile(np.asarray(width_ticks_ordered, dtype=float), (len(noise_values), 1))
 
-    z0 = z_by_k[0]
+    z0 = pnl_by_k[0]
+    f0 = fee_by_k[0]
     customdata0 = np.dstack(
         [
             np.full_like(z0, float(k_sigma_values[0]), dtype=float),
             width_ticks_matrix,
         ]
     )
+    customdataf0 = np.dstack(
+        [
+            np.full_like(f0, float(k_sigma_values[0]), dtype=float),
+            width_ticks_matrix,
+        ]
+    )
 
-    surface = go.Surface(
+    surface_pnl = go.Surface(
+        scene="scene",
         x=np.asarray(width_pcts, dtype=float),
         y=np.asarray(noise_values, dtype=float),
         z=z0,
         customdata=customdata0,
         colorscale="Viridis",
-        cmin=z_min,
-        cmax=z_max,
-        colorbar={"title": "Median PnL"},
+        cmin=pnl_min,
+        cmax=pnl_max,
+        colorbar={"title": "Median PnL", "x": 0.46},
         hovertemplate=(
             "Width=%{x:.3g}% (ticks=%{customdata[1]:.0f})<br>"
             "Noise trades/block=%{y:.3g}<br>"
             "k_sigma=%{customdata[0]:.4g}<br>"
             "Median final PnL=%{z:.6g}"
+            "<extra></extra>"
+        ),
+    )
+    surface_fee = go.Surface(
+        scene="scene2",
+        x=np.asarray(width_pcts, dtype=float),
+        y=np.asarray(noise_values, dtype=float),
+        z=f0,
+        customdata=customdataf0,
+        colorscale="Plasma",
+        cmin=fee_min,
+        cmax=fee_max,
+        colorbar={"title": "Median fee", "x": 1.02},
+        hovertemplate=(
+            "Width=%{x:.3g}% (ticks=%{customdata[1]:.0f})<br>"
+            "Noise trades/block=%{y:.3g}<br>"
+            "k_sigma=%{customdata[0]:.4g}<br>"
+            "Median fee=%{z:.6g}"
             "<extra></extra>"
         ),
     )
@@ -321,20 +389,29 @@ def build_figure(
         width_pcts=width_pcts,
         noise_values=noise_values,
         width_ticks_by_pct=width_ticks_by_pct,
-        z_by_k=z_by_k,
-        z_min=z_min,
-        z_max=z_max,
+        pnl_by_k=pnl_by_k,
+        pnl_min=pnl_min,
+        pnl_max=pnl_max,
+        fee_by_k=fee_by_k,
+        fee_min=fee_min,
+        fee_max=fee_max,
     )
 
-    fig = go.Figure(data=[surface], frames=frames)
+    fig = go.Figure(data=[surface_pnl, surface_fee], frames=frames)
     fig.update_layout(
         template="plotly_white",
-        title=f"Median final hedged passive LP PnL (k_sigma={k_sigma_values[0]:.4g})",
+        title=f"Median passive LP PnL and fee (k_sigma={k_sigma_values[0]:.4g})",
         scene=dict(
             xaxis_title="Passive LP width (%)",
             yaxis_title="Noise trades per block",
             zaxis_title="Median final hedged passive LP PnL",
-            zaxis=dict(range=[z_min, z_max]),
+            zaxis=dict(range=[pnl_min, pnl_max]),
+        ),
+        scene2=dict(
+            xaxis_title="Passive LP width (%)",
+            yaxis_title="Noise trades per block",
+            zaxis_title="Median fee",
+            zaxis=dict(range=[fee_min, fee_max]),
         ),
         sliders=[
             {
@@ -385,7 +462,9 @@ def build_figure(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="3D passive LP PnL surface with k_sigma slider (fee_mode=volatility).")
+    parser = argparse.ArgumentParser(
+        description="3D passive LP PnL and fee surfaces with k_sigma slider (fee_mode=volatility)."
+    )
     parser.add_argument("--config", type=Path, default=BASE_CONFIG_PATH, help="Base YAML scenario config path.")
     parser.add_argument(
         "--runs-per-point",
@@ -464,15 +543,15 @@ def main() -> None:
 
     stem = args.config.stem
     grid_tag = f"w{len(width_pcts)}_n{len(noise_values)}_k{len(k_sigma_values)}_r{runs_per_point}"
-    csv_global = data_dir_global / f"surface_passive_lp_pnl_median_{stem}_{grid_tag}.csv"
-    csv_scenario = data_dir_scenario / f"surface_passive_lp_pnl_median_{grid_tag}.csv"
+    csv_global = data_dir_global / f"surface_passive_lp_pnl_and_fee_medians_{stem}_{grid_tag}.csv"
+    csv_scenario = data_dir_scenario / f"surface_passive_lp_pnl_and_fee_medians_{grid_tag}.csv"
 
     png_dir_global = global_root / "surface_3d" / "png"
     html_dir_global = global_root / "surface_3d" / "html"
     png_dir_scenario = scenario_grid_dir / "surface_3d" / "png"
     html_dir_scenario = scenario_grid_dir / "surface_3d" / "html"
 
-    fig_base = f"surface_passive_lp_pnl_median_{stem}_{grid_tag}_k_sigma_slider"
+    fig_base = f"surface_passive_lp_pnl_and_fee_medians_{stem}_{grid_tag}_k_sigma_slider"
     png_path_global = png_dir_global / f"{fig_base}.png"
     html_path_global = html_dir_global / f"{fig_base}.html"
     png_path_scenario = png_dir_scenario / f"{fig_base}.png"
@@ -517,6 +596,14 @@ def main() -> None:
 
     # --- run simulations -----------------------------------------------------
     pending_rows: List[Dict[str, Any]] = []
+    progress_overall: Optional[tqdm] = None
+    if points:
+        progress_overall = tqdm(total=len(points), desc="Grid points (overall)", unit="pt")
+        # Count cached points as already completed
+        cached_count = len(points) - len(points_to_run)
+        if cached_count > 0:
+            progress_overall.update(cached_count)
+
     if points_to_run:
         with ProcessPoolExecutor(max_workers=int(args.max_workers)) as executor:
             futures = {
@@ -528,9 +615,11 @@ def main() -> None:
                 ): point
                 for point in points_to_run
             }
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Grid points"):
+            for future in as_completed(futures):
                 result = future.result()
                 pending_rows.append(_point_to_row(result))
+                if progress_overall is not None:
+                    progress_overall.update(1)
                 if len(pending_rows) >= 25:
                     _append_rows_csv(csv_scenario, pending_rows)
                     _append_rows_csv(csv_global, pending_rows)
@@ -540,6 +629,8 @@ def main() -> None:
             _append_rows_csv(csv_scenario, pending_rows)
             _append_rows_csv(csv_global, pending_rows)
             pending_rows.clear()
+    if progress_overall is not None:
+        progress_overall.close()
 
     # --- build figure from cache --------------------------------------------
     dataframe = _load_cache(csv_scenario)
@@ -553,16 +644,25 @@ def main() -> None:
     ].copy()
 
     z_by_k: List[np.ndarray] = []
+    fee_by_k: List[np.ndarray] = []
     for k_idx in range(len(k_sigma_values)):
         sub = dataframe[dataframe["k_sigma_index"] == k_idx]
-        pivot = sub.pivot(
+        pivot_pnl = sub.pivot_table(
             index="noise_trades_per_block",
             columns="passive_width_pct",
             values="median_final_lp_pnl_passive",
+            aggfunc="median",
         )
-        pivot = pivot.reindex(index=noise_values, columns=width_pcts)
-        if pivot.isna().any().any():
-            missing = pivot.isna()
+        pivot_fee = sub.pivot_table(
+            index="noise_trades_per_block",
+            columns="passive_width_pct",
+            values="median_fee",
+            aggfunc="median",
+        )
+        pivot_pnl = pivot_pnl.reindex(index=noise_values, columns=width_pcts)
+        pivot_fee = pivot_fee.reindex(index=noise_values, columns=width_pcts)
+        if pivot_pnl.isna().any().any() or pivot_fee.isna().any().any():
+            missing = pivot_pnl.isna() | pivot_fee.isna()
             missing_pairs = [
                 (float(noise_values[i]), float(width_pcts[j]))
                 for i, j in zip(*np.where(missing.to_numpy()))
@@ -572,15 +672,18 @@ def main() -> None:
                 f"Rerun without cache or with --recompute. Missing (noise,width%): {missing_pairs[:10]}"
                 + (" ..." if len(missing_pairs) > 10 else "")
             )
-        z_by_k.append(pivot.to_numpy(dtype=float))
+        z_by_k.append(pivot_pnl.to_numpy(dtype=float))
+        fee_by_k.append(pivot_fee.to_numpy(dtype=float))
 
     z_stack = np.stack(z_by_k, axis=0)
+    fee_stack = np.stack(fee_by_k, axis=0)
     figure = build_figure(
         k_sigma_values=k_sigma_values.tolist(),
         width_pcts=width_pcts,
         noise_values=noise_values,
         width_ticks_by_pct=width_ticks_by_pct,
-        z_by_k=z_stack,
+        pnl_by_k=z_stack,
+        fee_by_k=fee_stack,
     )
 
     save_plotly_figure(figure, png_path=png_path_global, html_path=html_path_global, source="surface_3d")
@@ -592,4 +695,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
