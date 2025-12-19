@@ -248,6 +248,38 @@ def test_poisson_noise_arrivals_can_exceed_block_time(tmp_path, monkeypatch):
     assert int(out["noise_trader_exec_count"][0]) > 5
 
 
+def test_poisson_narrow_lp_mints_can_exceed_lp_count(tmp_path, monkeypatch):
+    """
+    In block mode, narrow_mints_per_block is a Poisson target count per block, so realized
+    mint intents can exceed the number of narrow LPs (multiple mints per LP in the same block).
+    """
+    import numpy as np
+
+    def fixed_poisson(_lam):
+        return 7
+
+    monkeypatch.setattr(np.random, "poisson", fixed_poisson)
+
+    out = simulate(**_base_simulate_kwargs(
+        tmp_path,
+        T=1,
+        seed=123,
+        block_time=5,
+        N_LP=1,
+        passive_lp_share=0.0,  # one narrow LP
+        tau=1,                # always due
+        narrow_mints_per_block=100.0,
+        passive_mints_per_block=0.0,
+        passive_burns_per_block=0.0,
+        smart_trades_per_block=0.0,
+        noise_trades_per_block=0.0,
+        mint_mu=-20.0,
+        mint_sigma=0.0,
+    ))
+
+    assert len(out["mint_steps"]) == 7
+
+
 def test_simulate_heston_mode_requires_parameters(tmp_path):
     """
     Heston volatility mode must fail fast when required cex_heston_* parameters are missing.

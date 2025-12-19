@@ -8,7 +8,7 @@ simulate:
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 16000
+  T: 2000
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 1000
   # Random seed used for reproducibility across RNGs
@@ -44,7 +44,7 @@ simulate:
   # Expected number of smart-router trade intents per block
   smart_trades_per_block: 0
   # Expected number of noise trader intents per block
-  noise_trades_per_block: 20
+  noise_trades_per_block: 5
   # Mean of log-normal order size distribution for traders
   trader_mean: 2.5
   # Standard deviation of log-normal order size distribution for traders
@@ -67,9 +67,9 @@ simulate:
   # Expected number of narrow LP mints per block (total across narrow LPs)
   narrow_mints_per_block: 10
   # Expected number of passive LP mints per block (total across passive LPs)
-  passive_mints_per_block: 10
+  passive_mints_per_block: 5
   # Expected number of passive LP burns per block (total across passive LPs)
-  passive_burns_per_block: 5
+  passive_burns_per_block: 2
   # Passive LP width as a total percentage (± width/2 around the reference price)
   passive_width_pct: 10.0
   # Legacy tick-based width fallback (set a value here only when omitting passive_width_pct)

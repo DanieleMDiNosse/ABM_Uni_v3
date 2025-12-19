@@ -1,27 +1,32 @@
 """
-Visualize the stochastic components and distributions used in the ABM simulation:
+Visualize the stochastic components and distributions used in the ABM simulation.
 
+Outputs Plotly figures (HTML, and PNG if kaleido is installed) for:
 - Initial binomial-hill liquidity distribution.
 - Binomial noise term in the LP width rule.
 - Log-normal trader notional distribution.
 - Log-normal LP mint-size scale distribution.
 - Geometric distribution for LP review clocks.
+- Poisson arrival distributions:
+  - traders: intents per micro-step and per block
+  - LPs: target mint/burn counts per block
 - Heston-style reference market path (price, volatility, and return/volatility histograms).
 """
 
 import math
 import random
+from pathlib import Path
 from typing import List, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from utils import ReferenceMarket, build_empty_pool
 
 
 # =============================================================================
-# Global hyperparameters (aligned with tests/test.yml by default)
+# Global hyperparameters (aligned with abm_results/scenarios/test.yml by default)
 # =============================================================================
 
 SEED = 7
@@ -29,8 +34,8 @@ SEED = 7
 # Heston reference market
 N_STEPS = 10_000
 INITIAL_PRICE = 2_000.0
-DRIFT = 0.0          # per-step drift of log price
-IMPACT_KAPPA = 0.0   # permanent impact scale (unused here, keep for parity)
+DRIFT = 0.0  # per-step drift of log price
+IMPACT_KAPPA = 0.0  # permanent impact scale (unused here)
 HESTON_KAPPA = 0.1
 HESTON_THETA = 1.0e-8
 HESTON_SIGMA_V = 0.001
@@ -57,6 +62,17 @@ MINT_SIGMA = 1.5
 # LP review clock (geometric) parameter: mean inter-review time ≈ tau
 TAU = 10.0
 
+# Arrival distributions (Poisson)
+# In block mode (block_time = B > 1):
+#   - traders: per micro-step N_k ~ Poisson(trades_per_block / B)
+#   - LP targets: per block N ~ Poisson(target_per_block)
+BLOCK_TIME = 5
+SMART_TRADES_PER_BLOCK = 2.0
+NOISE_TRADES_PER_BLOCK = 20.0
+NARROW_MINTS_PER_BLOCK = 10.0
+PASSIVE_MINTS_PER_BLOCK = 5.0
+PASSIVE_BURNS_PER_BLOCK = 2.0
+
 # Generic sample size for Monte Carlo histograms
 N_SAMPLES = 500_000
 
@@ -67,6 +83,7 @@ RESULTS_DIR = Path(__file__).resolve().parent / "abm_results"
 # =============================================================================
 # Heston reference market simulation
 # =============================================================================
+
 
 def simulate_heston_path() -> Tuple[List[float], List[float]]:
     """
@@ -89,105 +106,75 @@ def simulate_heston_path() -> Tuple[List[float], List[float]]:
     )
 
     prices: List[float] = [ref.m]
-    vols: List[float] = [ref.sigma]  # sigma is sqrt of the variance v_t
+    vols: List[float] = [ref.sigma]  # sigma is sqrt of variance v_t
 
     for _ in range(N_STEPS):
-        ref.diffuse_only()  # uses ReferenceMarket._diffuse_heston under the hood
+        ref.diffuse_only()
         prices.append(ref.m)
         vols.append(ref.sigma)
 
     return prices, vols
 
 
-def plot_heston_paths(prices: List[float], vols: List[float]) -> plt.Figure:
-    """
-    Plot Heston price/volatility paths and their empirical distributions.
-    """
-    steps = np.arange(len(prices))
-    returns = np.diff(np.log(prices))  # empirical log-returns
-
-    fig, axes = plt.subplots(2, 2, figsize=(12, 6))
-    ax_price, ax_ret = axes[0]
-    ax_vol, ax_vol_hist = axes[1]
-
-    # Price path
-    ax_price.plot(steps, prices, color="C0")
-    ax_price.set_ylabel("Price (m_t)")
-    ax_price.set_title("Heston price path")
-
-    # Volatility path
-    ax_vol.plot(steps, vols, color="C1")
-    ax_vol.set_ylabel("Volatility σ_t (sqrt variance)")
-    ax_vol.set_xlabel("Step")
-    ax_vol.set_title("Volatility path")
-
-    # Log-return histogram
-    ax_ret.hist(returns, bins=50, density=True, color="C2", alpha=0.8)
-    mean_ret = float(np.mean(returns))
-    ax_ret.axvline(
-        mean_ret,
-        color="k",
-        linestyle="--",
-        linewidth=1,
-        label=f"Mean return: {mean_ret:.2e}",
-    )
-    ax_ret.set_title("Empirical log-returns")
-    ax_ret.set_xlabel("Return")
-    ax_ret.set_ylabel("Density")
-    ax_ret.set_yscale("log")
-    ax_ret.legend()
-
-    # Volatility histogram
-    ax_vol_hist.hist(vols, bins=50, density=True, color="C3", alpha=0.8)
-    mean_vol = float(np.mean(vols))
-    ax_vol_hist.axvline(
-        mean_vol,
-        color="k",
-        linestyle="--",
-        linewidth=1,
-        label=fr"Mean $σ_t$: {mean_vol:.5f}",
-    )
-    ax_vol_hist.set_title("Empirical volatility (σ_t)")
-    ax_vol_hist.set_xlabel("Volatility")
-    ax_vol_hist.set_ylabel("Density")
-    ax_vol_hist.set_yscale("log")
-    ax_vol_hist.legend()
-
-    fig.tight_layout()
-    return fig
-
-
 # =============================================================================
 # Distribution helpers
 # =============================================================================
 
-def plot_hist_with_mean(
+
+def _add_hist_with_mean(
+    fig: go.Figure,
+    *,
+    row: int,
+    col: int,
     data: np.ndarray,
-    ax: plt.Axes,
-    title: str,
-    xlabel: str,
+    x_label: str,
+    y_label: str,
+    color: str,
     log_y: bool = False,
-    color: str = "C0",
+    nbins: int = 50,
+    histnorm: str = "probability density",
 ) -> None:
-    """
-    Plot a 1D histogram with a vertical line at the sample mean.
-    """
-    data = np.asarray(data)
-    ax.hist(data, bins=50, density=True, color=color, alpha=0.8)
-    mean_val = float(np.mean(data))
-    ax.axvline(
-        mean_val,
-        color="k",
-        linestyle="--",
-        linewidth=1,
-        label=f"Mean: {mean_val:.3g}",
+    data = np.asarray(data, dtype=float)
+    mean_val = float(np.mean(data)) if data.size else 0.0
+
+    fig.add_trace(
+        go.Histogram(
+            x=data,
+            nbinsx=nbins,
+            histnorm=histnorm,
+            marker_color=color,
+            opacity=0.85,
+            showlegend=False,
+        ),
+        row=row,
+        col=col,
     )
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("Density")
-    if log_y:
-        ax.set_yscale("log")
-    ax.legend()
+    fig.add_vline(
+        x=mean_val,
+        line_width=1,
+        line_dash="dash",
+        line_color="black",
+        row=row,
+        col=col,
+    )
+    # fig.add_annotation(
+    #     x=mean_val,
+    #     y=0.98,
+    #     xref="x",
+    #     yref="y domain",
+    #     # text=f"Mean: {mean_val:.3g}",
+    #     showarrow=False,
+    #     xanchor="left",
+    #     yanchor="top",
+    #     bgcolor="rgba(255,255,255,0.90)",
+    #     bordercolor="black",
+    #     borderwidth=1,
+    #     font=dict(color="black", size=12),
+    #     row=row,
+    #     col=col,
+    # )
+    fig.update_xaxes(title_text=x_label, row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    fig.update_yaxes(title_text=y_label, type="log" if log_y else "linear", row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
 
 
 def sample_initial_liquidity(
@@ -196,14 +183,10 @@ def sample_initial_liquidity(
     min_L_per_tick: float = MIN_L_PER_TICK,
 ) -> np.ndarray:
     """
-    Sample the per-tick liquidity levels implied by the binomial-hill bootstrap
-    used for initial seed LPs.
-
-    We reproduce the same binomial weights as in `bootstrap_initial_binomial_hill_sharded`,
-    but only care about the L_i values (not the tick locations or LP assignment).
+    Binomial-hill per-tick liquidity levels used for initial seed LP bootstrap.
     """
     L_vals: List[float] = []
-    denom = float(2 ** N)
+    denom = float(2**N)
     for k in range(N + 1):
         w = math.comb(N, k) / denom
         L_i = w * L_total
@@ -218,12 +201,7 @@ def sample_width_noise(
     n_samples: int = N_SAMPLES,
 ) -> np.ndarray:
     """
-    Sample the binomial noise term used in the LP width rule, measured in ticks.
-
-    In the simulator the noise term is:
-        noise_ticks = (K - n p) * tick_spacing
-    where K ~ Bin(n, p). Here we normalize by tick_spacing so the values are in
-    "tick-spacing units"; the mean is still 0.
+    Sample the binomial noise term used in the LP width rule (tick-spacing units).
     """
     if n <= 0 or not (0.0 < p < 1.0):
         return np.zeros(n_samples, dtype=float)
@@ -267,98 +245,234 @@ def sample_review_intervals(
     return np.random.geometric(p, size=n_samples).astype(float)
 
 
-def plot_distribution_suite() -> plt.Figure:
+def sample_poisson_per_micro_step(per_block_rate: float, block_time: int, n_samples: int = N_SAMPLES) -> np.ndarray:
     """
-    Plot all static distributions used in the simulation in a single figure.
+    Sample Poisson arrivals per micro-step with intensity per_block_rate / block_time.
     """
-    # Ensure deterministic samples separate from Heston path
+    B = max(1, int(block_time))
+    lam = max(0.0, float(per_block_rate)) / B
+    return np.random.poisson(lam, size=n_samples).astype(float)
+
+
+def sample_poisson_per_block(per_block_rate: float, n_samples: int = N_SAMPLES) -> np.ndarray:
+    """
+    Sample Poisson arrivals per block with intensity per_block_rate.
+    """
+    lam = max(0.0, float(per_block_rate))
+    return np.random.poisson(lam, size=n_samples).astype(float)
+
+
+# =============================================================================
+# Plotly figures
+# =============================================================================
+
+
+def plot_heston_paths(prices: List[float], vols: List[float]) -> go.Figure:
+    steps = np.arange(len(prices))
+    prices_arr = np.asarray(prices, dtype=float)
+    vols_arr = np.asarray(vols, dtype=float)
+    returns = np.diff(np.log(prices_arr))
+
+    fig = make_subplots(
+        rows=2,
+        cols=2,
+        subplot_titles=(
+            "Heston price path",
+            "Empirical log-returns",
+            "Volatility path",
+            "Empirical volatility (σ_t)",
+        ),
+    )
+
+    fig.add_trace(
+        go.Scatter(x=steps, y=prices_arr, mode="lines", line=dict(color="#1f77b4"), showlegend=False),
+        row=1,
+        col=1,
+    )
+    fig.update_yaxes(title_text="Price (m_t)", row=1, col=1, showgrid=True, gridcolor="lightgray", gridwidth=1)
+
+    _add_hist_with_mean(
+        fig,
+        row=1,
+        col=2,
+        data=returns,
+        x_label="Return",
+        y_label="Density",
+        color="#2ca02c",
+        log_y=True,
+        histnorm="probability density",
+    )
+
+    fig.add_trace(
+        go.Scatter(x=steps, y=vols_arr, mode="lines", line=dict(color="#ff7f0e"), showlegend=False),
+        row=2,
+        col=1,
+    )
+    fig.update_xaxes(title_text="Step", row=2, col=1, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    fig.update_yaxes(title_text="Volatility σ_t", row=2, col=1, showgrid=True, gridcolor="lightgray", gridwidth=1)
+
+    _add_hist_with_mean(
+        fig,
+        row=2,
+        col=2,
+        data=vols_arr,
+        x_label="Volatility",
+        y_label="Density",
+        color="#d62728",
+        log_y=True,
+        histnorm="probability density",
+    )
+
+    fig.update_layout(template="plotly_white", height=650, width=1100, margin=dict(l=40, r=20, t=60, b=40))
+    return fig
+
+
+def plot_distribution_suite() -> go.Figure:
     np.random.seed(SEED + 1)
 
-    # Grab a representative tick spacing (for documentation only)
     pool, _ = build_empty_pool()
     tick_spacing = pool.tick_spacing
 
-    # Sample distributions
     L_vals = sample_initial_liquidity()
     width_noise = sample_width_noise()
     trader_notionals = sample_trader_notional()
     lp_scale = sample_lp_mint_scale()
     review_intervals = sample_review_intervals()
 
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
-    ax_init, ax_width, ax_trader, ax_lp, ax_review, ax_empty = axes.flatten()
-
-    # Initial liquidity (binomial hill)
-    plot_hist_with_mean(
-        L_vals,
-        ax_init,
-        "Initial liquidity per tick (binomial hill)",
-        "Liquidity L_i",
-        log_y=True,
-        color="C0",
+    fig = make_subplots(
+        rows=2,
+        cols=3,
+        subplot_titles=(
+            "Initial liquidity per tick (binomial hill)",
+            f"LP width noise (Binomial, tick_spacing={tick_spacing})",
+            "Trader notional distribution (log-normal)",
+            "LP mint scale X (log-normal)",
+            f"LP review intervals (Geometric, mean≈{TAU:g})",
+            "",
+        ),
     )
 
-    # Width noise (binomial)
-    plot_hist_with_mean(
-        width_noise,
-        ax_width,
-        f"Width noise in ticks (Bin(n={BINOM_N}, p={BINOM_P}))",
-        "Noise (tick-spacing units)",
+    _add_hist_with_mean(
+        fig,
+        row=1,
+        col=1,
+        data=L_vals,
+        x_label="Liquidity L_i",
+        y_label="Density",
+        color="#1f77b4",
+        log_y=True,
+        histnorm="probability density",
+    )
+    _add_hist_with_mean(
+        fig,
+        row=1,
+        col=2,
+        data=width_noise,
+        x_label="Noise (tick-spacing units)",
+        y_label="Probability",
+        color="#ff7f0e",
         log_y=False,
-        color="C1",
+        histnorm="probability",
     )
-    ax_width.set_title(
-        f"LP width noise (Binomial, tick_spacing={tick_spacing})",
-    )
-
-    # Trader notional (log-normal)
-    plot_hist_with_mean(
-        trader_notionals,
-        ax_trader,
-        "Trader notional distribution (log-normal)",
-        "Notional (token1 units)",
+    _add_hist_with_mean(
+        fig,
+        row=1,
+        col=3,
+        data=trader_notionals,
+        x_label="Notional (token1 units)",
+        y_label="Density",
+        color="#2ca02c",
         log_y=True,
-        color="C2",
+        histnorm="probability density",
     )
-
-    # LP mint scale (log-normal)
-    plot_hist_with_mean(
-        lp_scale,
-        ax_lp,
-        "LP mint scale X (log-normal)",
-        "Scale factor X",
+    _add_hist_with_mean(
+        fig,
+        row=2,
+        col=1,
+        data=lp_scale,
+        x_label="Scale factor X",
+        y_label="Density",
+        color="#d62728",
         log_y=True,
-        color="C3",
+        histnorm="probability density",
     )
-
-    # LP review clock intervals (geometric)
-    plot_hist_with_mean(
-        review_intervals,
-        ax_review,
-        f"LP review intervals (Geometric, mean≈{TAU:g})",
-        "Steps between reviews",
+    _add_hist_with_mean(
+        fig,
+        row=2,
+        col=2,
+        data=review_intervals,
+        x_label="Steps between reviews",
+        y_label="Probability",
+        color="#9467bd",
         log_y=True,
-        color="C4",
+        histnorm="probability",
     )
 
-    # Hide unused axis
-    ax_empty.axis("off")
-
-    fig.tight_layout()
+    fig.update_xaxes(visible=False, row=2, col=3, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    fig.update_yaxes(visible=False, row=2, col=3, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    fig.update_layout(template="plotly_white", height=750, width=1400, margin=dict(l=40, r=20, t=60, b=40))
     return fig
+
+
+def plot_arrival_distributions() -> go.Figure:
+    np.random.seed(SEED + 2)
+
+    smart_micro = sample_poisson_per_micro_step(SMART_TRADES_PER_BLOCK, BLOCK_TIME)
+    noise_micro = sample_poisson_per_micro_step(NOISE_TRADES_PER_BLOCK, BLOCK_TIME)
+    smart_block = sample_poisson_per_block(SMART_TRADES_PER_BLOCK)
+    noise_block = sample_poisson_per_block(NOISE_TRADES_PER_BLOCK)
+    narrow_mints = sample_poisson_per_block(NARROW_MINTS_PER_BLOCK)
+    passive_mints = sample_poisson_per_block(PASSIVE_MINTS_PER_BLOCK)
+    passive_burns = sample_poisson_per_block(PASSIVE_BURNS_PER_BLOCK)
+
+    fig = make_subplots(
+        rows=2,
+        cols=4,
+        subplot_titles=(
+            f"Smart intents / micro-step (λ={SMART_TRADES_PER_BLOCK}/{BLOCK_TIME})",
+            f"Noise intents / micro-step (λ={NOISE_TRADES_PER_BLOCK}/{BLOCK_TIME})",
+            f"Smart intents / block (λ={SMART_TRADES_PER_BLOCK})",
+            f"Noise intents / block (λ={NOISE_TRADES_PER_BLOCK})",
+            f"Narrow mint targets / block (λ={NARROW_MINTS_PER_BLOCK})",
+            f"Passive mint targets / block (λ={PASSIVE_MINTS_PER_BLOCK})",
+            f"Passive burn targets / block (λ={PASSIVE_BURNS_PER_BLOCK})",
+            "",
+        ),
+    )
+
+    _add_hist_with_mean(fig, row=1, col=1, data=smart_micro, x_label="Count", y_label="Probability", color="#1f77b4", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=1, col=2, data=noise_micro, x_label="Count", y_label="Probability", color="#ff7f0e", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=1, col=3, data=smart_block, x_label="Count", y_label="Probability", color="#2ca02c", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=1, col=4, data=noise_block, x_label="Count", y_label="Probability", color="#d62728", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=2, col=1, data=narrow_mints, x_label="Count", y_label="Probability", color="#9467bd", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=2, col=2, data=passive_mints, x_label="Count", y_label="Probability", color="#8c564b", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=2, col=3, data=passive_burns, x_label="Count", y_label="Probability", color="#e377c2", log_y=True, histnorm="probability")
+
+    fig.update_xaxes(visible=False, row=2, col=4, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    fig.update_yaxes(visible=False, row=2, col=4, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    fig.update_layout(template="plotly_white", height=750, width=1600, margin=dict(l=40, r=20, t=60, b=40))
+    return fig
+
+
+def _write_plotly(fig: go.Figure, stem: str) -> None:
+    html_path = RESULTS_DIR / f"{stem}.html"
+    fig.write_html(html_path, include_plotlyjs="cdn")
+    try:
+        fig.write_image(RESULTS_DIR / f"{stem}.png", scale=2)
+    except Exception:
+        pass
 
 
 def main() -> None:
     prices, vols = simulate_heston_path()
     fig_heston = plot_heston_paths(prices, vols)
     fig_distributions = plot_distribution_suite()
+    fig_arrivals = plot_arrival_distributions()
 
-    # Persist figures for reuse in documentation or reports
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    fig_heston.savefig(RESULTS_DIR / "heston_paths.png", dpi=200)
-    fig_distributions.savefig(RESULTS_DIR / "distribution_suite.png", dpi=200)
-
-    plt.show()
+    _write_plotly(fig_heston, "heston_paths")
+    _write_plotly(fig_distributions, "distribution_suite")
+    _write_plotly(fig_arrivals, "arrival_distributions")
 
 
 if __name__ == "__main__":

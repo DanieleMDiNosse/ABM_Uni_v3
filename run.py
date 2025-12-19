@@ -115,7 +115,6 @@ class TraderStepAccumulator:
         """
         self.pnl = (self.dy_out - self.dy_in) + (self.dx_out - self.dx_in) * m_settle
 
-
 class _NullList(list):
     """
     Lightweight sink used in light_mode to avoid collecting data we won't use.
@@ -229,6 +228,7 @@ def simulate(
     verbose: bool = True,
     light_mode: bool = False,
 ) -> Dict[str, Any]:
+
     valid_fee_modes = {"static", "volatility", "volatility_oracle", "toxicity"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
@@ -236,27 +236,29 @@ def simulate(
         raise ValueError("k_out_min and k_out_max must be positive integers.")
     if k_out_min > k_out_max:
         raise ValueError("k_out_min cannot exceed k_out_max.")
+
     p_jit = clamp(p_jit, 0.0, 1.0)
     N_jit = max(0, int(N_jit))
     liquidity_perc_jit = clamp(liquidity_perc_jit, 0.0, 0.999999)
-
     slippage_tolerance = clamp(slippage_tolerance, 0.0, 1.0)
+
     if passive_width_pct is not None:
         try:
             passive_width_pct = float(passive_width_pct)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"passive_width_pct must be a number: got {passive_width_pct!r}") from exc
-        if not (0.0 < passive_width_pct < 200.0):
-            raise ValueError(f"passive_width_pct must be in (0, 200): got {passive_width_pct}")
-    if passive_width_ticks is not None:
-        try:
-            passive_width_ticks = int(passive_width_ticks)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"passive_width_ticks must be an integer: got {passive_width_ticks!r}") from exc
-        if passive_width_ticks <= 0:
-            raise ValueError(f"passive_width_ticks must be positive: got {passive_width_ticks}")
-    if passive_width_pct is None and passive_width_ticks is None:
-        raise ValueError("Provide passive_width_pct (preferred) or passive_width_ticks for passive LP ranges.")
+        if passive_width_pct > 100.0:
+            print(f"passive_width_pct was set to {passive_width_pct}. Clamping it to 100%")
+            passive_width_pct = 100.0
+    # if passive_width_ticks is not None:
+    #     try:
+    #         passive_width_ticks = int(passive_width_ticks)
+    #     except (TypeError, ValueError) as exc:
+    #         raise ValueError(f"passive_width_ticks must be an integer: got {passive_width_ticks!r}") from exc
+    #     if passive_width_ticks <= 0:
+    #         raise ValueError(f"passive_width_ticks must be positive: got {passive_width_ticks}")
+    # if passive_width_pct is None and passive_width_ticks is None:
+    #     raise ValueError("Provide passive_width_pct (preferred) or passive_width_ticks for passive LP ranges.")
     initial_params = dict(locals())
 
     def _vprint(*args, **kwargs):
@@ -272,9 +274,12 @@ def simulate(
         results_root_path = Path("abm_results")
     else:
         results_root_path = Path(results_root)
-    np.random.seed(seed)
-    random.seed(seed)
+
+    np.random.seed(seed) # for numpy
+    random.seed(seed) # for built-in python random functions
+
     passive_share = max(0.0, min(1.0, passive_lp_share))
+    
     # Trade arrivals are modeled as a Poisson process:
     #   - non-block mode: N ~ Poisson(trades_per_block) per step
     #   - block mode: per micro-step N_k ~ Poisson(trades_per_block / B)
@@ -284,13 +289,15 @@ def simulate(
     noise_trades_per_block = max(0.0, float(noise_trades_per_block))
     smart_lambda_micro = smart_trades_per_block / B
     noise_lambda_micro = noise_trades_per_block / B
+
     jiter_enabled = block_time > 1 and p_jit > 0.0 and N_jit > 0 and liquidity_perc_jit > 0.0
     jiter_agent: Optional[LPAgent] = None
-    narrow_agents = max(1e-12, (1.0 - passive_share) * max(1, N_LP))
-    passive_agents = max(1e-12, passive_share * max(1, N_LP))
-    p_lp_narrow = clamp(narrow_mints_per_block / (B * narrow_agents), 0.0, 1.0)
-    passive_mint_prob = clamp(passive_mints_per_block / (B * passive_agents), 0.0, 1.0)
-    passive_burn_prob = clamp(passive_burns_per_block / (B * passive_agents), 0.0, 1.0)
+
+    # narrow_agents = max(1e-12, (1.0 - passive_share) * max(1, N_LP))
+    # passive_agents = max(1e-12, passive_share * max(1, N_LP))
+    narrow_mints_per_block = max(0.0, float(narrow_mints_per_block))
+    passive_mints_per_block = max(0.0, float(passive_mints_per_block))
+    passive_burns_per_block = max(0.0, float(passive_burns_per_block))
 
     # --- Log Annualized Volatility for Clarity ---
     # cex_sigma is per-micro-step (1 second).
@@ -458,7 +465,9 @@ def simulate(
     for i in range(N_LP):
         is_narrow = i in active_indices
         is_passive = not is_narrow
-        mintProb = passive_mint_prob if is_passive else p_lp_narrow
+        # LP mint/burn arrival is scheduled explicitly in the block-mode mempool path
+        # using Poisson counts, so per-LP mintProb is not used for targeting.
+        mintProb = 0.0
         LPs.append(
             LPAgent(
                 id=i,
@@ -1078,7 +1087,8 @@ def simulate(
             tick=pool.tick,
             S=pool.S,
             f=pool.f,
-            liquidity_net=dict(pool.liquidity_net),
+            # liquidity_net=dict(pool.liquidity_net),
+            liquidity_net=pool.liquidity_net,
             tick_spacing=pool.tick_spacing,
         )
 
@@ -2287,7 +2297,36 @@ def simulate(
             # --- Include LP intents in the mempool (shuffled with traders) ---
             # Allow due LPs to act this block
             _enable(due)
-            # Burns (TP/SL)
+            # Track planned deployments within this block so multiple mint intents for the
+            # same LP cannot exceed its per-block cap or budget (since L_live updates on execution).
+            planned_L_live: Dict[int, float] = {}
+            planned_L_step_used: Dict[int, float] = defaultdict(float)
+            for lp_idx in due:
+                lp = LPs[lp_idx]
+                if getattr(lp, "is_jiter", False):
+                    continue
+                if not lp.can_act:
+                    continue
+                planned_L_live[lp.id] = float(getattr(lp, "L_live", 0.0))
+
+            # Burns (TP/SL + passive Poisson targets)
+            if passive_burns_per_block > 0.0:
+                burnable_positions: List[Tuple[int, int, int, float]] = []
+                for lp_idx in due:
+                    lp = LPs[lp_idx]
+                    if getattr(lp, "is_jiter", False):
+                        continue
+                    if not lp.can_act or not bool(getattr(lp, "is_passive", False)):
+                        continue
+                    for pos in getattr(lp, "positions", []):
+                        burnable_positions.append((lp.id, pos.lower, pos.upper, float(pos.L)))
+                if burnable_positions:
+                    n_burn_intents = int(np.random.poisson(passive_burns_per_block))
+                    n_burn_intents = min(n_burn_intents, len(burnable_positions))
+                    if n_burn_intents > 0:
+                        for lp_id, lower, upper, L_val in random.sample(burnable_positions, k=n_burn_intents):
+                            mempool_orders.append({'type':'lp_burn','lp_id': lp_id,'lower': lower,'upper': upper,'L': L_val})
+
             for lp_idx in due:
                 lp = LPs[lp_idx]
                 if getattr(lp, "is_jiter", False):
@@ -2295,9 +2334,6 @@ def simulate(
                 if not lp.can_act:
                     continue
                 if lp.is_passive:
-                    if lp.positions and random.random() < passive_burn_prob:
-                        pos = random.choice(lp.positions)
-                        mempool_orders.append({'type':'lp_burn','lp_id': lp.id,'lower': pos.lower,'upper': pos.upper,'L': pos.L})
                     continue
                 to_burn = []
                 for i, pos in enumerate(lp.positions):
@@ -2341,37 +2377,35 @@ def simulate(
                                            'old_lower': pos.lower,'old_upper': pos.upper,'old_L': pos.L,
                                            'new_lower': lower,'new_upper': upper,'new_L': pos.L})
 
-            # New mints (probabilistic; respect budget/cooldown)
-            for lp_idx in due:
-                lp = LPs[lp_idx]
-                if getattr(lp, "is_jiter", False):
-                    continue
-                if not lp.can_act or getattr(lp, "cooldown", 0) > 0:
-                    continue
-                is_passive_mint = bool(lp.is_passive)
-                if is_passive_mint:
-                    if random.random() >= passive_mint_prob:
-                        continue
-                    n_bands = None
-                    if passive_width_pct is None:
-                        width_ticks = max(int(passive_width_ticks), pool.tick_spacing)
-                        n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
-                else:
-                    if random.random() >= lp.mintProb:
-                        continue
-                    n_bands = max(1, int(round(w_ticks / pool.tick_spacing)))
+            def _enqueue_lp_mint(lp: LPAgent, is_passive_mint: bool) -> None:
+                if getattr(lp, "cooldown", 0) > 0:
+                    return
                 X = np.random.lognormal(mint_mu, mint_sigma)
                 try:
                     _L_SCALE = L_SCALE
                 except NameError:
                     _L_SCALE = initial_total_L / max(1, N_LP)
-                want = X * _L_SCALE
-                cap_step = 0.25 * getattr(lp, 'L_budget', want)
-                cap_left = max(0.0, getattr(lp, 'L_budget', want) - getattr(lp, 'L_live', 0.0))
-                L_new = max(0.0, min(want, cap_step, cap_left))
+                want = float(X) * float(_L_SCALE)
+                if want <= 0.0:
+                    return
+                L_budget = float(getattr(lp, "L_budget", want))
+                L_live_planned = float(planned_L_live.get(lp.id, getattr(lp, "L_live", 0.0)))
+                cap_left = max(0.0, L_budget - L_live_planned)
+                cap_step_total = 0.25 * L_budget
+                cap_step_left = max(0.0, cap_step_total - float(planned_L_step_used.get(lp.id, 0.0)))
+                L_new = max(0.0, min(want, cap_step_left, cap_left))
                 if L_new <= 0.0:
-                    continue
+                    return
+
                 S_now = agent_S_ref
+                n_bands: Optional[int] = None
+                if is_passive_mint:
+                    if passive_width_pct is None:
+                        width_ticks = max(int(passive_width_ticks), pool.tick_spacing)
+                        n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
+                else:
+                    n_bands = max(1, int(round(w_ticks / pool.tick_spacing)))
+
                 if is_passive_mint and passive_width_pct is not None:
                     lower, upper = _passive_range_ticks_from_pct(S_now)
                 else:
@@ -2386,7 +2420,43 @@ def simulate(
                     upper = lower + nb * sps
                     if upper <= lower:
                         upper = lower + pool.tick_spacing
+
+                planned_L_live[lp.id] = L_live_planned + L_new
+                planned_L_step_used[lp.id] = float(planned_L_step_used.get(lp.id, 0.0)) + L_new
                 mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'L': L_new})
+
+            # New mints (Poisson targets; respect due/cooldown/budget)
+            if narrow_mints_per_block > 0.0:
+                narrow_candidates = []
+                for lp_idx in due:
+                    lp = LPs[lp_idx]
+                    if getattr(lp, "is_jiter", False):
+                        continue
+                    if not lp.can_act or bool(getattr(lp, "is_passive", False)):
+                        continue
+                    if getattr(lp, "cooldown", 0) > 0:
+                        continue
+                    narrow_candidates.append(lp)
+                if narrow_candidates:
+                    n_mints = int(np.random.poisson(narrow_mints_per_block))
+                    for _ in range(n_mints):
+                        _enqueue_lp_mint(random.choice(narrow_candidates), is_passive_mint=False)
+
+            if passive_mints_per_block > 0.0:
+                passive_candidates = []
+                for lp_idx in due:
+                    lp = LPs[lp_idx]
+                    if getattr(lp, "is_jiter", False):
+                        continue
+                    if not lp.can_act or not bool(getattr(lp, "is_passive", False)):
+                        continue
+                    if getattr(lp, "cooldown", 0) > 0:
+                        continue
+                    passive_candidates.append(lp)
+                if passive_candidates:
+                    n_mints = int(np.random.poisson(passive_mints_per_block))
+                    for _ in range(n_mints):
+                        _enqueue_lp_mint(random.choice(passive_candidates), is_passive_mint=True)
 
             # Execute all mempool intents (traders + LPs) in random order
             L_pre_trader_this = pool.L_active
