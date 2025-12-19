@@ -73,6 +73,7 @@ from agents import (
     lp_token0_exposure,
     lp_wealth_y,
     lp_total_fee_earned_value_y,
+    lp_total_position_value_y,
 )
 from collections import defaultdict
 
@@ -196,6 +197,11 @@ def simulate(
     # === Cost parameters ===
     flash_loan_fee: float = 0.0,  # percentage cost on arbitrage notional (e.g., 0.0005 = 5 bps)
     
+    # === Jiter (JIT LP searcher) parameters ===
+    p_jit: float = 0.0,           # Bernoulli arrival probability per block
+    N_jit: int = 0,               # target up to top-N swaps by input amount
+    liquidity_perc_jit: float = 0.0,  # target share of active liquidity (0-1)
+    
     # === CEX volatility modes ===
     cex_sigma_mode: str = "static",    # "static" | "regime" | "noisy_sine" | "heston"
     cex_sigma_low: Optional[float] = None,
@@ -230,6 +236,9 @@ def simulate(
         raise ValueError("k_out_min and k_out_max must be positive integers.")
     if k_out_min > k_out_max:
         raise ValueError("k_out_min cannot exceed k_out_max.")
+    p_jit = clamp(p_jit, 0.0, 1.0)
+    N_jit = max(0, int(N_jit))
+    liquidity_perc_jit = clamp(liquidity_perc_jit, 0.0, 0.999999)
 
     slippage_tolerance = clamp(slippage_tolerance, 0.0, 1.0)
     if passive_width_pct is not None:
@@ -266,10 +275,17 @@ def simulate(
     np.random.seed(seed)
     random.seed(seed)
     passive_share = max(0.0, min(1.0, passive_lp_share))
-    # Derive per-micro-step arrival probabilities from per-block expectations
+    # Trade arrivals are modeled as a Poisson process:
+    #   - non-block mode: N ~ Poisson(trades_per_block) per step
+    #   - block mode: per micro-step N_k ~ Poisson(trades_per_block / B)
+    # This allows multiple arrivals per micro-step when trades_per_block > B.
     B = max(1, int(block_time))
-    p_trade = clamp(smart_trades_per_block / B, 0.0, 1.0)
-    noise_floor = clamp(noise_trades_per_block / B, 0.0, 1.0)
+    smart_trades_per_block = max(0.0, float(smart_trades_per_block))
+    noise_trades_per_block = max(0.0, float(noise_trades_per_block))
+    smart_lambda_micro = smart_trades_per_block / B
+    noise_lambda_micro = noise_trades_per_block / B
+    jiter_enabled = block_time > 1 and p_jit > 0.0 and N_jit > 0 and liquidity_perc_jit > 0.0
+    jiter_agent: Optional[LPAgent] = None
     narrow_agents = max(1e-12, (1.0 - passive_share) * max(1, N_LP))
     passive_agents = max(1e-12, passive_share * max(1, N_LP))
     p_lp_narrow = clamp(narrow_mints_per_block / (B * narrow_agents), 0.0, 1.0)
@@ -485,6 +501,24 @@ def simulate(
         if not hasattr(lp, "k_out_threshold"):
             lp.k_out_threshold = random.randint(k_out_min, k_out_max)
 
+    if jiter_enabled:
+        jiter_agent = LPAgent(
+            id=1_000_000,
+            mintProb=0.0,
+            is_active_narrow=False,
+            is_passive=False,
+            is_seed=True,  # exclude from cohort aggregates; tracked separately
+        )
+        jiter_agent.is_jiter = True  # type: ignore[attr-defined]
+        jiter_agent.review_rate = 0.0
+        jiter_agent.next_review = 0
+        jiter_agent.cooldown = 0
+        jiter_agent.can_act = False
+        jiter_agent.L_budget = float("inf")
+        jiter_agent.L_live = 0.0
+        jiter_agent.wallet_y = 0.0
+        LPs.append(jiter_agent)
+
     lp_lookup: Dict[int, LPAgent] = {lp.id: lp for lp in LPs}
     positions_by_tick: Dict[int, Set[Position]] = defaultdict(set)
 
@@ -513,21 +547,27 @@ def simulate(
             pool.L_active = 0.0
             return
 
-        # Treat significantly negative active liquidity as a real bug.
+        # Negative active liquidity is a hard invariant violation.
         underflow_tol = 100.0 * EPS_LIQ2
         if pool.L_active < -underflow_tol:
-            raise AssertionError(
-                f"L_active underflow ({label}): {pool.L_active}"
+            raise AssertionError(f"L_active underflow ({label}): {pool.L_active}")
+
+        def _mismatch_tolerance(prefix_val: float, active_val: float) -> float:
+            return max(
+                underflow_tol,
+                1e-7 * max(1.0, abs(prefix_val), abs(active_val)),
             )
 
         # Require close agreement between cached and prefix-sum views.
-        tolerance = max(
-            underflow_tol,
-            1e-7 * max(1.0, abs(prefix_L), abs(pool.L_active)),
-        )
+        tolerance = _mismatch_tolerance(prefix_L, pool.L_active)
         if abs(prefix_L - pool.L_active) > tolerance:
+            try:
+                t_now = t
+            except NameError:
+                t_now = None
+            t_clause = f" t={t_now}" if t_now is not None else ""
             raise AssertionError(
-                f"L_active mismatch ({label}) tick={pool.tick} active={pool.L_active} prefix={prefix_L}"
+                f"L_active mismatch ({label}){t_clause} tick={pool.tick} active={pool.L_active} prefix={prefix_L}"
             )
 
         # If we have meaningful active liquidity, ensure price lies inside the band.
@@ -563,6 +603,10 @@ def simulate(
     mint_steps, mint_sizes, burn_steps, burn_sizes = [], [], [], []
     mint_is_passive: List[bool] = []
     burn_is_passive: List[bool] = []
+    mint_is_jiter: List[bool] = []
+    burn_is_jiter: List[bool] = []
+    jiter_activity_steps: List[int] = []
+    jiter_activity_signs: List[int] = []
     # --- Agent activity recorders (+1 / -1 per action) ---
     smart_activity_steps: List[int] = []
     smart_activity_signs: List[int] = []
@@ -605,6 +649,11 @@ def simulate(
     lp_lvr_total_series = []           # F_t - hedged = LVR_t
     lp_lvr_active_series = []
     lp_lvr_passive_series = []
+    jiter_wallet_series: List[float] = []
+    jiter_wealth_series: List[float] = []
+    jiter_fee_value_series: List[float] = []
+    jiter_position_value_series: List[float] = []
+    jiter_pnl_series: List[float] = []
     trader_exec_count = []
     arb_exec_count = []
 
@@ -692,6 +741,10 @@ def simulate(
         burn_sizes = _NullList()
         mint_is_passive = _NullList()
         burn_is_passive = _NullList()
+        mint_is_jiter = _NullList()
+        burn_is_jiter = _NullList()
+        jiter_activity_steps = _NullList()
+        jiter_activity_signs = _NullList()
         smart_activity_steps = _NullList()
         smart_activity_signs = _NullList()
         noise_activity_steps = _NullList()
@@ -728,6 +781,11 @@ def simulate(
         lp_lvr_total_series = _NullList()
         lp_lvr_active_series = _NullList()
         lp_lvr_passive_series = _NullList()
+        jiter_wallet_series = _NullList()
+        jiter_wealth_series = _NullList()
+        jiter_fee_value_series = _NullList()
+        jiter_position_value_series = _NullList()
+        jiter_pnl_series = _NullList()
         trader_exec_count = _NullList()
         arb_exec_count = _NullList()
         sr_exec_count = _NullList()
@@ -891,6 +949,7 @@ def simulate(
         burn_steps.append(t)
         burn_sizes.append(pos.L)
         burn_is_passive.append(bool(lp.is_passive))
+        burn_is_jiter.append(False)
 
         buffer_log(
             f"[t={t:03d}] LP{lp.id} BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | "
@@ -1103,9 +1162,9 @@ def simulate(
             return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), Lff
         return 0.0, 0.0, 0.0, None, 0.0
 
-    # Per-micro-step arrival probabilities (used directly)
-    p_trade_micro = p_trade
-    noise_floor_micro = noise_floor
+    # Per-micro-step Poisson intensities (used in block mode)
+    smart_lambda_micro_step = smart_lambda_micro
+    noise_lambda_micro_step = noise_lambda_micro
 
     total_noise_swaps_executed = 0
     total_noise_swaps_skipped = 0
@@ -1222,6 +1281,9 @@ def simulate(
         
         # --- Mempool structures (for block_time > 1) ---
         mempool_orders = []
+        jit_targets: Dict[int, Dict[str, Any]] = {}
+        jit_open_positions: Dict[int, Position] = {}
+        jit_swap_executed: Dict[int, bool] = {}
         
         # ----- Non-mutating Uni v3 quotes (spacing-aware, can bridge deserts) -----
         def maybe_enqueue_smart_router_intent(m_now: float):
@@ -1231,8 +1293,6 @@ def simulate(
             """
             nonlocal trader_y_this, sr_acc, _trader_execs, delta_a_cex_this
             nonlocal total_smart_swaps_executed, smart_swaps_x_to_y, smart_swaps_y_to_x
-            if random.random() >= p_trade_micro:
-                return
             side = random.choice(["X_to_Y", "Y_to_X"])
             if side == "X_to_Y":
                 notional_y = _draw_trader_notional()
@@ -1321,8 +1381,6 @@ def simulate(
 
         def maybe_enqueue_noise_trader_intent(m_now: float):
             """Enqueue a noise swap intent (no best-ex check)."""
-            if random.random() >= noise_floor_micro:
-                return
             side = random.choice(["X_to_Y", "Y_to_X"])
             if side == "X_to_Y":
                 notional_y = _draw_trader_notional()
@@ -1359,8 +1417,37 @@ def simulate(
                         'amount': dy,
                         'unit': 'dy',
                         'm_submit': m_now,
-                        'min_output': min_output,
-                    })
+                    'min_output': min_output,
+                })
+
+        def plan_jiter_targets() -> None:
+            """Select top-N swaps by input amount and mark them for JIT mint/burn."""
+            nonlocal jit_targets, jit_swap_executed
+            if not jiter_enabled or jiter_agent is None or block_time <= 1:
+                return
+            if N_jit <= 0 or liquidity_perc_jit <= 0.0:
+                return
+            if random.random() >= p_jit:
+                return
+            swap_orders = [o for o in mempool_orders if o.get("type") == "swap"]
+            if not swap_orders:
+                return
+            # Sort by raw input amount (dx for X_to_Y, dy for Y_to_X)
+            sorted_swaps = sorted(
+                swap_orders,
+                key=lambda o: float(o.get("amount", 0.0)),
+                reverse=True,
+            )
+            targets = sorted_swaps[:N_jit]
+            for o in targets:
+                target_id = id(o)
+                o["jit_target"] = target_id
+                jit_targets[target_id] = {
+                    "side": o.get("side"),
+                    "amount": float(o.get("amount", 0.0)),
+                    "unit": o.get("unit"),
+                }
+                jit_swap_executed[target_id] = False
 
         def execute_mempool_orders():
             nonlocal trader_y_this, sr_acc, noise_acc
@@ -1380,6 +1467,7 @@ def simulate(
                 nonlocal noise_swaps_x_to_y, noise_swaps_y_to_x
                 nonlocal executed_smart_swaps, executed_noise_swaps, executed_lp_events
                 nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
+                nonlocal jit_open_positions, jit_swap_executed
                 P_pre_exec = pool.price
                 tick_before_exec = pool.tick
                 typ = o.get('type')
@@ -1390,6 +1478,140 @@ def simulate(
                         P_micro.append(pool.price)
                         M_micro.append(ref.m)
                         micro_counter += 1
+
+                if typ == "jit_mint":
+                    if not jiter_enabled or jiter_agent is None:
+                        return
+                    tgt = o.get("target_id")
+                    plan = jit_targets.get(tgt)
+                    if plan is None:
+                        return
+                    side = plan.get("side")
+                    amount_in = float(plan.get("amount", 0.0))
+                    if side not in ("X_to_Y", "Y_to_X") or amount_in <= 0.0:
+                        return
+
+                    tick_now = pool.tick
+                    spacing = int(pool.tick_spacing)
+                    S_now = pool.S
+
+                    # When the DEX price is exactly on a band boundary, the next swap in the
+                    # corresponding direction will immediately cross into the adjacent band.
+                    # If we mint in the "wrong" band here, the required-liquidity estimate
+                    # can blow up (denominator ~ 0) and, worse, repeated add/remove of an
+                    # astronomically large L can destroy small baseline `liquidity_net`
+                    # deltas via catastrophic cancellation.
+                    band_lower = tick_now
+                    sa_band = pool.s_lower(band_lower)
+                    sb_band = pool.s_upper(band_lower)
+                    band_scale = max(1.0, abs(sa_band), abs(sb_band), abs(S_now))
+                    boundary_tol = EPS_BOUNDARY * band_scale
+                    if side == "Y_to_X" and S_now >= sb_band - boundary_tol:
+                        band_lower += spacing
+                        sa_band = pool.s_lower(band_lower)
+                        sb_band = pool.s_upper(band_lower)
+                    elif side == "X_to_Y" and S_now <= sa_band + boundary_tol:
+                        band_lower -= spacing
+                        sa_band = pool.s_lower(band_lower)
+                        sb_band = pool.s_upper(band_lower)
+
+                    lower = band_lower
+                    upper = band_lower + spacing
+                    if upper <= lower:
+                        return
+                    sa, sb = pool.s_lower(lower), pool.s_lower(upper)
+
+                    L_existing_band = pool.bidx.active_liquidity_at_tick(lower)
+                    L_existing_band = max(EPS_LIQ, L_existing_band)
+                    share_factor = liquidity_perc_jit / max(1e-12, (1.0 - liquidity_perc_jit))
+                    L_share_target = share_factor * L_existing_band
+                    L_needed = 0.0
+                    if side == "Y_to_X":
+                        denom = sb_band - S_now
+                        denom_floor = boundary_tol
+                        if denom > denom_floor:
+                            dy_eff = amount_in * pool.r
+                            L_needed = dy_eff / denom
+                    else:
+                        # dx_eff = L * (1/S_lo - 1/S_now)  =>  L = dx_eff / denom
+                        denom = (1.0 / sa_band) - (1.0 / S_now)
+                        inv_scale = max(1.0, abs(1.0 / sa_band), abs(1.0 / S_now))
+                        denom_floor = EPS_BOUNDARY * inv_scale
+                        if denom > denom_floor:
+                            dx_eff = amount_in * pool.r
+                            L_needed = dx_eff / denom
+                    L_target = max(L_share_target, max(0.0, L_needed - L_existing_band))
+                    # Numerical safety: avoid minting astronomically large liquidity, which can
+                    # destroy small baseline `liquidity_net` deltas when added/removed as floats.
+                    max_jit_mult = 1e6
+                    L_cap = max(L_share_target, max_jit_mult * max(1.0, L_existing_band))
+                    if L_target > L_cap:
+                        L_target = L_cap
+                    if L_target <= 0.0:
+                        return
+
+                    amt0, amt1 = minted_amounts_at_S(L_target, sa, sb, S_now)
+                    pos = Position(
+                        owner=jiter_agent.id,
+                        lower=lower,
+                        upper=upper,
+                        L=L_target,
+                        sa=sa,
+                        sb=sb,
+                        amt0_init=amt0,
+                        amt1_init=amt1,
+                        hodl0_value_y=amt0 * cex_ref_for_agents + amt1,
+                    )
+                    cost_y = amt0 * cex_ref_for_agents + amt1
+                    jiter_agent.wallet_y = getattr(jiter_agent, "wallet_y", 0.0) - cost_y
+                    pool.add_liquidity_range(lower, upper, L_target)
+                    jiter_agent.positions.append(pos)
+                    _register_position(pos)
+                    _assert_active_liquidity_state("jit_mint")
+                    jiter_agent.L_live = getattr(jiter_agent, "L_live", 0.0) + L_target
+                    jit_open_positions[int(tgt)] = pos
+                    _rebalance_lp_to_target(jiter_agent, ref.m, pool.S)
+                    mint_steps.append(t)
+                    mint_sizes.append(L_target)
+                    mint_widths.append(upper - lower)
+                    mint_is_passive.append(False)
+                    mint_is_jiter.append(True)
+                    buffer_log(
+                        f"[t={t:03d}] JIT MINT L={L_target:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+                    )
+                    executed_lp_events += 1
+                    return
+
+                if typ == "jit_burn":
+                    if not jiter_enabled or jiter_agent is None:
+                        return
+                    tgt = o.get("target_id")
+                    pos = jit_open_positions.pop(int(tgt), None)
+                    if pos is None:
+                        return
+                    try:
+                        jiter_agent.positions.remove(pos)
+                    except ValueError:
+                        pass
+                    realized_value = pos.position_value_y_now(pool.S, ref.m) + pos.fees_value_y(ref.m)
+                    jiter_agent.wallet_y = getattr(jiter_agent, "wallet_y", 0.0) + float(realized_value)
+                    _unregister_position(pos)
+                    pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
+                    _assert_active_liquidity_state("jit_burn")
+                    jiter_agent.L_live = max(0.0, getattr(jiter_agent, "L_live", 0.0) - pos.L)
+                    _rebalance_lp_to_target(jiter_agent, ref.m, pool.S)
+                    burn_steps.append(t)
+                    burn_sizes.append(pos.L)
+                    burn_is_passive.append(False)
+                    burn_is_jiter.append(True)
+                    if jit_swap_executed.pop(int(tgt), False):
+                        jiter_activity_steps.append(t)
+                        jiter_activity_signs.append(+1)
+                    buffer_log(
+                        f"[t={t:03d}] JIT BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+                    )
+                    executed_lp_events += 1
+                    return
 
                 # Handle LP intents (they don't have 'agent' or 'side')
                 if typ in ('lp_burn','lp_mint','lp_recenter'):
@@ -1410,7 +1632,7 @@ def simulate(
                         lower = int(o.get('lower')); upper = int(o.get('upper')); L_new = float(o.get('L', 0.0))
                         if upper <= lower or L_new <= 0.0:
                             return
-                        sa, sb = pool.s_lower(lower), pool.s_upper(upper)
+                        sa, sb = pool.s_lower(lower), pool.s_lower(upper)
                         amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
                                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
@@ -1421,7 +1643,7 @@ def simulate(
                         lp.positions.append(pos)
                         _register_position(pos)
                         _assert_active_liquidity_state("lp_mint_mempool")
-                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
+                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive)); mint_is_jiter.append(False)
                         buffer_log(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
@@ -1437,7 +1659,7 @@ def simulate(
                         lower = int(o.get('new_lower')); upper = int(o.get('new_upper')); L_new = float(o.get('new_L', 0.0))
                         if upper <= lower or L_new <= 0.0:
                             return
-                        sa, sb = pool.s_lower(lower), pool.s_upper(upper)
+                        sa, sb = pool.s_lower(lower), pool.s_lower(upper)
                         amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
                         pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
                                         amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
@@ -1448,8 +1670,9 @@ def simulate(
                         lp.positions.append(pos)
                         _register_position(pos)
                         _assert_active_liquidity_state("lp_recenter_mempool")
-                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
+                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive)); mint_is_jiter.append(False)
                         buffer_log(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
+                        lp.L_live = getattr(lp, "L_live", 0.0) + L_new
                         _rebalance_lp_to_target(lp, ref.m, pool.S)
                         executed_lp_events += 1
                         return
@@ -1531,6 +1754,14 @@ def simulate(
                         _rollback_pool_state(tick_before, S_before)
                         return
                     executed = int(used_dx_pre > 0)
+                    tgt = o.get("jit_target")
+                    if executed and tgt is not None:
+                        try:
+                            tgt_id = int(tgt)
+                        except (TypeError, ValueError):
+                            tgt_id = None
+                        if tgt_id is not None and tgt_id in jit_swap_executed:
+                            jit_swap_executed[tgt_id] = True
                     agent = o.get('agent')
                     if agent == 'smart':
                         trader_steps.append(t); trader_dirs.append('down')
@@ -1585,6 +1816,14 @@ def simulate(
                         _rollback_pool_state(tick_before, S_before)
                         return
                     executed = int(used_dy_pre > 0)
+                    tgt = o.get("jit_target")
+                    if executed and tgt is not None:
+                        try:
+                            tgt_id = int(tgt)
+                        except (TypeError, ValueError):
+                            tgt_id = None
+                        if tgt_id is not None and tgt_id in jit_swap_executed:
+                            jit_swap_executed[tgt_id] = True
                     agent = o.get('agent')
                     if agent == 'smart':
                         trader_steps.append(t); trader_dirs.append('up')
@@ -1620,7 +1859,15 @@ def simulate(
             arb_orders = [o for o in order_book if o.get('type') == 'arb']
             non_arb_orders = [o for o in order_book if o.get('type') != 'arb']
             random.shuffle(non_arb_orders)
-            order_book = arb_orders + non_arb_orders
+            order_book = list(arb_orders)
+            for o in non_arb_orders:
+                tgt = o.get("jit_target")
+                if tgt is not None and tgt in jit_targets and jiter_agent is not None:
+                    order_book.append({"type": "jit_mint", "target_id": tgt})
+                    order_book.append(o)
+                    order_book.append({"type": "jit_burn", "target_id": tgt})
+                else:
+                    order_book.append(o)
             tick_before_orders = pool.tick
             buffer_log(
                 f"[t={t:03d}] MEMPOOL before P={P_pre_exec:.4f} | tick={tick_before_orders} | "
@@ -1829,126 +2076,69 @@ def simulate(
                         )
 
         # --- Actor routines (closures) ---
-        def act_LPs():
-            # ----- burns (TP/SL) -----
-            for lp in LPs:
-                if hasattr(lp, "can_act") and not lp.can_act:
-                    continue
-                if lp.is_passive:
-                    if lp.positions and random.random() < passive_burn_prob:
-                        burn_idx = random.randrange(len(lp.positions))
-                        burn_any(lp, burn_idx)
-                    continue
-                to_burn = []
-                for i, pos in enumerate(lp.positions):
-                    pnl = pos.PnL_y(agent_S_ref, ref.m)
-                    if pnl >= theta_TP * pos.hodl0_value_y or pnl <= -theta_SL * pos.hodl0_value_y:
-                        to_burn.append(i)
-                for i in reversed(to_burn):
-                    burn_any(lp, i)   # sets lp.cooldown
+        """
+        LPs act by burning their positions with a probability proportional to their current profit/loss,
+        and re-centering their positions to a new random point within their current active range.
+        They also probabilistically mint new liquidity within their active range, with the probability of minting
+        increasing with the LP's budget. The amount of liquidity minted is normally distributed with a mean
+        of 0.0 and a standard deviation of 0.1. If the LP is passive, then the liquidity minted is
+        capped at the LP's budget. The LP's budget is the maximum amount of liquidity that the LP can mint
+        probabilistically.
 
-            # ----- re-center (narrow LPs only) -----
-            for lp in LPs:
-                if hasattr(lp, "can_act") and not lp.can_act:
-                    continue
-                to_recenters: List[int] = []
-                for i, pos in enumerate(lp.positions):
-                    in_rng = pos.in_range(agent_tick_ref)
-                    out_steps = getattr(pos, "out_steps", 0)
-                    out_steps = 0 if in_rng else out_steps + 1
-                    setattr(pos, "out_steps", out_steps)
-                    k_out_thresh = getattr(lp, "k_out_threshold", k_out_max)
-                    if lp.is_active_narrow and out_steps >= k_out_thresh:
-                        to_recenters.append(i)
+        When an LP is not active, it does not mint new liquidity or burn its positions. When an LP is active
+        but not narrow, it only burns its positions with a probability proportional to its current profit/loss.
+        When an LP is active and narrow, it both burns its positions with a probability proportional to its current
+        profit/loss, and re-centers its positions to a new random point within its current active range.
 
-                for i in reversed(to_recenters):
-                    pos = lp.positions[i]
-                    L_same = pos.L
-                    burn_any(lp, i)
-                    # Center around current sqrt price S (approximately), not the snapped active band.
-                    width_ticks = w_ticks
-                    n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
-                    S_now = agent_S_ref
-                    s = pool.tick_spacing
-                    nb = n_bands
-                    denom = (1.0 + (pool.g ** (nb * s + s)))
-                    if denom <= 0.0:
-                        denom = 1.0
-                    lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-                    lower = pool._snap(int(round(lower_real)))
-                    upper = lower + nb * s
-                    sa, sb = pool.s_lower(lower), pool.s_upper(upper)
-                    amt0, amt1 = minted_amounts_at_S(L_same, sa, sb, agent_S_ref)
-                    newpos = Position(
-                        owner=lp.id, lower=lower, upper=upper, L=L_same, sa=sa, sb=sb,
-                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1,
-                    )
-                    pool.add_liquidity_range(lower, upper, L_same)
-                    lp.positions.append(newpos)
-                    _register_position(newpos)
-                    _assert_active_liquidity_state("lp_recenter_active")
-                    mint_steps.append(t); mint_sizes.append(L_same); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive))
-                    buffer_log(
-                        f"[t={t:03d}] LP{lp.id} RECENTER L={L_same:.4f} [{lower},{upper}) | "
-                        f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
-                    )
+        The LPs' probabilistic minting and burning is blocked during their cooldown periods.
 
-            # ----- probabilistic mints (blocked during cooldown) -----
-            for lp in LPs:
-                if hasattr(lp, "can_act") and not lp.can_act:
-                    continue
-                if getattr(lp, "cooldown", 0) > 0:
-                    continue
-                is_passive_mint = bool(lp.is_passive)
-                if is_passive_mint:
-                    if random.random() >= passive_mint_prob:
-                        continue
-                    n_bands = None
-                    if passive_width_pct is None:
-                        width_ticks = max(int(passive_width_ticks), pool.tick_spacing)
-                        n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
-                else:
-                    if random.random() >= lp.mintProb:
-                        continue
-                    n_bands = max(1, int(round(w_ticks / pool.tick_spacing)))
-                X = np.random.lognormal(mint_mu, mint_sigma)
-                try:
-                    _L_SCALE = L_SCALE
-                except NameError:
-                    _L_SCALE = initial_total_L / max(1, N_LP)
-                want = X * _L_SCALE
-                cap_step = 0.25 * getattr(lp, 'L_budget', want)
-                cap_left = max(0.0, getattr(lp, 'L_budget', want) - getattr(lp, 'L_live', 0.0))
-                L_new = max(0.0, min(want, cap_step, cap_left))
-                if L_new <= 0.0:
-                    continue
-                S_now = agent_S_ref
-                if is_passive_mint and passive_width_pct is not None:
-                    lower, upper = _passive_range_ticks_from_pct(S_now)
-                else:
-                    assert n_bands is not None
-                    sps = pool.tick_spacing
-                    nb = n_bands
-                    denom = (1.0 + (pool.g ** (nb * sps + sps)))
-                    if denom <= 0.0:
-                        denom = 1.0
-                    lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-                    lower = pool._snap(int(round(lower_real)))
-                    upper = lower + nb * sps
-                    if upper <= lower:
-                        upper = lower + pool.tick_spacing
-                mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'L': L_new})
+        During each tick, each LP will probabilistically mint new liquidity within its active range, with the
+        probability of minting increasing with the LP's budget. The amount of liquidity minted is normally
+        distributed with a mean of 0.0 and a standard deviation of 0.1. If the LP is passive, then the
+        liquidity minted is capped at the LP's budget.
 
-            if -1e-9 < pool.L_active < 0.0:
-                pool.L_active = 0.0
+        The LP's budget is the maximum amount of liquidity that the LP can mint probabilistically.
+
+        Each LP's budget is initialized to its initial budget. The LP's budget is updated whenever the LP
+        probabilistically mints new liquidity. The LP's budget is updated by adding the amount of liquidity minted
+        to the LP's current budget.
+
+        The LPs' probabilistic minting and burning is blocked during their cooldown periods.
+
+        :param w_ticks: The number of ticks in the LPs' active range.
+        :param passive_width_pct: The percentage of the LPs' active range in which to mint new liquidity when the LP is passive.
+        :param passive_mint_prob: The probability of minting new liquidity when the LP is passive.
+        :param passive_burn_prob: The probability of burning the LP's positions when the LP is passive.
+        :param mint_mu: The mean of the normal distribution used to mint new liquidity.
+        :param mint_sigma: The standard deviation of the normal distribution used to mint new liquidity.
+        :param L_scale: The scale factor used to mint new liquidity.
+        :param initial_total_L: The total amount of liquidity initially available to all LPs.
+        :param N_lp: The number of LPs.
+        :param k_out_max: The maximum number of ticks that an LP can be out of its active range.
+        :param theta_TP: The profit/loss threshold above which an LP will probabilistically burn its positions.
+        :param theta_SL: The profit/loss threshold below which an LP will probabilistically burn its positions.
+        :param agent_S_ref: The reference price used to calculate the profit/loss of each LP.
+        :param ref: The reference price used to calculate the profit/loss of each LP.
+     st of LP objects.
+        :param t: The current tick number.
+        :param agent_label: The label of the agent (smart or noise).
+        """
 
         def act_smart_router():
-            # Single smart-router trader per step (probabilistic arrival)
-            execute_trader("smart", p_trade_micro, sr_acc, True, cex_ref_for_agents)
+            # Poisson arrivals per step (non-block mode).
+            if smart_trades_per_block <= 0.0:
+                return
+            n_intents = int(np.random.poisson(smart_trades_per_block))
+            for _ in range(n_intents):
+                execute_trader("smart", 1.0, sr_acc, True, cex_ref_for_agents)
 
         def act_noise_trader():
-            # Single noise trader per step (probabilistic arrival)
-            execute_trader("noise", noise_floor_micro, noise_acc, False, cex_ref_for_agents)
+            # Poisson arrivals per step (non-block mode).
+            if noise_trades_per_block <= 0.0:
+                return
+            n_intents = int(np.random.poisson(noise_trades_per_block))
+            for _ in range(n_intents):
+                execute_trader("noise", 1.0, noise_acc, False, cex_ref_for_agents)
 
         def act_arbitrageur():
             nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
@@ -1998,6 +2188,8 @@ def simulate(
         # figure out which LPs are due to act this step
         due = []
         for i, lp in enumerate(LPs):
+            if getattr(lp, "is_jiter", False):
+                continue
             if lp.cooldown > 0:
                 lp.cooldown -= 1
                 # let the review clock keep ticking while cooling down
@@ -2026,7 +2218,7 @@ def simulate(
         # Non-block mode (block_time == 1): A -> Smart+Noise -> B -> Arb -> C.
         # Block mode (block_time > 1):
         #   - Snapshot CEX at block start: arb_ref_m
-        #   - Micro-steps: diffuse-only; enqueue intents with p_trade_micro/noise_floor_micro
+        #   - Micro-steps: diffuse-only; enqueue Poisson-arrival intents per micro-step
         #   - Boundary order (current): Arb -> (populate+execute mempool)  (LPs act via mempool)
         # =====================================================================
         # run the schedule
@@ -2070,8 +2262,14 @@ def simulate(
                         if abs(f_new_micro - pool.f) >= 1e-12:
                             pool.f = f_new_micro
 
-                maybe_enqueue_smart_router_intent(cex_ref_for_agents)
-                maybe_enqueue_noise_trader_intent(cex_ref_for_agents)
+                if smart_lambda_micro_step > 0.0:
+                    n_smart = int(np.random.poisson(smart_lambda_micro_step))
+                    for _ in range(n_smart):
+                        maybe_enqueue_smart_router_intent(cex_ref_for_agents)
+                if noise_lambda_micro_step > 0.0:
+                    n_noise = int(np.random.poisson(noise_lambda_micro_step))
+                    for _ in range(n_noise):
+                        maybe_enqueue_noise_trader_intent(cex_ref_for_agents)
                 ref.diffuse_only()
                 _broadcast_price_move(ref.m)
                 micro_steps.append(micro_counter)
@@ -2092,6 +2290,8 @@ def simulate(
             # Burns (TP/SL)
             for lp_idx in due:
                 lp = LPs[lp_idx]
+                if getattr(lp, "is_jiter", False):
+                    continue
                 if not lp.can_act:
                     continue
                 if lp.is_passive:
@@ -2111,6 +2311,8 @@ def simulate(
             # Recenter (narrow LPs that have been out-of-range past their threshold)
             for lp_idx in due:
                 lp = LPs[lp_idx]
+                if getattr(lp, "is_jiter", False):
+                    continue
                 if not lp.can_act:
                     continue
                 to_recenters = []
@@ -2142,6 +2344,8 @@ def simulate(
             # New mints (probabilistic; respect budget/cooldown)
             for lp_idx in due:
                 lp = LPs[lp_idx]
+                if getattr(lp, "is_jiter", False):
+                    continue
                 if not lp.can_act or getattr(lp, "cooldown", 0) > 0:
                     continue
                 is_passive_mint = bool(lp.is_passive)
@@ -2186,6 +2390,7 @@ def simulate(
 
             # Execute all mempool intents (traders + LPs) in random order
             L_pre_trader_this = pool.L_active
+            plan_jiter_targets()
             execute_mempool_orders()
             if block_time > 1 and micro_steps:
                 micro_valid_steps.append(micro_steps[-1])
@@ -2340,9 +2545,25 @@ def simulate(
         lp_wealth_total = 0.0
         lp_wealth_active = 0.0
         lp_wealth_passive = 0.0
+        jiter_wallet_now = 0.0
+        jiter_fee_value_now = 0.0
+        jiter_position_value_now = 0.0
+        jiter_wealth_now = 0.0
+        jiter_pnl_now = 0.0
         for lp in LPs:
             # Seed/background LPs provide liquidity but are excluded from
             # cohort-level PnL and wealth statistics.
+            if getattr(lp, "is_jiter", False):
+                _ensure_rebalancer_initialized(lp, ref.m, pool.S)
+                jiter_wallet_now = getattr(lp, "wallet_y", 0.0)
+                jiter_fee_value_now = lp_total_fee_earned_value_y(lp, ref.m)
+                jiter_position_value_now = lp_total_position_value_y(lp, pool.S, ref.m)
+                jiter_wealth_now = lp_wealth_y(lp, pool.S, ref.m)
+                rb = lp.rebalancer
+                jiter_rebal_value_now = rb.initial_rebal_value_y + rb.cumulative_R
+                # "Hedged PnL" in LVR accounting is (LVR - fees) = V^reb - V^LP.
+                jiter_pnl_now = jiter_rebal_value_now - jiter_wealth_now
+                continue
             if getattr(lp, "is_seed", False):
                 continue
 
@@ -2412,6 +2633,11 @@ def simulate(
         lp_wealth_series.append(lp_wealth_total)
         lp_wealth_active_series.append(lp_wealth_active)
         lp_wealth_passive_series.append(lp_wealth_passive)
+        jiter_wallet_series.append(jiter_wallet_now)
+        jiter_fee_value_series.append(jiter_fee_value_now)
+        jiter_position_value_series.append(jiter_position_value_now)
+        jiter_wealth_series.append(jiter_wealth_now)
+        jiter_pnl_series.append(jiter_pnl_now)
         # store per-step trader/arb details (now that order is randomized)
         trader_y_series.append(trader_y_this)
         arb_y_series.append(arb_y_this)
@@ -2540,6 +2766,11 @@ def simulate(
     lp_wealth_series = np.array(lp_wealth_series)
     lp_wealth_active_series = np.array(lp_wealth_active_series)
     lp_wealth_passive_series = np.array(lp_wealth_passive_series)
+    jiter_wallet_series = np.array(jiter_wallet_series)
+    jiter_wealth_series = np.array(jiter_wealth_series)
+    jiter_fee_value_series = np.array(jiter_fee_value_series)
+    jiter_position_value_series = np.array(jiter_position_value_series)
+    jiter_pnl_series = np.array(jiter_pnl_series)
     fee_sigma_series = np.array(fee_sigma_series)
     fee_basis_ticks_series = np.array(fee_basis_ticks_series)
     fee_imb_series = np.array(fee_imb_series)
@@ -2555,6 +2786,7 @@ def simulate(
     lp_active_activity = np.zeros(n_steps, dtype=float)
     lp_passive_activity = np.zeros(n_steps, dtype=float)
     arb_activity = np.zeros(n_steps, dtype=float)
+    jiter_activity = np.zeros(n_steps, dtype=float)
 
     # Smart router / noise trader: +1 for X->Y, -1 for Y->X
     for s, sign in zip(smart_activity_steps, smart_activity_signs):
@@ -2565,14 +2797,23 @@ def simulate(
             noise_activity[s] += sign
 
     # LPs (active vs passive): +1 for mint, -1 for burn
-    for s, is_passive in zip(mint_steps, mint_is_passive):
+    for s, is_passive, is_jiter in zip(mint_steps, mint_is_passive, mint_is_jiter):
         if 0 <= s < n_steps:
+            if is_jiter:
+                continue
             target = lp_passive_activity if is_passive else lp_active_activity
             target[s] += 1.0
-    for s, is_passive in zip(burn_steps, burn_is_passive):
+    for s, is_passive, is_jiter in zip(burn_steps, burn_is_passive, burn_is_jiter):
         if 0 <= s < n_steps:
+            if is_jiter:
+                continue
             target = lp_passive_activity if is_passive else lp_active_activity
             target[s] -= 1.0
+
+    # Jiter: +1 mint, -1 burn
+    for s, sign in zip(jiter_activity_steps, jiter_activity_signs):
+        if 0 <= s < n_steps:
+            jiter_activity[s] += sign
 
     # Arbitrageur: +1 for successful arb, 0 for skipped
     for s in arb_steps:
@@ -2584,6 +2825,7 @@ def simulate(
     lp_active_activity_cum = np.cumsum(lp_active_activity)
     lp_passive_activity_cum = np.cumsum(lp_passive_activity)
     arb_activity_cum = np.cumsum(arb_activity)
+    jiter_activity_cum = np.cumsum(jiter_activity)
 
     # --- Visualization skip window ---
     s0 = max(0, int(skip_step))
@@ -2598,6 +2840,8 @@ def simulate(
     L_pre_step_v = L_pre_step[s0:]
     L_pre_trader_v = L_pre_trader[s0:]
     L_pre_arb_eff_v = L_pre_arb_eff[s0:]
+    jiter_wealth_series_v = jiter_wealth_series[s0:]
+    jiter_pnl_series_v = jiter_pnl_series[s0:]
     arb_pnl_cum_v = arb_pnl_cum[s0:]
     sr_pnl_cum_v = sr_pnl_cum[s0:]
     noise_pnl_cum_v = noise_pnl_cum[s0:]
@@ -2621,20 +2865,24 @@ def simulate(
     lp_active_activity_cum_v = lp_active_activity_cum[s0:]
     lp_passive_activity_cum_v = lp_passive_activity_cum[s0:]
     arb_activity_cum_v = arb_activity_cum[s0:]
-
+    jiter_activity_cum_v = jiter_activity_cum[s0:]
     if visualize:
         # ΔL per step (split by LP type)
         mint_step_sum_passive = np.zeros_like(P_series)
         mint_step_sum_active = np.zeros_like(P_series)
         n_steps = len(P_series)
-        for s, L, is_passive in zip(mint_steps, mint_sizes, mint_is_passive):
+        for s, L, is_passive, is_jiter in zip(mint_steps, mint_sizes, mint_is_passive, mint_is_jiter):
             if 0 <= s < n_steps:
+                if is_jiter:
+                    continue
                 target = mint_step_sum_passive if is_passive else mint_step_sum_active
                 target[s] += L
         burn_step_sum_passive = np.zeros_like(P_series)
         burn_step_sum_active = np.zeros_like(P_series)
-        for s, L, is_passive in zip(burn_steps, burn_sizes, burn_is_passive):
+        for s, L, is_passive, is_jiter in zip(burn_steps, burn_sizes, burn_is_passive, burn_is_jiter):
             if 0 <= s < n_steps:
+                if is_jiter:
+                    continue
                 target = burn_step_sum_passive if is_passive else burn_step_sum_active
                 target[s] += L
 
@@ -2848,6 +3096,15 @@ def simulate(
                 name="Arbitrageur activity",
             )
         )
+        fig2b.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=jiter_activity_cum_v,
+                mode="lines",
+                name="Jiter activity",
+                line=dict(dash="dash"),
+            )
+        )
         fig2b.update_layout(
             template="plotly_white",
             title="Agent Activity (cumulative +1 / -1)",
@@ -2857,12 +3114,14 @@ def simulate(
         _save_plotly("2b_agent_activity", fig2b)
 
         # ----- 2c) Agent activity correlation heatmap -----
-        activity_labels = ["Smart router", "Noise trader", "Active LPs", "Passive LPs"]
+        activity_labels = ["Smart router", "Noise trader", "Active LPs", "Passive LPs", "Arbitrageur", "Jiter"]
         activity_series = [
             smart_activity_cum_v,
             noise_activity_cum_v,
             lp_active_activity_cum_v,
             lp_passive_activity_cum_v,
+            arb_activity_cum_v,
+            jiter_activity_cum_v,
         ]
         boot_iters = 100
         alpha = 0.05
@@ -2892,12 +3151,16 @@ def simulate(
                     exceed += 1
             return exceed / boot_iters
 
-        corr_matrix = np.zeros((len(activity_series), len(activity_series)), dtype=float)
+        n_agents = len(activity_series)
+        corr_matrix = np.full((n_agents, n_agents), np.nan, dtype=float)
         pval_matrix = np.ones_like(corr_matrix)
         for i, arr_i in enumerate(activity_series):
             for j, arr_j in enumerate(activity_series):
+                if j < i:
+                    # keep lower triangle as NaN (unpopulated)
+                    continue
                 if i == j:
-                    corr_matrix[i, j] = 1.0 if arr_i.size > 0 else 0.0
+                    corr_matrix[i, j] = 1.0 if arr_i.size > 0 else np.nan
                     pval_matrix[i, j] = 0.0
                 else:
                     corr_obs = _safe_corr(arr_i, arr_j)
@@ -2906,6 +3169,8 @@ def simulate(
 
         def _cell_text(i: int, j: int) -> str:
             val = corr_matrix[i, j]
+            if np.isnan(val):
+                return ""
             signif = (i != j) and (pval_matrix[i, j] <= alpha)
             star = "*" if signif else ""
             return f"{val:.3f}{star}"
@@ -3137,6 +3402,17 @@ def simulate(
         fig6.add_trace(
             go.Scatter(
                 x=steps_list,
+                y=jiter_pnl_series_v,
+                mode="lines",
+                name="Jiter hedged (LVR - fees)",
+                line=dict(width=2, color="#d62728"),
+            ),
+            row=1,
+            col=1,
+        )
+        fig6.add_trace(
+            go.Scatter(
+                x=steps_list,
                 y=lp_pnl_passive_series_v,
                 mode="lines",
                 name="Passive LP hedged (fees - LVR)",
@@ -3194,7 +3470,7 @@ def simulate(
         _save_plotly("6_pnl", fig6)
 
         # ----- 8) Fee panel + controller signal -----
-        fig7 = make_subplots(rows=1, cols=1, specs=[[{"secondary_y": True}]])
+        fig7 = make_subplots(rows=1, cols=2, specs=[[{"secondary_y": True}, {"secondary_y": False}]])
         fig7.add_trace(
             go.Scatter(x=steps_list, y=fee_series_v, mode="lines", name="Fee", line=dict(width=1.8)),
             row=1,
@@ -3225,10 +3501,71 @@ def simulate(
             col=1,
             secondary_y=True,
         )
+        # Empirical distribution of fees with mean/median markers
+        fee_mean = float(np.mean(fee_series_v)) if len(fee_series_v) > 0 else 0.0
+        fee_median = float(np.median(fee_series_v)) if len(fee_series_v) > 0 else 0.0
+        fig7.add_trace(
+            go.Histogram(
+                x=fee_series_v,
+                name="Fee distribution",
+                marker_color="#1f77b4",
+                opacity=0.75,
+            ),
+            row=1,
+            col=2,
+        )
+        if len(fee_series_v) > 0:
+            fig7.add_shape(
+                type="line",
+                x0=fee_mean,
+                x1=fee_mean,
+                y0=0,
+                y1=1,
+                xref="x2",
+                yref="paper",
+                line=dict(color="firebrick", width=2, dash="dash"),
+            )
+            fig7.add_shape(
+                type="line",
+                x0=fee_median,
+                x1=fee_median,
+                y0=0,
+                y1=1,
+                xref="x2",
+                yref="paper",
+                line=dict(color="black", width=2, dash="dot"),
+            )
+            # legend handles for mean/median
+            fig7.add_trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="lines",
+                    name="Mean (fee)",
+                    line=dict(color="firebrick", width=2, dash="dash"),
+                    showlegend=True,
+                ),
+                row=1,
+                col=2,
+            )
+            fig7.add_trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="lines",
+                    name="Median (fee)",
+                    line=dict(color="black", width=2, dash="dot"),
+                    showlegend=True,
+                ),
+                row=1,
+                col=2,
+            )
         fig7.update_layout(
             template="plotly_white",
             title="Fee & Controller Signal",
             xaxis_title="Step",
+            xaxis2_title="Fee",
+            yaxis2_title="Count",
         )
         fig7.update_yaxes(title_text="Fee", secondary_y=False)
         fig7.update_yaxes(title_text=secondary_label, secondary_y=True)
@@ -3309,6 +3646,12 @@ def simulate(
         "lp_wallet_passive_series": lp_wallet_passive_series.tolist(),
         "lp_wealth_active_series": lp_wealth_active_series.tolist(),
         "lp_wealth_passive_series": lp_wealth_passive_series.tolist(),
+        "jiter_wallet_series": jiter_wallet_series.tolist(),
+        "jiter_wealth_series": jiter_wealth_series.tolist(),
+        "jiter_fee_value_series": jiter_fee_value_series.tolist(),
+        "jiter_position_value_series": jiter_position_value_series.tolist(),
+        "jiter_pnl_series": jiter_pnl_series.tolist(),
+        "jiter_activity_cum": jiter_activity_cum.tolist(),
         "arb_exec_count": arb_exec_count,
         "smart_router_activity_cum": smart_activity_cum.tolist(),
         "noise_trader_activity_cum": noise_activity_cum.tolist(),

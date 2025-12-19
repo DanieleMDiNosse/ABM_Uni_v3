@@ -445,7 +445,7 @@ def bootstrap_initial_binomial_hill_sharded(
         lp = seed_LPs[idx % num_seed_lps]
         upper = lower + pool.tick_spacing
         sa = pool.s_lower(lower)
-        sb = pool.s_upper(upper)
+        sb = pool.s_lower(upper)
         amt0, amt1 = minted_amounts_at_S(L_i, sa, sb, S_entry)
 
         pos = Position(

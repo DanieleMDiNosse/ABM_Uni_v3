@@ -26,6 +26,11 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
   - `block_time == 1`: deterministic schedule `LP bucket A → smart+noise → LP bucket B → arb → LP bucket C`.
   - `block_time > 1`: freeze the validated snapshot, then run `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents; at the block boundary enqueue a single arb intent plus LP intents (burn/recenter/mint) and replay the shuffled mempool (arb first) against the live pool.
 - **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block LPs, noise traders, the arbitrageur, and the smart router all reference this shared “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`) when forming orders; in block mode the CEX path still diffuses in the background for rebalancing and diagnostics, but mempool orders are priced off the frozen snapshot and executed together at the block boundary.
+- **JIT LP “Jiter” agent (optional)**:
+  - An MEV-style *Just-in-Time* LP that can join blocks with Bernoulli arrival probability `p_jit` (block mode only, i.e. `block_time > 1`).
+  - At each block where it arrives, Jiter observes the full mempool and selects up to `N_jit` **largest swap intents by input size** (excluding the arbitrage intent).
+  - For each targeted swap, Jiter mints a very narrow position aligned with the **current active tick** just before the swap and burns it immediately after, aiming to own a fraction `liquidity_perc_jit` of active liquidity in that band.
+  - Jiter’s PnL and wealth are tracked separately from passive/active LP cohorts (as if funded via a flash loan with no extra friction beyond existing pool fees).
 - **Dynamic fee controller** with four modes:
   - `static` fixes the fee at `f0`.
   - `volatility` adds a multiple of EWMA(|log-return|).
