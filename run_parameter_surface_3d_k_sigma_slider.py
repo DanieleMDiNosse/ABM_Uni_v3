@@ -29,7 +29,7 @@ import plotly.graph_objects as go
 from tqdm import tqdm
 
 import run as run_module
-from utils import build_empty_pool, load_simulation_parameters, scenario_output_root
+from utils import build_empty_pool, load_simulation_parameters
 
 
 def _silent_tqdm(iterable=None, **kwargs):
@@ -512,9 +512,8 @@ def main() -> None:
     if float(base_params.get("passive_lp_share", 1.0)) <= 0.0:
         raise SystemExit("Scenario has passive_lp_share=0; passive LP PnL is not defined for this surface.")
 
-    # Keep outputs scenario-scoped (no per-run logs in light_mode, but keep paths consistent).
-    scenario_root = scenario_output_root(args.config)
-    base_params["results_root"] = scenario_root / "grid_search"
+    # Grid-search outputs are written only under the global root.
+    base_params["results_root"] = Path("abm_results") / "grid_search"
 
     width_ticks_by_pct: Dict[float, int] = {}
     for pct in width_pcts:
@@ -536,28 +535,21 @@ def main() -> None:
 
     # --- outputs -------------------------------------------------------------
     global_root = Path("abm_results") / "grid_search"
-    scenario_grid_dir = scenario_root / "grid_search"
 
     data_dir_global = global_root / "surface_3d" / "data"
-    data_dir_scenario = scenario_grid_dir / "surface_3d" / "data"
 
     stem = args.config.stem
     grid_tag = f"w{len(width_pcts)}_n{len(noise_values)}_k{len(k_sigma_values)}_r{runs_per_point}"
     csv_global = data_dir_global / f"surface_passive_lp_pnl_and_fee_medians_{stem}_{grid_tag}.csv"
-    csv_scenario = data_dir_scenario / f"surface_passive_lp_pnl_and_fee_medians_{grid_tag}.csv"
 
     png_dir_global = global_root / "surface_3d" / "png"
     html_dir_global = global_root / "surface_3d" / "html"
-    png_dir_scenario = scenario_grid_dir / "surface_3d" / "png"
-    html_dir_scenario = scenario_grid_dir / "surface_3d" / "html"
 
     fig_base = f"surface_passive_lp_pnl_and_fee_medians_{stem}_{grid_tag}_k_sigma_slider"
     png_path_global = png_dir_global / f"{fig_base}.png"
     html_path_global = html_dir_global / f"{fig_base}.html"
-    png_path_scenario = png_dir_scenario / f"{fig_base}.png"
-    html_path_scenario = html_dir_scenario / f"{fig_base}.html"
 
-    cached = _load_cache(csv_scenario)
+    cached = _load_cache(csv_global)
     existing_keys = _existing_keys(cached)
 
     # --- grid construction ---------------------------------------------------
@@ -591,8 +583,7 @@ def main() -> None:
         f"workers={args.max_workers}"
     )
     if points_to_run:
-        print(f"[surface_3d] cache (scenario): {csv_scenario}")
-        print(f"[surface_3d] cache (global):   {csv_global}")
+        print(f"[surface_3d] cache (global): {csv_global}")
 
     # --- run simulations -----------------------------------------------------
     pending_rows: List[Dict[str, Any]] = []
@@ -621,19 +612,17 @@ def main() -> None:
                 if progress_overall is not None:
                     progress_overall.update(1)
                 if len(pending_rows) >= 25:
-                    _append_rows_csv(csv_scenario, pending_rows)
                     _append_rows_csv(csv_global, pending_rows)
                     pending_rows.clear()
 
         if pending_rows:
-            _append_rows_csv(csv_scenario, pending_rows)
             _append_rows_csv(csv_global, pending_rows)
             pending_rows.clear()
     if progress_overall is not None:
         progress_overall.close()
 
     # --- build figure from cache --------------------------------------------
-    dataframe = _load_cache(csv_scenario)
+    dataframe = _load_cache(csv_global)
     if dataframe.empty:
         raise SystemExit("No data found; nothing to plot.")
 
@@ -687,10 +676,9 @@ def main() -> None:
     )
 
     save_plotly_figure(figure, png_path=png_path_global, html_path=html_path_global, source="surface_3d")
-    save_plotly_figure(figure, png_path=png_path_scenario, html_path=html_path_scenario, source="surface_3d")
 
-    print(f"[surface_3d] HTML written to {html_path_global} and {html_path_scenario}")
-    print(f"[surface_3d] PNG written to {png_path_global} and {png_path_scenario}")
+    print(f"[surface_3d] HTML written to {html_path_global}")
+    print(f"[surface_3d] PNG written to {png_path_global}")
 
 
 if __name__ == "__main__":

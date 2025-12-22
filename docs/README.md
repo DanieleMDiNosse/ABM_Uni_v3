@@ -483,7 +483,7 @@ Outputs:
 
 ## Batch Runners & Analysis Helpers
 - `run_scenarios_mean_std.py --scenarios-dir scenarios/ --runs 5`: run every YAML scenario multiple times and emit mean ± std PnL charts for each agent class.
-- `run_parameter_grid_mean_std_parallel.py`: parallel grid search over fee modes and fee sensitivities (static, volatility, toxicity) using a base YAML config (see `BASE_CONFIG_PATH` in the script); writes a summary CSV plus PnL/fee violin plots under `abm_results/grid_search/` and mirrors them into the corresponding scenario output root.
+- `run_parameter_grid_mean_std_parallel.py`: parallel grid search over fee modes and fee sensitivities (static, volatility, toxicity) using a base YAML config (see `BASE_CONFIG_PATH` in the script); writes outputs under `abm_results/grid_search/`.
 - `sigma_calibration.py`: derive realistic per-second `cex_sigma` from Binance 1s ETH/USDC data (CSV/Parquet/pickle) and optionally persist the computed series.
 - `visualize_distributions.py`: generate and save figures for the stochastic components used by the simulator (Heston price/volatility paths, binomial-hill initial liquidity, binomial width noise, log-normal trader and LP mint-size distributions, and geometric LP review clocks), useful for validating input distributions and for documentation figures.
 

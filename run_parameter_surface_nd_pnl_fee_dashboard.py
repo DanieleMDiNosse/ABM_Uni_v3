@@ -33,7 +33,7 @@ import pandas as pd
 from tqdm import tqdm
 
 import run as run_module
-from utils import load_simulation_parameters, scenario_output_root
+from utils import load_simulation_parameters
 
 
 def _silent_tqdm(iterable=None, **kwargs):
@@ -965,8 +965,7 @@ def main() -> None:
         raise SystemExit("Need at least 2 swept parameters to build a surface.")
 
     scenario_label, base_params = load_simulation_parameters(args.config, simulate_func=simulate)
-    scenario_root = scenario_output_root(args.config)
-    base_params["results_root"] = scenario_root / "grid_search"
+    base_params["results_root"] = Path("abm_results") / "grid_search"
 
     f_min = float(base_params.get("f_min", 0.0))
     f_max = float(base_params.get("f_max", 0.0))
@@ -983,17 +982,13 @@ def main() -> None:
     )
 
     # --- outputs -------------------------------------------------------------
-    scenario_grid_dir = scenario_root / "grid_search" / "dashboard_nd"
     global_root = Path("abm_results") / "grid_search" / "dashboard_nd"
 
     stem = args.config.stem
     tag = f"{stem}_{fingerprint}"
 
-    csv_scenario = scenario_grid_dir / "data" / f"grid_{tag}.csv"
     csv_global = global_root / "data" / f"grid_{tag}.csv"
-    html_scenario = scenario_grid_dir / "html" / f"dashboard_{tag}.html"
     html_global = global_root / "html" / f"dashboard_{tag}.html"
-    errors_scenario = scenario_grid_dir / "data" / f"errors_{tag}.csv"
     errors_global = global_root / "data" / f"errors_{tag}.csv"
 
     # --- dry run -------------------------------------------------------------
@@ -1018,8 +1013,8 @@ def main() -> None:
             preview = values if len(values) <= 10 else (list(values[:5]) + ["..."] + list(values[-2:]))
             print(f"    - {name}: {len(values)} values: {preview}")
         print(f"  total grid points: {total_points}")
-        print(f"  cache (scenario): {csv_scenario}")
-        print(f"  html (scenario):  {html_scenario}")
+        print(f"  cache (global): {csv_global}")
+        print(f"  html (global):  {html_global}")
         return
 
     # --- build grid ----------------------------------------------------------
@@ -1028,7 +1023,7 @@ def main() -> None:
         empty = [name for name in param_order if len(sweeps[name]) <= 0]
         raise SystemExit(f"Empty sweep values for parameters: {empty}")
 
-    cached = _load_cache(csv_scenario)
+    cached = _load_cache(csv_global)
     ok_cached, failed_cached = _existing_status(cached, param_order=param_order)
     if args.recompute:
         existing: set[Tuple[int, ...]] = set()
@@ -1042,8 +1037,7 @@ def main() -> None:
         f"slice=[{index_start},{index_stop}) ({slice_total} points) | workers={args.max_workers}"
     )
     if slice_total > 0:
-        print(f"[dashboard_nd] cache (scenario): {csv_scenario}")
-        print(f"[dashboard_nd] cache (global):   {csv_global}")
+        print(f"[dashboard_nd] cache (global): {csv_global}")
 
     # --- run simulations -----------------------------------------------------
     pending_rows: List[Dict[str, Any]] = []
@@ -1128,11 +1122,9 @@ def main() -> None:
                         if progress_overall is not None:
                             progress_overall.update(1)
                         if len(pending_rows) >= 25:
-                            _append_rows_csv(csv_scenario, pending_rows)
                             _append_rows_csv(csv_global, pending_rows)
                             pending_rows.clear()
                         if len(pending_error_rows) >= 10:
-                            _append_rows_csv(errors_scenario, pending_error_rows)
                             _append_rows_csv(errors_global, pending_error_rows)
                             pending_error_rows.clear()
 
@@ -1175,19 +1167,15 @@ def main() -> None:
                     if progress_overall is not None:
                         progress_overall.update(1)
                     if len(pending_rows) >= 25:
-                        _append_rows_csv(csv_scenario, pending_rows)
                         _append_rows_csv(csv_global, pending_rows)
                         pending_rows.clear()
                     if len(pending_error_rows) >= 10:
-                        _append_rows_csv(errors_scenario, pending_error_rows)
                         _append_rows_csv(errors_global, pending_error_rows)
                         pending_error_rows.clear()
         if pending_rows:
-            _append_rows_csv(csv_scenario, pending_rows)
             _append_rows_csv(csv_global, pending_rows)
             pending_rows.clear()
         if pending_error_rows:
-            _append_rows_csv(errors_scenario, pending_error_rows)
             _append_rows_csv(errors_global, pending_error_rows)
             pending_error_rows.clear()
 
@@ -1199,10 +1187,10 @@ def main() -> None:
             f"failed={failed_in_slice}, total={slice_total}"
         )
         if failed_in_slice > 0:
-            print(f"[dashboard_nd] failures logged to {errors_scenario} (and {errors_global})")
+            print(f"[dashboard_nd] failures logged to {errors_global}")
 
     # --- build dashboard from cache -----------------------------------------
-    dataframe = _load_cache(csv_scenario)
+    dataframe = _load_cache(csv_global)
     if dataframe.empty:
         raise SystemExit("No cached data found; nothing to plot.")
 
@@ -1268,24 +1256,8 @@ def main() -> None:
         records_fee_median=records_fee_median,
         records_fee_hist=records_fee_hist,
     )
-    _write_dashboard_html(
-        html_scenario,
-        title=title,
-        scenario_label=scenario_label,
-        config_path=args.config,
-        param_order=param_order,
-        sweep_values=sweeps,
-        int_params=sorted(INT_PARAMS),
-        default_indices=default_indices,
-        fee_bin_edges=fee_bin_edges.tolist(),
-        records_idx=records_idx,
-        records_pnl=records_pnl,
-        records_fee_mean=records_fee_mean,
-        records_fee_median=records_fee_median,
-        records_fee_hist=records_fee_hist,
-    )
 
-    print(f"[dashboard_nd] HTML written to {html_global} and {html_scenario}")
+    print(f"[dashboard_nd] HTML written to {html_global}")
 
 
 if __name__ == "__main__":

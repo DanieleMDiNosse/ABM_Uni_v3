@@ -4,11 +4,12 @@ fee_mode: volatility
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
   config_name: test
+  liquidity_for_gif: false
   verbose: true
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 2000
+  T: 16000
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 1000
   # Random seed used for reproducibility across RNGs
@@ -65,7 +66,7 @@ simulate:
   # Fraction of LP agents designated as passive baseline providers
   passive_lp_share: 1
   # Expected number of narrow LP mints per block (total across narrow LPs)
-  narrow_mints_per_block: 10
+  narrow_mints_per_block: 5
   # Expected number of passive LP mints per block (total across passive LPs)
   passive_mints_per_block: 5
   # Expected number of passive LP burns per block (total across passive LPs)
@@ -88,8 +89,8 @@ simulate:
   # Success probability for the binomial noise component on LP width
   binom_p: 0.5
   # Range for consecutive out-of-range steps before a narrow LP recenters (sampled per LP)
-  k_out_min: 20
-  k_out_max: 30
+  k_out_min: 10
+  k_out_max: 20
   # Mean of log-normal draw scaling LP mint sizes
   mint_mu: 2.5
   # Standard deviation of log-normal draw scaling LP mint sizes
@@ -98,6 +99,14 @@ simulate:
   theta_TP: 0.1
   # Stop-loss ratio (relative to initial HODL value) for LP burn decisions
   theta_SL: 0.20
+
+  ##### JIT LP (Jiter) #####
+  # Bernoulli arrival probability per block (Jiter runs only when block_time > 1)
+  p_jit: 0
+  # Target up to top-N swaps by input size per arriving block
+  N_jit: 1
+  # Target share of active liquidity to temporarily add in a narrow band (0-1)
+  liquidity_perc_jit: 0.90
 
 
   #### INITIALIZATION & VISUALIZATION #####

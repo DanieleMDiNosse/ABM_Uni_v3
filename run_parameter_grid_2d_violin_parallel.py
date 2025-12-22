@@ -38,7 +38,7 @@ from tqdm import tqdm
 import plotly.graph_objects as go
 
 import run as run_module
-from utils import load_simulation_parameters, scenario_output_root
+from utils import load_simulation_parameters
 
 
 # Silence the tqdm progress bar inside run.simulate to avoid nested bars
@@ -684,9 +684,8 @@ def main() -> None:
         recompute = True
 
     scenario_label, base_params = load_simulation_parameters(BASE_CONFIG_PATH, simulate_func=simulate)
-    scenario_root = scenario_output_root(BASE_CONFIG_PATH)
     base_params = dict(base_params)
-    base_params["results_root"] = scenario_root / "grid_search"
+    base_params["results_root"] = OUTPUT_ROOT
     theta_T_value = base_params.get("theta_T", None)
     theta_T_label = "na" if theta_T_value is None else f"{float(theta_T_value):g}"
 
@@ -748,7 +747,7 @@ def main() -> None:
                 total_points = len(axis_x_values) * len(axis_y_values)
                 print(
                     f"[DRY RUN] 2D grid (x={axis_x}, y={axis_y}):\n"
-                    f"  base scenario: {scenario_label} (output -> {scenario_root})\n"
+                    f"  base scenario: {scenario_label} (output -> {OUTPUT_ROOT})\n"
                     f"  sigma profile: {sigma_label}\n"
                     f"  fee_mode: {fee_mode} (sensitivity_param={fee_cfg['param_name']})\n"
                     f"  axis_x: {axis_x} ({axis_x_label}) values: {_format_axis_values(axis_x_values)}\n"
@@ -759,22 +758,15 @@ def main() -> None:
                 )
         return
 
-    # Prepare output directories (global + scenario-local mirrors).
+    # Prepare output directories (global only).
     png_dir_global = PLOTS_3D_ROOT / "png"
     html_dir_global = PLOTS_3D_ROOT / "html"
-    scenario_grid_dir = scenario_output_root(BASE_CONFIG_PATH) / "grid_search"
-    png_dir_scenario = scenario_grid_dir / "plots_3d" / "png"
-    html_dir_scenario = scenario_grid_dir / "plots_3d" / "html"
     png_dir_global.mkdir(parents=True, exist_ok=True)
     html_dir_global.mkdir(parents=True, exist_ok=True)
-    png_dir_scenario.mkdir(parents=True, exist_ok=True)
-    html_dir_scenario.mkdir(parents=True, exist_ok=True)
 
     # Data cache directories
     data_dir_global = PLOTS_3D_ROOT / "data"
-    data_dir_scenario = scenario_grid_dir / "plots_3d" / "data"
     data_dir_global.mkdir(parents=True, exist_ok=True)
-    data_dir_scenario.mkdir(parents=True, exist_ok=True)
 
     for fee_mode in fee_modes:
         if fee_mode not in FEE_MODE_CONFIG:
@@ -850,7 +842,7 @@ def main() -> None:
 
                 print(
                     "2D grid parameters:\n"
-                    f"  base scenario: {scenario_label} (output -> {scenario_root})\n"
+                    f"  base scenario: {scenario_label} (output -> {OUTPUT_ROOT})\n"
                     f"  sigma profile: {sigma_label}\n"
                     f"  fee_mode: {fee_mode} (sensitivity_param={fee_cfg['param_name']})\n"
                     f"  axis_x: {axis_x} ({axis_x_label}) values: {_format_axis_values(axis_x_values)}\n"
@@ -919,16 +911,13 @@ def main() -> None:
                 dataframe_active = pd.DataFrame(active_rows)
                 dataframe_fee = pd.DataFrame(fee_rows)
 
-                # Cache data to CSV (global + scenario)
+                # Cache data to CSV (global)
                 if not dataframe_passive.empty:
                     dataframe_passive.to_csv(data_passive_path, index=False)
-                    (data_dir_scenario / data_passive_path.name).write_bytes(data_passive_path.read_bytes())
                 if not dataframe_active.empty:
                     dataframe_active.to_csv(data_active_path, index=False)
-                    (data_dir_scenario / data_active_path.name).write_bytes(data_active_path.read_bytes())
                 if not dataframe_fee.empty:
                     dataframe_fee.to_csv(data_fee_path, index=False)
-                    (data_dir_scenario / data_fee_path.name).write_bytes(data_fee_path.read_bytes())
 
             figures_to_show: List[go.Figure] = []
 
@@ -956,11 +945,6 @@ def main() -> None:
                     source="grid_2d_violin",
                 )
 
-                png_path_scenario_passive = png_dir_scenario / f"{filename_passive}.png"
-                html_path_scenario_passive = html_dir_scenario / f"{filename_passive}.html"
-                png_path_scenario_passive.write_bytes(png_path_global_passive.read_bytes())
-                html_path_scenario_passive.write_bytes(html_path_global_passive.read_bytes())
-
             if include_active_lp_pnl and not dataframe_active.empty:
                 title_active = f"[{fee_mode}] Active LP hedged PnL — 2D {axis_x_label} × {axis_y_label}"
                 figure_active = plot_3d_violin_grid(
@@ -984,11 +968,6 @@ def main() -> None:
                     html_path_global_active,
                     source="grid_2d_violin",
                 )
-
-                png_path_scenario_active = png_dir_scenario / f"{filename_active}.png"
-                html_path_scenario_active = html_dir_scenario / f"{filename_active}.html"
-                png_path_scenario_active.write_bytes(png_path_global_active.read_bytes())
-                html_path_scenario_active.write_bytes(html_path_global_active.read_bytes())
 
             if not dataframe_fee.empty:
                 title_fee = f"[{fee_mode}] Fee level — 2D {axis_x_label} × {axis_y_label}"
@@ -1014,18 +993,13 @@ def main() -> None:
                     source="grid_2d_violin",
                 )
 
-                png_path_scenario_fee = png_dir_scenario / f"{filename_fee}.png"
-                html_path_scenario_fee = html_dir_scenario / f"{filename_fee}.html"
-                png_path_scenario_fee.write_bytes(png_path_global_fee.read_bytes())
-                html_path_scenario_fee.write_bytes(html_path_global_fee.read_bytes())
-
             # Optionally display figures interactively (separate windows/tabs).
             # for fig in figures_to_show:
             #     fig.show()
 
             print(
-                f"[{fee_mode} | {axis_x}×{axis_y}] 3D violin PNGs written to {png_dir_global} and {png_dir_scenario}\n"
-                f"[{fee_mode} | {axis_x}×{axis_y}] 3D violin HTML files written to {html_dir_global} and {html_dir_scenario}"
+                f"[{fee_mode} | {axis_x}×{axis_y}] 3D violin PNGs written to {png_dir_global}\n"
+                f"[{fee_mode} | {axis_x}×{axis_y}] 3D violin HTML files written to {html_dir_global}"
             )
 
 

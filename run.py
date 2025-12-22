@@ -136,6 +136,8 @@ def simulate(
     block_time: int,
     T: int,
     seed: int,
+    liquidity_for_gif: bool,
+    light_mode: bool,
     
     # === Market parameters ===
     cex_mu: float,
@@ -226,7 +228,6 @@ def simulate(
     skip_step: int = 100,
     results_root: Optional[str | Path] = None,
     verbose: bool = True,
-    light_mode: bool = False,
 ) -> Dict[str, Any]:
 
     valid_fee_modes = {"static", "volatility", "volatility_oracle", "toxicity"}
@@ -250,15 +251,7 @@ def simulate(
         if passive_width_pct > 100.0:
             print(f"passive_width_pct was set to {passive_width_pct}. Clamping it to 100%")
             passive_width_pct = 100.0
-    # if passive_width_ticks is not None:
-    #     try:
-    #         passive_width_ticks = int(passive_width_ticks)
-    #     except (TypeError, ValueError) as exc:
-    #         raise ValueError(f"passive_width_ticks must be an integer: got {passive_width_ticks!r}") from exc
-    #     if passive_width_ticks <= 0:
-    #         raise ValueError(f"passive_width_ticks must be positive: got {passive_width_ticks}")
-    # if passive_width_pct is None and passive_width_ticks is None:
-    #     raise ValueError("Provide passive_width_pct (preferred) or passive_width_ticks for passive LP ranges.")
+
     initial_params = dict(locals())
 
     def _vprint(*args, **kwargs):
@@ -333,51 +326,6 @@ def simulate(
             raise ValueError(
                 "cex_heston_rho must be in [-1, 1] when cex_sigma_mode='heston'."
             )
-    if regime_mode:
-        if cex_sigma_low is None or cex_sigma_high is None:
-            raise ValueError("cex_sigma_low and cex_sigma_high must be set when cex_sigma_mode='regime'.")
-        if cex_sigma_high <= cex_sigma_low:
-            raise ValueError(f"Require cex_sigma_high > cex_sigma_low (got {cex_sigma_low} >= {cex_sigma_high}).")
-        if not (0.0 <= cex_sigma_p_LL <= 1.0) or not (0.0 <= cex_sigma_p_HH <= 1.0):
-            raise ValueError("cex_sigma_p_LL and cex_sigma_p_HH must be probabilities in [0, 1].")
-        sigma_annualized_low = cex_sigma_low * math.sqrt(seconds_per_year)
-        sigma_annualized_high = cex_sigma_high * math.sqrt(seconds_per_year)
-        _vprint(
-            f"\n[CONFIG] Regime-switching cex_sigma: "
-            f"low={cex_sigma_low} ({sigma_annualized_low:.2%} annualized), "
-            f"high={cex_sigma_high} ({sigma_annualized_high:.2%} annualized), "
-            f"start={regime_state}, p_LL={cex_sigma_p_LL}, p_HH={cex_sigma_p_HH}"
-        )
-        sigma_for_ref = cex_sigma_low if regime_state == "L" else cex_sigma_high
-    elif noisy_sine_mode:
-        try:
-            cex_sigma_val = float(cex_sigma)
-            cex_sigma_sine_amp_val = float(cex_sigma_sine_amp)
-            cex_sigma_sine_noise_val = float(cex_sigma_sine_noise)
-            cex_sigma_sine_period_val = int(cex_sigma_sine_period)
-        except Exception as exc:
-            raise ValueError("noisy_sine mode requires numeric cex_sigma, cex_sigma_sine_amp, cex_sigma_sine_noise, and cex_sigma_sine_period.") from exc
-        if cex_sigma_val <= 0:
-            raise ValueError("cex_sigma must be set and positive when cex_sigma_mode='noisy_sine'.")
-        if cex_sigma_sine_amp_val <= 0:
-            raise ValueError("cex_sigma_sine_amp must be set and positive when cex_sigma_mode='noisy_sine'.")
-        if cex_sigma_sine_period_val <= 0:
-            raise ValueError("cex_sigma_sine_period must be set and positive when cex_sigma_mode='noisy_sine'.")
-        if cex_sigma_sine_noise_val < 0:
-            raise ValueError("cex_sigma_sine_noise must be set and non-negative when cex_sigma_mode='noisy_sine'.")
-        sigma_center = max(1e-12, cex_sigma_val)
-        amp_for_log = cex_sigma_sine_amp_val
-        sigma_annualized_center = sigma_center * math.sqrt(seconds_per_year)
-        sigma_high_annualized = (sigma_center + amp_for_log) * math.sqrt(seconds_per_year)
-        sigma_low_annualized = max(0.0, (sigma_center - amp_for_log)) * math.sqrt(seconds_per_year)
-        _vprint(
-            f"\n[CONFIG] Noisy-sine cex_sigma: "
-            f"center={sigma_center} ({sigma_annualized_center:.2%} annualized), "
-            f"amp={amp_for_log} ([{sigma_low_annualized:.2%},{sigma_high_annualized:.2%}] annualized), period={cex_sigma_sine_period} steps, "
-            f"noise_std={cex_sigma_sine_noise}, floor={cex_sigma_floor}"
-        )
-        sigma_for_ref = sigma_center
-    elif heston_mode:
         # Determine initial per-step sigma from explicit v0 or cex_sigma.
         if cex_heston_v0 is not None:
             v0 = float(cex_heston_v0)
@@ -399,6 +347,72 @@ def simulate(
             f"kappa={cex_heston_kappa}, theta={cex_heston_theta}, "
             f"sigma_v={cex_heston_sigma_v}, rho={cex_heston_rho}, v0={cex_heston_v0}"
         )
+    if regime_mode:
+        if cex_sigma_low is None or cex_sigma_high is None:
+            raise ValueError("cex_sigma_low and cex_sigma_high must be set when cex_sigma_mode='regime'.")
+        if cex_sigma_high <= cex_sigma_low:
+            raise ValueError(f"Require cex_sigma_high > cex_sigma_low (got {cex_sigma_low} >= {cex_sigma_high}).")
+        if not (0.0 <= cex_sigma_p_LL <= 1.0) or not (0.0 <= cex_sigma_p_HH <= 1.0):
+            raise ValueError("cex_sigma_p_LL and cex_sigma_p_HH must be probabilities in [0, 1].")
+        sigma_annualized_low = cex_sigma_low * math.sqrt(seconds_per_year)
+        sigma_annualized_high = cex_sigma_high * math.sqrt(seconds_per_year)
+        _vprint(
+            f"\n[CONFIG] Regime-switching cex_sigma: "
+            f"low={cex_sigma_low} ({sigma_annualized_low:.2%} annualized), "
+            f"high={cex_sigma_high} ({sigma_annualized_high:.2%} annualized), "
+            f"start={regime_state}, p_LL={cex_sigma_p_LL}, p_HH={cex_sigma_p_HH}"
+        )
+        sigma_for_ref = cex_sigma_low if regime_state == "L" else cex_sigma_high
+    # elif noisy_sine_mode:
+    #     try:
+    #         cex_sigma_val = float(cex_sigma)
+    #         cex_sigma_sine_amp_val = float(cex_sigma_sine_amp)
+    #         cex_sigma_sine_noise_val = float(cex_sigma_sine_noise)
+    #         cex_sigma_sine_period_val = int(cex_sigma_sine_period)
+    #     except Exception as exc:
+    #         raise ValueError("noisy_sine mode requires numeric cex_sigma, cex_sigma_sine_amp, cex_sigma_sine_noise, and cex_sigma_sine_period.") from exc
+    #     if cex_sigma_val <= 0:
+    #         raise ValueError("cex_sigma must be set and positive when cex_sigma_mode='noisy_sine'.")
+    #     if cex_sigma_sine_amp_val <= 0:
+    #         raise ValueError("cex_sigma_sine_amp must be set and positive when cex_sigma_mode='noisy_sine'.")
+    #     if cex_sigma_sine_period_val <= 0:
+    #         raise ValueError("cex_sigma_sine_period must be set and positive when cex_sigma_mode='noisy_sine'.")
+    #     if cex_sigma_sine_noise_val < 0:
+    #         raise ValueError("cex_sigma_sine_noise must be set and non-negative when cex_sigma_mode='noisy_sine'.")
+    #     sigma_center = max(1e-12, cex_sigma_val)
+    #     amp_for_log = cex_sigma_sine_amp_val
+    #     sigma_annualized_center = sigma_center * math.sqrt(seconds_per_year)
+    #     sigma_high_annualized = (sigma_center + amp_for_log) * math.sqrt(seconds_per_year)
+    #     sigma_low_annualized = max(0.0, (sigma_center - amp_for_log)) * math.sqrt(seconds_per_year)
+    #     _vprint(
+    #         f"\n[CONFIG] Noisy-sine cex_sigma: "
+    #         f"center={sigma_center} ({sigma_annualized_center:.2%} annualized), "
+    #         f"amp={amp_for_log} ([{sigma_low_annualized:.2%},{sigma_high_annualized:.2%}] annualized), period={cex_sigma_sine_period} steps, "
+    #         f"noise_std={cex_sigma_sine_noise}, floor={cex_sigma_floor}"
+    #     )
+    #     sigma_for_ref = sigma_center
+    # elif heston_mode:
+    #     # Determine initial per-step sigma from explicit v0 or cex_sigma.
+    #     if cex_heston_v0 is not None:
+    #         v0 = float(cex_heston_v0)
+    #         if v0 <= 0.0:
+    #             raise ValueError(
+    #                 "cex_heston_v0 must be positive when cex_sigma_mode='heston'."
+    #             )
+    #         sigma_for_ref = math.sqrt(v0)
+    #     else:
+    #         sigma_for_ref = float(cex_sigma)
+    #         if sigma_for_ref <= 0.0:
+    #             raise ValueError(
+    #                 "cex_sigma must be positive when cex_sigma_mode='heston' and cex_heston_v0 is not provided."
+    #             )
+    #     sigma_annualized = sigma_for_ref * math.sqrt(seconds_per_year)
+    #     _vprint(
+    #         f"\n[CONFIG] Heston cex_sigma_mode: "
+    #         f"sigma0={sigma_for_ref} ({sigma_annualized:.2%} annualized), "
+    #         f"kappa={cex_heston_kappa}, theta={cex_heston_theta}, "
+    #         f"sigma_v={cex_heston_sigma_v}, rho={cex_heston_rho}, v0={cex_heston_v0}"
+    #     )
     else:
         sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
         _vprint(f"\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
@@ -409,11 +423,13 @@ def simulate(
     pool, m0 = build_empty_pool()
 
     def _snap_up_tick(tick: int) -> int:
+        '''Snap a tick to the nearest multiple of the tick spacing.'''
         spacing = int(pool.tick_spacing)
         tick_int = int(tick)
         return -((-tick_int) // spacing) * spacing
 
     def _passive_range_ticks_from_pct(S_now: float) -> Tuple[int, int]:
+        '''Compute the mint range from the current price and the passive width percentage.'''
         if passive_width_pct is None:
             raise RuntimeError("Internal error: passive_width_pct is None.")
         half = float(passive_width_pct) / 200.0
@@ -674,6 +690,7 @@ def simulate(
     sr_y_series = []
     noise_y_series = []
 
+    pid_str = str(os.getpid())
     LOG_BUFFER_LIMIT = 10_000
     log_buffer: List[str] = []
     verbose_log_path: Optional[Path] = None
@@ -690,7 +707,7 @@ def simulate(
         # Determine verbose log file path for this run (scenario-aware)
         logs_dir = results_root_path / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
-        verbose_log_path = next_numbered_path(logs_dir / f"verbose_steps_{fee_mode}")
+        verbose_log_path = next_numbered_path(logs_dir / f"{pid_str}_verbose_steps_{fee_mode}")
         verbose_log_path_str = str(verbose_log_path)
 
         verbose_log = open(verbose_log_path_str, "a")
@@ -708,6 +725,7 @@ def simulate(
                 verbose_log.write("".join(log_buffer))
                 log_buffer.clear()
 
+        buffer_log(f"# PID {pid_str}\n")
         buffer_log("# Simulation parameters\n")
         for key in sorted(initial_params):
             buffer_log(f"{key} = {initial_params[key]}\n")
@@ -2737,7 +2755,8 @@ def simulate(
         )
         buffer_log(log_line + "\n")
 
-        liq_history.append(dict(pool.liquidity_net))
+        if liquidity_for_gif:
+            liq_history.append(dict(pool.liquidity_net))
         tick_history.append(pool.tick)
 
         validated_S = pool.S
@@ -2966,15 +2985,7 @@ def simulate(
         _html_dir = _out_dir / "html"
         _png_dir.mkdir(parents=True, exist_ok=True)
         _html_dir.mkdir(parents=True, exist_ok=True)
-        sigma_label = cex_sigma
-        if regime_mode:
-            sigma_label = f"{cex_sigma_low}-{cex_sigma_high}-regime"
-        elif noisy_sine_mode:
-            amp_label = "auto" if cex_sigma_sine_amp is None else cex_sigma_sine_amp
-            sigma_label = f"noisy_sine-{cex_sigma}-amp{amp_label}-per{cex_sigma_sine_period}"
-            if cex_sigma_sine_noise:
-                sigma_label += f"-noise{cex_sigma_sine_noise}"
-        _prefix = f"abm_fee_{fee_mode}_{sigma_label}"
+        _prefix = f"{pid_str}_{fee_mode}"
 
         total_steps = max(1, len(steps) - s0)
 
@@ -3491,17 +3502,17 @@ def simulate(
             row=1,
             col=1,
         )
-        fig6.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=lp_unhedged_active_series_v,
-                mode="lines",
-                name="Active LP unhedged",
-                line=dict(color="#9467bd"),
-            ),
-            row=1,
-            col=1,
-        )
+        # fig6.add_trace(
+        #     go.Scatter(
+        #         x=steps_list,
+        #         y=lp_unhedged_active_series_v,
+        #         mode="lines",
+        #         name="Active LP unhedged",
+        #         line=dict(color="#9467bd"),
+        #     ),
+        #     row=1,
+        #     col=1,
+        # )
         # fig6.add_trace(
         #     go.Scatter(
         #         x=steps_list,
@@ -3540,7 +3551,7 @@ def simulate(
         _save_plotly("6_pnl", fig6)
 
         # ----- 8) Fee panel + controller signal -----
-        fig7 = make_subplots(rows=1, cols=2, specs=[[{"secondary_y": True}, {"secondary_y": False}]])
+        fig7 = make_subplots(rows=2, cols=1, specs=[[{"secondary_y": True}], [{"secondary_y": False}]])
         fig7.add_trace(
             go.Scatter(x=steps_list, y=fee_series_v, mode="lines", name="Fee", line=dict(width=1.8)),
             row=1,
@@ -3581,8 +3592,8 @@ def simulate(
                 marker_color="#1f77b4",
                 opacity=0.75,
             ),
-            row=1,
-            col=2,
+            row=2,
+            col=1,
         )
         if len(fee_series_v) > 0:
             fig7.add_shape(
@@ -3615,8 +3626,8 @@ def simulate(
                     line=dict(color="firebrick", width=2, dash="dash"),
                     showlegend=True,
                 ),
-                row=1,
-                col=2,
+                row=2,
+                col=1,
             )
             fig7.add_trace(
                 go.Scatter(
@@ -3627,8 +3638,8 @@ def simulate(
                     line=dict(color="black", width=2, dash="dot"),
                     showlegend=True,
                 ),
-                row=1,
-                col=2,
+                row=2,
+                col=1,
             )
         fig7.update_layout(
             template="plotly_white",
@@ -3744,6 +3755,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    pid_str = str(os.getpid())
     config_path = Path(args.config).expanduser().resolve()
     scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
 
@@ -3783,20 +3795,22 @@ if __name__ == "__main__":
     png_dir.mkdir(parents=True, exist_ok=True)
     html_dir.mkdir(parents=True, exist_ok=True)
     total_steps = max(1, len(dex_prices))
-    png_path = png_dir / f"autocorr_{scenario_label}_steps{total_steps}.png"
-    html_path = html_dir / f"autocorr_{scenario_label}_steps{total_steps}.html"
+    fee_mode_label = params.get("fee_mode", "unknown")
+    png_path = png_dir / f"{pid_str}_{fee_mode_label}_autocorr_steps{total_steps}.png"
+    html_path = html_dir / f"{pid_str}_{fee_mode_label}_autocorr_steps{total_steps}.html"
     save_plotly_figure(autocorr_fig, png_path, html_path, "autocorr")
 
     # make liquidity GIF
-    # make_liquidity_gif(
-    # liq_history=out["liq_history"],
-    # tick_history=out["tick_history"],
-    # base_s=out["grid_base_s"],
-    # g=out["grid_g"],
-    # out_path=f"abm_results/liquidity_evolution_{scenario_label}_{params['cex_sigma']}_{params['T']}.gif",
-    # fps=20,
-    # dpi=120,
-    # pad_frac=0.05,
-    # downsample_every=10,
-    # center_line=True,
-    # )
+    if params['liquidty_for_gif']:
+        make_liquidity_gif(
+        liq_history=out["liq_history"],
+        tick_history=out["tick_history"],
+        base_s=out["grid_base_s"],
+        g=out["grid_g"],
+        out_path=f"abm_results/liquidity_evolution_{scenario_label}_{params['cex_sigma']}_{params['T']}.gif",
+        fps=20,
+        dpi=120,
+        pad_frac=0.05,
+        downsample_every=10,
+        center_line=True,
+        )
