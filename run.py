@@ -563,8 +563,32 @@ def simulate(
                 positions_by_tick.pop(tick_val, None)
         pos.tick_slots = tuple()
 
-    def _assert_active_liquidity_state(label: str) -> None:
-        """Runtime guard to ensure pool.L_active agrees with liquidity_net."""
+    def _assert_active_liquidity_state_fast(label: str) -> None:
+        """Lightweight guard: non-negative L_active and price within the active band."""
+        if abs(pool.L_active) <= EPS_LIQ2:
+            pool.L_active = 0.0
+            return
+
+        underflow_tol = 100.0 * EPS_LIQ2
+        if pool.L_active < -underflow_tol:
+            raise AssertionError(f"L_active underflow ({label}): {pool.L_active}")
+
+        if pool.L_active > EPS_LIQ:
+            sa = pool.s_lower()
+            sb = pool.s_upper()
+            band_scale = max(1.0, abs(sa), abs(sb), abs(pool.S))
+            boundary_tol = EPS_BOUNDARY * band_scale
+            if pool.S < sa - boundary_tol or pool.S > sb + boundary_tol:
+                raise AssertionError(
+                    f"Price S={pool.S} outside active band during {label}: tick={pool.tick} band=[{sa},{sb}]"
+                )
+            if pool.S < sa:
+                pool.S = sa
+            elif pool.S > sb:
+                pool.S = sb
+
+    def _assert_active_liquidity_state_full(label: str) -> None:
+        """Full guard: ensure pool.L_active agrees with liquidity_net prefix sums."""
         prefix_L = pool.bidx.active_liquidity_at_tick(pool.tick)
 
         # If both representations are numerically tiny, snap to zero and skip.
@@ -845,6 +869,7 @@ def simulate(
 
     # ------------------ LVR rebalancer helpers ------------------
     REBAL_EPS = 1e-18
+    _last_rebalance_S: float = -1.0  # Track last S where we did full rebalance
 
     def _ensure_rebalancer_initialized(lp: LPAgent, M_now: float, S_now: float) -> None:
         rb = lp.rebalancer
@@ -882,6 +907,17 @@ def simulate(
                 _rebalance_lp_to_target(lp, M_now, S_now)
 
     def _rebalance_all(M_now: float, S_now: float) -> None:
+        nonlocal _last_rebalance_S
+        # Skip full rebalance if S hasn't changed (exposure is same for all LPs)
+        # This is safe because position changes trigger explicit rebalance via _rebalance_lp_to_target
+        if S_now == _last_rebalance_S:
+            # Still need to update last_M for CEX price tracking
+            for lp in LPs:
+                rb = lp.rebalancer
+                if rb.initialized:
+                    rb.last_M = M_now
+            return
+        _last_rebalance_S = S_now
         for lp in LPs:
             _rebalance_lp_to_target(lp, M_now, S_now)
 
@@ -903,6 +939,15 @@ def simulate(
     _rebalance_all(ref.m, pool.S)
 
     # ------------------ Helpers ------------------
+    # Batched rebalancing: collect touched LP IDs during swap, flush after swap completes
+    _pending_rebalance_ids: Set[int] = set()
+
+    def _flush_pending_rebalance() -> None:
+        """Rebalance all LPs touched during a swap, then clear the set."""
+        if _pending_rebalance_ids:
+            _rebalance_by_ids(_pending_rebalance_ids, ref.m, pool.S)
+            _pending_rebalance_ids.clear()
+
     def allocate_fees(token: str, fee_amt: float, tick_snapshot: int, L_snapshot: float) -> None:
         if fee_amt <= 0:
             return
@@ -919,7 +964,6 @@ def simulate(
 
         inv_total_L = 1.0 / total_L
         owner_fee: Dict[int, float] = {}
-        touched_lp_ids: Set[int] = set()
 
         if token == "x":
             for pos in bucket:
@@ -939,7 +983,8 @@ def simulate(
                 lp = lp_lookup.get(owner_id)
                 if lp is not None:
                     lp.fees0_earned = getattr(lp, "fees0_earned", 0.0) + fee
-                touched_lp_ids.add(owner_id)
+                # Collect for batched rebalancing instead of immediate rebalance
+                _pending_rebalance_ids.add(owner_id)
         else:
             for pos in bucket:
                 L_pos = pos.L
@@ -958,10 +1003,8 @@ def simulate(
                 lp = lp_lookup.get(owner_id)
                 if lp is not None:
                     lp.fees1_earned = getattr(lp, "fees1_earned", 0.0) + fee
-                touched_lp_ids.add(owner_id)
-
-        if touched_lp_ids:
-            _rebalance_by_ids(touched_lp_ids, ref.m, pool.S)
+                # Collect for batched rebalancing instead of immediate rebalance
+                _pending_rebalance_ids.add(owner_id)
 
     def burn_any(lp: LPAgent, idx: int) -> None:
         pos = lp.positions.pop(idx)
@@ -971,7 +1014,7 @@ def simulate(
         lp.wallet_y = getattr(lp, 'wallet_y', 0.0) + float(realized_value)
         _unregister_position(pos)
         pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
-        _assert_active_liquidity_state("lp_burn")
+        _assert_active_liquidity_state_fast("lp_burn")
 
         burn_steps.append(t)
         burn_sizes.append(pos.L)
@@ -1046,10 +1089,10 @@ def simulate(
                 if pool.S >= target_S - EPS_BOUNDARY:
                     break
                 pool._cross_up_once()
-                _assert_active_liquidity_state("swap_exact_to_target:cross_up")
+                _assert_active_liquidity_state_fast("swap_exact_to_target:cross_up")
                 if pool.L_active <= EPS_LIQ:
                     break
-            _assert_active_liquidity_state("swap_exact_to_target:up_end")
+            _assert_active_liquidity_state_fast("swap_exact_to_target:up_end")
             return total_in, total_out, L_first
 
         else:  # "down"
@@ -1068,10 +1111,10 @@ def simulate(
                 if pool.S <= target_S + EPS_BOUNDARY:
                     break
                 pool._cross_down_once()
-                _assert_active_liquidity_state("swap_exact_to_target:cross_down")
+                _assert_active_liquidity_state_fast("swap_exact_to_target:cross_down")
                 if pool.L_active <= EPS_LIQ:
                     break
-            _assert_active_liquidity_state("swap_exact_to_target:down_end")
+            _assert_active_liquidity_state_fast("swap_exact_to_target:down_end")
             return total_in, total_out, L_first
 
 
@@ -1090,10 +1133,12 @@ def simulate(
         if P < lo * (1 - 1e-9):
             # up: returns (dy_in, dx_out, 0.0, direction, L_first)
             dy_in, dx_out, Lff = swap_exact_to_target(lo, "up", fee_cb=allocate_fees)
+            _flush_pending_rebalance()  # Batch rebalance all LPs touched during arb
             return dy_in, dx_out, 0.0, ("up" if dy_in > 0 else None), Lff
         if P > hi * (1 + 1e-9):
             # down: returns (dx_in, 0.0, dy_out, direction, L_first)
             dx_in, dy_out, Lff = swap_exact_to_target(hi, "down", fee_cb=allocate_fees)
+            _flush_pending_rebalance()  # Batch rebalance all LPs touched during arb
             return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), Lff
         return 0.0, 0.0, 0.0, None, 0.0
 
@@ -1595,7 +1640,7 @@ def simulate(
                     pool.add_liquidity_range(lower, upper, L_target)
                     jiter_agent.positions.append(pos)
                     _register_position(pos)
-                    _assert_active_liquidity_state("jit_mint")
+                    _assert_active_liquidity_state_fast("jit_mint")
                     jiter_agent.L_live = getattr(jiter_agent, "L_live", 0.0) + L_target
                     jit_open_positions[int(tgt)] = pos
                     _rebalance_lp_to_target(jiter_agent, ref.m, pool.S)
@@ -1625,7 +1670,7 @@ def simulate(
                     jiter_agent.wallet_y = getattr(jiter_agent, "wallet_y", 0.0) + float(realized_value)
                     _unregister_position(pos)
                     pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
-                    _assert_active_liquidity_state("jit_burn")
+                    _assert_active_liquidity_state_fast("jit_burn")
                     jiter_agent.L_live = max(0.0, getattr(jiter_agent, "L_live", 0.0) - pos.L)
                     _rebalance_lp_to_target(jiter_agent, ref.m, pool.S)
                     burn_steps.append(t)
@@ -1670,7 +1715,7 @@ def simulate(
                         pool.add_liquidity_range(lower, upper, L_new)
                         lp.positions.append(pos)
                         _register_position(pos)
-                        _assert_active_liquidity_state("lp_mint_mempool")
+                        _assert_active_liquidity_state_fast("lp_mint_mempool")
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive)); mint_is_jiter.append(False)
                         buffer_log(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
@@ -1697,7 +1742,7 @@ def simulate(
                         pool.add_liquidity_range(lower, upper, L_new)
                         lp.positions.append(pos)
                         _register_position(pos)
-                        _assert_active_liquidity_state("lp_recenter_mempool")
+                        _assert_active_liquidity_state_fast("lp_recenter_mempool")
                         mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive)); mint_is_jiter.append(False)
                         buffer_log(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
                         lp.L_live = getattr(lp, "L_live", 0.0) + L_new
@@ -1777,7 +1822,8 @@ def simulate(
                         return
                     S_before = pool.S; tick_before = pool.tick
                     used_dx_pre, dy_out_real, fee_x = pool.swap_x_to_y(o['amount'], fee_cb=allocate_fees)
-                    _assert_active_liquidity_state("mempool_swap_x_to_y")
+                    _flush_pending_rebalance()  # Batch rebalance all LPs touched during this swap
+                    _assert_active_liquidity_state_fast("mempool_swap_x_to_y")
                     if used_dx_pre <= EPS_LIQ:
                         _rollback_pool_state(tick_before, S_before)
                         return
@@ -1839,7 +1885,8 @@ def simulate(
                         return
                     S_before = pool.S; tick_before = pool.tick
                     used_dy_pre, dx_out_real, fee_y = pool.swap_y_to_x(o['amount'], fee_cb=allocate_fees)
-                    _assert_active_liquidity_state("mempool_swap_y_to_x")
+                    _flush_pending_rebalance()  # Batch rebalance all LPs touched during this swap
+                    _assert_active_liquidity_state_fast("mempool_swap_y_to_x")
                     if used_dy_pre <= EPS_LIQ:
                         _rollback_pool_state(tick_before, S_before)
                         return
@@ -1979,7 +2026,7 @@ def simulate(
 
                 S_before = pool.S; tick_before = pool.tick
                 used_dx_pre, dy_out_real, _ = pool.swap_x_to_y(dx, fee_cb=allocate_fees)
-                _assert_active_liquidity_state("trader_swap_x_to_y")
+                _assert_active_liquidity_state_fast("trader_swap_x_to_y")
                 if used_dx_pre <= EPS_LIQ:
                     _rollback_pool_state(tick_before, S_before)
                     return
@@ -2066,7 +2113,7 @@ def simulate(
 
                 S_before = pool.S; tick_before = pool.tick
                 used_dy_pre, dx_out_real, _ = pool.swap_y_to_x(dy, fee_cb=allocate_fees)
-                _assert_active_liquidity_state("trader_swap_y_to_x")
+                _assert_active_liquidity_state_fast("trader_swap_y_to_x")
                 if used_dy_pre <= EPS_LIQ:
                     _rollback_pool_state(tick_before, S_before)
                     return
@@ -2587,6 +2634,8 @@ def simulate(
         # record current fee (before next-step commit)
         fee_series.append(pool.f)
         # ==================================================================
+
+        _assert_active_liquidity_state_full("end_of_step")
 
         # ---- Record end-of-step + invariants ----
         P_after = pool.price
@@ -3756,6 +3805,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     pid_str = str(os.getpid())
+    print(f"[pid] {pid_str}")
     config_path = Path(args.config).expanduser().resolve()
     scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
 
@@ -3801,16 +3851,16 @@ if __name__ == "__main__":
     save_plotly_figure(autocorr_fig, png_path, html_path, "autocorr")
 
     # make liquidity GIF
-    if params['liquidty_for_gif']:
-        make_liquidity_gif(
-        liq_history=out["liq_history"],
-        tick_history=out["tick_history"],
-        base_s=out["grid_base_s"],
-        g=out["grid_g"],
-        out_path=f"abm_results/liquidity_evolution_{scenario_label}_{params['cex_sigma']}_{params['T']}.gif",
-        fps=20,
-        dpi=120,
-        pad_frac=0.05,
-        downsample_every=10,
-        center_line=True,
-        )
+    # if params['liquidty_for_gif']:
+    #     make_liquidity_gif(
+    #     liq_history=out["liq_history"],
+    #     tick_history=out["tick_history"],
+    #     base_s=out["grid_base_s"],
+    #     g=out["grid_g"],
+    #     out_path=f"abm_results/liquidity_evolution_{scenario_label}_{params['cex_sigma']}_{params['T']}.gif",
+    #     fps=20,
+    #     dpi=120,
+    #     pad_frac=0.05,
+    #     downsample_every=10,
+    #     center_line=True,
+    #     )

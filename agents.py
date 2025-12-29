@@ -14,6 +14,7 @@ from utils import (
     EPS_LIQ2, EPS_LIQ, EPS_BOUNDARY, TITLE_FONT_SIZE, LABEL_FONT_SIZE,
     minted_amounts_at_S, ReferenceMarket
 )
+from numba_accel import _current_amounts_impl
 
 
 # =============================================================================
@@ -84,11 +85,8 @@ class Position:
         return self.lower <= tick < self.upper
 
     def current_amounts(self, S: float) -> Tuple[float, float]:
-        if S <= self.sa:
-            return (self.L * (1 / self.sa - 1 / self.sb), 0.0)
-        if S >= self.sb:
-            return (0.0, self.L * (self.sb - self.sa))
-        return (self.L * (1 / S - 1 / self.sb), self.L * (S - self.sa))
+        # Delegate to Numba-accelerated implementation
+        return _current_amounts_impl(self.L, self.sa, self.sb, S)
 
     def hodl_value_y_now(self, m: float) -> float:
         return self.amt0_init * m + self.amt1_init
@@ -134,7 +132,8 @@ def lp_token0_exposure(lp: LPAgent, S: float) -> float:
     """
     total = 0.0
     for pos in lp.positions:
-        amt0, _ = pos.current_amounts(S)
+        # Inline call to Numba function to avoid method dispatch overhead
+        amt0, _ = _current_amounts_impl(pos.L, pos.sa, pos.sb, S)
         total += amt0
     return total
 
@@ -146,7 +145,8 @@ def lp_principal_amounts(lp: LPAgent, S: float) -> Tuple[float, float]:
     total0 = 0.0
     total1 = 0.0
     for pos in lp.positions:
-        amt0, amt1 = pos.current_amounts(S)
+        # Inline call to Numba function
+        amt0, amt1 = _current_amounts_impl(pos.L, pos.sa, pos.sb, S)
         total0 += amt0
         total1 += amt1
     return total0, total1

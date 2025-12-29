@@ -6,7 +6,7 @@ nav_order: 2
 # ABM Uni v3 Simulation (ongoing)
 
 <p align="center">
-  <img src="abm_results/cex_dex_price.png" alt="Simulation example" width="500"/>
+  <img src="../abm_results/cex_dex_price.png" alt="Simulation example" width="500"/>
 </p>
 
 Agent-based market (ABM) simulator for a Uniswap v3 style pool that extends the Angeris et al. model (“An analysis of Uniswap markets”). The project focuses on **microstructure effects** such as block mempools, asynchronous LP management, dynamic fee schedules, and realistic arbitrage/trader interactions.
@@ -39,7 +39,7 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
   Fee moves are clipped by `fee_step_bps_min/max` and gated by `fee_cooldown` (except for intra-block `volatility_oracle` reactions, which apply immediately but still respect the step-size thresholds).
 - **Liquidity bootstrapping**: simulations always start from an evolved/sharded binomial hill that allocates `initial_total_L` across synthetic *seed* LPs (`is_seed=True`) that provide background liquidity and can optionally be plotted; these seed LPs are excluded from the strategic LP cohorts and PnL statistics.
 - **LP width rule**: narrow LPs size their ranges off an EWMA of the fee-adjusted basis plus a configurable binomial noise term (`binom_n`, `binom_p`), then clamp to `[w_min_ticks, w_max_ticks]`.
-- **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (block mode), and verbose logs under `abm_results/logs/`.
+- **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (block mode), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python run.py --config ...`).
 
 ---
 
@@ -474,16 +474,17 @@ python run.py --config abm_results/scenarios/test.yml
 ```
 
 Outputs:
-- `abm_results/scenarios/<scenario_name>/logs/verbose_steps_<fee_mode>_<n>.txt`: human-readable log per step and mempool replay summaries (includes micro-time traces when `block_time>1`).
+- `abm_results/scenarios/<scenario_name>/logs/<pid>_verbose_steps_<fee_mode>_<n>.txt`: human-readable log per step and mempool replay summaries (includes micro-time traces when `block_time>1`; omitted when `light_mode=True`).
 - `abm_results/scenarios/<scenario_name>/png/` & `abm_results/scenarios/<scenario_name>/html/`: figures summarizing prices, liquidity, agent PnLs (smart vs. noise vs. arb, hedged vs. unhedged LPs), fee path, and width signals. PNG export relies on Kaleido (needs Chrome); HTML files are always written.
 - Optional liquidity GIFs can be generated via `utils.make_liquidity_gif(...)` using the recorded `liq_history` and `tick_history` series.
-- JSON-like dict returned by `simulate` with all recorded series (see tail of `run.py` for exact keys, including wallet vs. wealth, fee signals, micro-step history, and the active CEX volatility/regime path).
+- JSON-like dict returned by `simulate` with all recorded series (see tail of `run.py` for exact keys, including wallet vs. wealth, fee signals, and the active CEX volatility/regime path). Micro-step traces (block mode) are written to the verbose log but are not currently returned in the output dict.
 
 ---
 
 ## Batch Runners & Analysis Helpers
-- `run_scenarios_mean_std.py --scenarios-dir scenarios/ --runs 5`: run every YAML scenario multiple times and emit mean ± std PnL charts for each agent class.
-- `run_parameter_grid_mean_std_parallel.py`: parallel grid search over fee modes and fee sensitivities (static, volatility, toxicity) using a base YAML config (see `BASE_CONFIG_PATH` in the script); writes outputs under `abm_results/grid_search/`.
+- `run_scenarios_mean_std.py --scenarios-dir abm_results/scenarios --runs 5`: run every YAML scenario multiple times and emit mean ± std PnL charts for each agent class.
+- `run_parameter_grid_2d_violin_parallel.py`: parallel 2D parameter sweeps (fee sensitivity + another axis) with cached CSVs and 3D violin plots under `abm_results/grid_search/plots_3d/`.
+- `run_parameter_surface_3d_k_sigma_slider.py` / `run_parameter_surface_nd_pnl_fee_dashboard.py`: larger parameter sweeps that cache results and write interactive Plotly outputs under `abm_results/grid_search/`.
 - `sigma_calibration.py`: derive realistic per-second `cex_sigma` from Binance 1s ETH/USDC data (CSV/Parquet/pickle) and optionally persist the computed series.
 - `visualize_distributions.py`: generate and save figures for the stochastic components used by the simulator (Heston price/volatility paths, binomial-hill initial liquidity, binomial width noise, log-normal trader and LP mint-size distributions, and geometric LP review clocks), useful for validating input distributions and for documentation figures.
 

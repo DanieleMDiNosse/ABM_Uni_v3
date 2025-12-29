@@ -45,45 +45,21 @@ Each scenario writes a standard set of Plotly figures under `abm_results/scenari
 
 ### `sigma_sine_fee_static` (`fee_mode: static`)
 
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_static/png/abm_fee_static_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_1_price_steps10000.png" alt="Static fee — price and no-arb band" width="800"/>
-</p>
-
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_static/png/abm_fee_static_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_6_pnl_steps10000.png" alt="Static fee — agent PnL (including passive LP hedged PnL)" width="800"/>
-</p>
-
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_static/png/abm_fee_static_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_7_fee_steps10000.png" alt="Static fee — fee path" width="800"/>
-</p>
+- Price panel: `abm_results/scenarios/sigma_sine_fee_static/png/<pid>_static_1_price_steps10000.png`
+- PnL panel: `abm_results/scenarios/sigma_sine_fee_static/png/<pid>_static_6_pnl_steps10000.png`
+- Fee panel: `abm_results/scenarios/sigma_sine_fee_static/png/<pid>_static_7_fee_steps10000.png`
 
 ### `sigma_sine_fee_volatility` (`fee_mode: volatility`)
 
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_volatility/png/abm_fee_volatility_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_1_price_steps10000.png" alt="Volatility fee — price and no-arb band" width="800"/>
-</p>
-
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_volatility/png/abm_fee_volatility_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_6_pnl_steps10000.png" alt="Volatility fee — agent PnL" width="800"/>
-</p>
-
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_volatility/png/abm_fee_volatility_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_7_fee_steps10000.png" alt="Volatility fee — fee path" width="800"/>
-</p>
+- Price panel: `abm_results/scenarios/sigma_sine_fee_volatility/png/<pid>_volatility_1_price_steps10000.png`
+- PnL panel: `abm_results/scenarios/sigma_sine_fee_volatility/png/<pid>_volatility_6_pnl_steps10000.png`
+- Fee panel: `abm_results/scenarios/sigma_sine_fee_volatility/png/<pid>_volatility_7_fee_steps10000.png`
 
 ### `sigma_sine_fee_toxicity` (`fee_mode: toxicity`)
 
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_toxicity/png/abm_fee_toxicity_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_1_price_steps10000.png" alt="Toxicity fee — price and no-arb band" width="800"/>
-</p>
-
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_toxicity/png/abm_fee_toxicity_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_6_pnl_steps10000.png" alt="Toxicity fee — agent PnL" width="800"/>
-</p>
-
-<p align="center">
-  <img src="abm_results/scenarios/sigma_sine_fee_toxicity/png/abm_fee_toxicity_noisy_sine-0.00015-amp0.0001-per10000-noise5e-5_7_fee_steps10000.png" alt="Toxicity fee — fee path" width="800"/>
-</p>
+- Price panel: `abm_results/scenarios/sigma_sine_fee_toxicity/png/<pid>_toxicity_1_price_steps10000.png`
+- PnL panel: `abm_results/scenarios/sigma_sine_fee_toxicity/png/<pid>_toxicity_6_pnl_steps10000.png`
+- Fee panel: `abm_results/scenarios/sigma_sine_fee_toxicity/png/<pid>_toxicity_7_fee_steps10000.png`
 
 ---
 
@@ -107,12 +83,12 @@ Each scenario writes a standard set of Plotly figures under `abm_results/scenari
 
 ## Grid Search over Fee Sensitivities (Noisy-Sine Regime)
 
-To complement the single-seed runs above, `run_parameter_grid_mean_std_parallel.py` was used with the base scenario config at `abm_results/scenarios/test.yml` (configured to match the noisy-sine volatility profile) to sweep controller sensitivities and aggregate outcomes over 15 seeds per grid point. The summary CSV and plots live under:
+To complement the single-seed runs above, a parameter sweep was run using the base scenario config at `abm_results/scenarios/test.yml` (configured to match the noisy-sine volatility profile). For reproducible sweeps with the current code, see `run_parameter_grid_2d_violin_parallel.py` and the `run_parameter_surface_*` helpers. The summary CSV and plots for this note live under:
 
 - CSV: `abm_results/grid_search/grid_summary.csv`
 
 <p align="center">
-  <img src="abm_results/grid_search/plots/sigma_noisy_sine_0.00015_amp0.0001_per10000_noise5e-5.png" alt="Grid search over fee sensitivities in the noisy-sine regime" width="900"/>
+  <img src="../abm_results/grid_search/plots/sigma_noisy_sine_0.00015_amp0.0001_per10000_noise5e-5.png" alt="Grid search over fee sensitivities in the noisy-sine regime" width="900"/>
 </p>
 
 Looking at **passive LP hedged PnL** (`series_key = "lp_pnl_passive"`) in the grid:

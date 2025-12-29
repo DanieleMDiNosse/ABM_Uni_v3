@@ -9,7 +9,7 @@ This document describes, series by series, what the main simulation routine
 `run.simulate(...)` returns. It is intended to complement:
 
 - `docs/README.md` (model and agent overview),
--,`docs/LP_PnL.md` (PnL definitions),
+- `docs/LP_PnL.md` (PnL definitions),
 - `docs/LVR_explanation.md` (LVR and rebalancing benchmark),
 - `docs/fee_schedules.md` (fee controllers),
 - `docs/hedged_pnl_vs_lvr_notes.md` (qualitative behaviour of hedged PnL).
@@ -19,9 +19,10 @@ Unless otherwise stated, all series below are one value **per simulation step**
 `simulate`. In block mode (`block_time > 1`) micro‑steps are internal to a step
 and not directly exposed.
 
-Most numeric series are returned as Python lists (`list[float]`); a few are
-NumPy arrays (`DEX_price`, `CEX_price`, `band_*`, `L_*_step`, etc.). For
-analysis it is natural to convert everything to NumPy/Pandas.
+Most numeric series are returned as Python lists (`list[float]`); the main
+per-step state paths are NumPy arrays (e.g. `DEX_price`, `CEX_price`,
+`band_*`, and the `L_*` liquidity series). For analysis it is natural to
+convert everything to NumPy/Pandas.
 
 When `light_mode=True`, a **reduced** dictionary is returned; see the final
 section.
@@ -131,6 +132,16 @@ section.
   s_i = \text{base\_s} \cdot g^i
   $$
   , `Δ = tick_spacing`.
+
+### 2.3. LP mint/burn event logs
+
+These are event-level logs (indexed by event `k`, not by step `t`).
+
+- `mint_steps[k]`, `mint_sizes[k]`, `mint_widths[k]`  
+  For the `k`-th mint event: the step index, the minted liquidity `L`, and the tick width (`upper - lower`) of the minted position.
+
+- `burn_steps[k]`, `burn_sizes[k]`  
+  For the `k`-th burn event: the step index and the burned liquidity `L`.
 
 ---
 
@@ -349,6 +360,26 @@ Series below aggregate these quantities across LP cohorts.
       = \sum_i V^{\text{LP},i}_t.
   $$
 
+### 4.4. Jiter (JIT LP) accounting
+
+When Jiter is enabled (`block_time > 1`, `p_jit > 0`, `N_jit > 0`, `liquidity_perc_jit > 0`), these track the single Jiter agent separately from the strategic LP cohorts. When disabled, these series are identically zero.
+
+- `jiter_wallet_series[t]`, `jiter_wealth_series[t]`  
+  Jiter wallet and total wealth in token1 (wealth = wallet + mark-to-market of open positions).
+
+- `jiter_position_value_series[t]`  
+  Mark-to-market value (token1) of Jiter’s open positions (principal + uncollected fees).
+
+- `jiter_fee_value_series[t]`  
+  Mark-to-market value (token1) of Jiter’s cumulative fees earned (realized + uncollected).
+
+- `jiter_pnl_series[t]`  
+  Jiter “hedged” series reported with the opposite sign convention to LP hedged PnL:
+  $$
+    \text{jiter\_pnl\_series}[t] = V^{\text{reb}}_t - V^{\text{LP}}_t = \text{LVR}_t - F_t.
+  $$
+  (This matches the default plot label “Jiter hedged (LVR - fees)”.)
+
 Seed LPs (`is_seed=True`) created by `bootstrap_initial_binomial_hill_sharded`
 are **excluded** from all strategic LP cohorts.
 
@@ -446,6 +477,9 @@ cumulative sums. They are mainly used for diagnostic plots.
 - `arb_activity_cum[t]`  
   Cumulative count of successful arbitrage trades (each successful arb adds +1;
   skipped opportunities do not change the series).
+
+- `jiter_activity_cum[t]`  
+  Cumulative count of successful JIT targets (one increment per targeted swap that executed with an active Jiter position).
 
 ---
 

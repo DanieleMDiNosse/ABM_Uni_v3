@@ -15,6 +15,8 @@ from tqdm import tqdm
 import yaml
 import inspect
 
+from numba_accel import _current_amounts_impl
+
 # =============================================================================
 # Plot styling (global)
 # =============================================================================
@@ -359,12 +361,8 @@ def minted_amounts_at_S(L: float, sa: float, sb: float, S: float) -> Tuple[float
 
     See Position docstring for the closed forms used here.
     """
-    if S <= sa:
-        return L * (1 / sa - 1 / sb), 0.0
-    elif S >= sb:
-        return 0.0, L * (sb - sa)
-    else:
-        return L * (1 / S - 1 / sb), L * (S - sa)
+    # Delegate to Numba-accelerated implementation
+    return _current_amounts_impl(L, sa, sb, S)
 
 
 def build_empty_pool():
