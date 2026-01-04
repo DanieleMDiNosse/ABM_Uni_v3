@@ -67,27 +67,20 @@ where:
     *   $k_\sigma$: Scaling factor for volatility (parameter `k_sigma`),
         re-used from the standard volatility mode.
 
-**Timing behaviour:**
+**Timing behaviour (mempool execution):**
 
-*   **Non-block mode (`block_time == 1`):**  
-    - At the end of step $t$, after the CEX update, the controller reads the current $\sigma_t$, computes $f_{raw}$ as above, and stages a new fee via the same clamped / step-limited / cooldown mechanism used in the standard volatility mode.  
-    - The staged fee becomes active on step $t+1$, so there is a one-step lag between $\sigma_t$ and the fee actually seen by trades.
-
-*   **Block mode (`block_time > 1`):**  
-    - In addition to the end-of-step diagnostics, the simulator lets the
-      fee react *within* each block at micro-step granularity. At each
-      micro-step $k$ inside block $t$, **before** enqueuing smart/noise
-      intents, it:
-        1. reads the current oracle volatility 
-           $$
-           \sigma_{t,k} = \text{ReferenceMarket.sigma}
-           $$
-        2. computes a micro-step raw fee
-           $$
-             f_{raw}^{(micro)} = f_0 + k_\sigma \cdot \sigma_{t,k} \cdot \sqrt{\text{block\_time}};
-           $$
-        3. clamps and step-limits this value using the same `f_min` / `f_max` / `fee_step_bps_min` / `fee_step_bps_max` logic; if the implied change is large enough, it updates `pool.f` **immediately** (no `fee_next`, no cooldown gating).  
-    - As a result, trades within the same block can experience different fees as $\sigma_{t,k}$ evolves. The block-level controller at the end of the step records the volatility signal and fee path for plotting but does not stage an additional fee move in this mode.
+*   The simulator lets the fee react *within* each block at micro-step granularity. At each
+    micro-step $k$ inside block $t$, **before** enqueuing smart/noise intents, it:
+      1. reads the current oracle volatility 
+         $$
+         \sigma_{t,k} = \text{ReferenceMarket.sigma}
+         $$
+      2. computes a micro-step raw fee
+         $$
+           f_{raw}^{(micro)} = f_0 + k_\sigma \cdot \sigma_{t,k} \cdot \sqrt{\text{block\_time}};
+         $$
+      3. clamps and step-limits this value using the same `f_min` / `f_max` / `fee_step_bps_min` / `fee_step_bps_max` logic; if the implied change is large enough, it updates `pool.f` **immediately** (no `fee_next`, no cooldown gating).  
+*   As a result, trades within the same block can experience different fees as $\sigma_{t,k}$ evolves. The block-level controller at the end of the step records the volatility signal and fee path for plotting but does not stage an additional fee move in this mode.
 
 ### 4. Toxicity-based Fee
 

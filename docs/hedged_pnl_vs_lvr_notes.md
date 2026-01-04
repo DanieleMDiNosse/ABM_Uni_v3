@@ -83,14 +83,14 @@ $$
 - Without extra costs, this arb is:
   - perfectly myopic and well‑capitalized,
   - permitted to trade every block,
-  - executed *before* other mempool flow in block mode.
+  - executed *before* other mempool flow.
 - Even with the optional `flash_loan_fee`, the arb only skips when **total profit < liquidity‑taker fee + flash fee**. Whenever the mispricing is big enough, it executes and realizes gains that, in the frictionless theory, are exactly LVR for the LPs.
 
 Effectively, you have **continuous monitoring in discrete time**: any significant mispricing is rapidly harvested.
 
 ### 2.3 Smart Router: Best Execution Against CEX
 
-- The smart router agent (`execute_trader` in `run.py`) enforces:
+- The smart router agent (mempool intent generation and execution in `run.py`) enforces:
   - best execution vs the CEX mid (`theta_T` threshold),
   - a slippage window vs a baseline quote (to avoid very bad DEX fills).
 - This means:

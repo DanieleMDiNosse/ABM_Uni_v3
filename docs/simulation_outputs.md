@@ -16,7 +16,7 @@ This document describes, series by series, what the main simulation routine
 
 Unless otherwise stated, all series below are one value **per simulation step**
 (per *block*), indexed by `t = 0, 1, …, T-1`, where `T` is the `T` argument to
-`simulate`. In block mode (`block_time > 1`) micro‑steps are internal to a step
+`simulate`. In mempool execution (`block_time > 1`) micro‑steps are internal to a step
 and not directly exposed.
 
 Most numeric series are returned as Python lists (`list[float]`); the main
@@ -396,7 +396,7 @@ series below expose its internal signals.
   f_t
   $$
    on the AMM at step `t` (fraction, e.g. 0.003 = 30 bps).  
-  In block mode with `fee_mode: volatility_oracle`, the fee can vary
+  In mempool execution with `fee_mode: volatility_oracle`, the fee can vary
   within a block at micro-step resolution; `fee_series[t]` records the
   **end-of-step** value of `pool.f` after all intra-block updates.
 

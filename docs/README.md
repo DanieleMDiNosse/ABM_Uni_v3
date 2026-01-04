@@ -20,22 +20,20 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
 - **Rich agent roster**:
   - **Smart router**: opportunistic trader enforcing best-execution vs. a reference CEX.
   - **Noise trader**: flow provider without valuation discipline, used to stress spreads/liquidity.
-  - **Arbitrageur**: clears price discrepancies between the DEX and the CEX reference band; in block mode the arb executes **before** any mempool order (pre-trade CEX vs. DEX snapshot).
+  - **Arbitrageur**: clears price discrepancies between the DEX and the CEX reference band; the arb executes **before** any mempool order (pre-trade CEX vs. DEX snapshot).
   - **LPs**: passive baselines and active narrow LPs. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
   - **Jiter**: MEV searcher that select the top N swaps in the mempool according to their size and perform a Just-In-Time liquidity strategy.
-- **Block-aware mempool**:
-  - `block_time == 1`: deterministic schedule `LP bucket A → smart+noise → LP bucket B → arb → LP bucket C`.
-  - `block_time > 1`: freeze the validated snapshot, then run `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents; at the block boundary enqueue a single arb intent plus LP intents (burn/recenter/mint) and replay the shuffled mempool (arb first) against the live pool.
-- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block all the agents reference this shared “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`) when forming orders; in block mode the CEX path still diffuses in the background for rebalancing and diagnostics, but mempool orders are priced off the frozen snapshot and executed together at the block boundary.
+- **Block-aware mempool**: the simulator runs in mempool execution mode (`block_time > 1`). It freezes the validated snapshot, runs `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents, then enqueues a single arb intent plus LP intents (burn/recenter/mint) and replays the shuffled mempool (arb first) against the live pool.
+- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block all the agents reference this shared “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`) when forming orders; the CEX path still diffuses in the background for rebalancing and diagnostics, but mempool orders are priced off the frozen snapshot and executed together at the block boundary.
 - **Dynamic fee controller** with four modes:
   - `static` fixes the fee at `f0`.
   - `volatility` adds a multiple of EWMA(|log-return|).
-  - `volatility_oracle` uses the per-step CEX volatility path `σ_t` directly as the fee signal (no smoothing); in block mode this can move *within* a block at micro-step resolution based on the current `σ_t`.
+  - `volatility_oracle` uses the per-step CEX volatility path `σ_t` directly as the fee signal (no smoothing); it can move *within* a block at micro-step resolution based on the current `σ_t`.
   - `toxicity` adds a multiple of the fee-adjusted log basis (in ticks).
   Fee moves are clipped by `fee_step_bps_min/max` and gated by `fee_cooldown` (except for intra-block `volatility_oracle` reactions, which apply immediately but still respect the step-size thresholds).
 - **Liquidity bootstrapping**: simulations always start from an evolved/sharded binomial hill that allocates `initial_total_L` across synthetic *seed* LPs (`is_seed=True`) that provide background liquidity and can optionally be plotted; these seed LPs are excluded from the strategic LP cohorts and PnL statistics.
 - **LP width rule**: narrow LPs size their ranges off an EWMA of the fee-adjusted basis plus a configurable binomial noise term (`binom_n`, `binom_p`), then clamp to `[w_min_ticks, w_max_ticks]`.
-- **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (block mode), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python run.py --config ...`).
+- **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (per block), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python run.py --config ...`).
 
 ---
 
@@ -50,8 +48,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   - or **Heston-like stochastic volatility** (`cex_sigma_mode: heston`), where the variance `v_t = σ_t^2` follows a mean-reverting square-root process with parameters `cex_heston_kappa`, `cex_heston_theta`, `cex_heston_sigma_v`, correlation `cex_heston_rho`, and optional initial variance `cex_heston_v0` (falling back to `cex_sigma^2` when omitted).
   The center for the noisy-sine mode defaults to `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` when provided); in scenarios using `noisy_sine` the amplitude is typically specified explicitly via `cex_sigma_sine_amp`. The active path is returned as `cex_sigma_series` and `cex_regime_series`.
 - In non-Heston modes the diffusion step uses `m ← m · exp(cex_mu - 0.5 · σ_t^2 + σ_t · z)` with `z ~ N(0,1)`, so `σ_t` is interpreted directly as the per-microstep volatility (no squaring). In Heston mode, the variance `v_t` and price `m_t` are updated jointly with correlated Gaussian shocks while keeping `σ_t = sqrt(v_t)` in the returned series.
-- In non-block mode (`block_time == 1`), each simulation step calls `ref.step(Δa_cex)`, which first applies impact from the net arbitrage flow and then diffuses via GBM/Heston.
-- In block mode (`block_time > 1`), the CEX only diffuses during intra-block micro-steps (`ref.diffuse_only()`), while impact from the arbitrage is applied once at the end via `ref.apply_impact_only(Δa_cex)`. This decouples diffusion from impact and matches the code in `run.py`.
+- The CEX diffuses during intra-block micro-steps (`ref.diffuse_only()`), while impact from arbitrage is applied once at the end via `ref.apply_impact_only(Δa_cex)`. This decouples diffusion from impact and matches the code in `run.py`.
 
 #### Heston Volatility Mode (details)
 - **Continuous-time model** (conceptual): in Heston mode the CEX price `m_t` and variance `v_t` are thought of as solving
@@ -113,7 +110,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   - If $P_t < P^{\min}_t$ (DEX **cheap**), an “up” arb buys token0 on the DEX and sells token0 on the CEX until $P_t$ is pushed back up to $P^{\min}_t$(or liquidity is exhausted).
   - If $P_t > P^{\max}_t$ (DEX **expensive**), a “down” arb sells token0 on the DEX and buys it back on the CEX until $P_t$ is pushed back down to $P^{\max}_t$.
   The target trade is computed via `swap_exact_to_target`, which integrates the Uniswap v3 price–liquidity curve span‑by‑span.
-- In non-block mode, the arbitrageur acts directly on the live pool using the current `ref.m`. In block mode, an `arb` intent is inserted into the mempool against the snapshot $m^{\text{ref}}_t$ and executed **first** when the mempool is replayed for that block.
+- The arbitrageur is inserted into the mempool against the snapshot $m^{\text{ref}}_t$ and executed **first** when the mempool is replayed for that block.
 - Profit preview (on a cloned pool) is explicitly path‑based:
   - **Cheap DEX (up arb)**: the preview returns a DEX input $d^{\text{DEX}}_t$ in token1 and an output $x^{\text{DEX}}_t$ in token0. Selling $x^{\text{DEX}}_t$ on the CEX at $m^{\text{ref}}_t$ yields 
     $x^{\text{DEX}}_t m^{\text{ref}}_t$. Net token1 profit before funding is
@@ -157,7 +154,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
 - As a consequence, the arbitrageur’s cumulative PnL series can exhibit **small downward blips** even though each individual arb is ex-ante profitable at the snapshot: the arb previews and filters trades using the frozen CEX mark (`arb_ref_m`), but realized PnL is later marked to the updated CEX price, so adverse CEX moves between `arb_ref_m` and `settlement_m` can make a given step’s realized arb PnL slightly negative.
 
 ### Smart Router
-- Implemented via `execute_trader("smart", ...)` and smart-router branches in `execute_mempool_orders`.
+- Implemented via `maybe_enqueue_smart_router_intent` and smart-router branches in `execute_mempool_orders`.
 - Per potential trade:
   - Draws a **token1 notional**
     $$
@@ -220,34 +217,22 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
       \frac{\text{actual}}{\text{baseline}} < 1 - \text{slippage\_tolerance},
     $$
     i.e. if the trader would lose more than the configured relative slippage.
-- Trade *arrival rates* are configured via `smart_trades_per_block`, interpreted as the **expected number of smart-router intents per block**. Internally this is implemented as a **Poisson process**:
-  - in non-block mode (`block_time = 1`), the number of smart-router intents per block is drawn as 
-    $$
-    N_{\text{smart}} \sim \text{Poisson}(\lambda = \text{smart\_trades\_per\_block})
-    $$
-    ;
-  - in block mode (`block_time = B > 1`), each micro-step draws 
-    $$
-    N_{\text{smart},k} \sim \text{Poisson}(\lambda = \text{smart\_trades\_per\_block} / B)
-    $$
-    , so the expected total per block remains `smart_trades_per_block` but multiple intents can arrive in the same micro-step.
-- In non-block mode, smart-router trades execute immediately in the step schedule. In block mode, the smart router simply enqueues intents into the mempool during micro-steps; those intents are executed later in random order when the mempool is replayed.
+- Trade *arrival rates* are configured via `smart_trades_per_block`, interpreted as the **expected number of smart-router intents per block**. Internally this is implemented as a **Poisson process** per micro-step:
+  $$
+  N_{\text{smart},k} \sim \text{Poisson}(\lambda = \text{smart\_trades\_per\_block} / \text{block\_time})
+  $$
+  so the expected total per block remains `smart_trades_per_block` but multiple intents can arrive in the same micro-step.
+- Smart-router trades enqueue intents into the mempool during micro-steps; those intents are executed later in random order when the mempool is replayed.
 
 ### Noise Trader
-- Implemented via `execute_trader("noise", ...)` and noise branches in `execute_mempool_orders`.
+- Implemented via `maybe_enqueue_noise_trader_intent` and noise branches in `execute_mempool_orders`.
 - Shares the same log-normal size process as the smart router (same $Y^{\text{not}}$ distribution) and chooses direction with equal probability, but **does not** enforce best execution vs. CEX: it always attempts to trade against the AMM, subject only to the same slippage constraint as above.
-- Trade arrival is controlled by `noise_trades_per_block`, interpreted as the **expected number of noise intents per block** and implemented with the same Poisson arrival scheme:
-  - non-block mode: 
-    $$
-    N_{\text{noise}} \sim \text{Poisson}(\lambda = \text{noise\_trades\_per\_block})
-    $$
-     per block;
-  - block mode: 
-    $$
-    N_{\text{noise},k} \sim \text{Poisson}(\lambda = \text{noise\_trades\_per\_block} / B)
-    $$
-     per micro-step.
-- Provides “uninformed” flow that stresses spreads and liquidity. In block mode these trades are also enqueued into the mempool during micro-steps and executed during the mempool replay.
+- Trade arrival is controlled by `noise_trades_per_block`, interpreted as the **expected number of noise intents per block** and implemented with the same Poisson arrival scheme per micro-step:
+  $$
+  N_{\text{noise},k} \sim \text{Poisson}(\lambda = \text{noise\_trades\_per\_block} / \text{block\_time})
+  $$
+  .
+- Provides “uninformed” flow that stresses spreads and liquidity. These trades are enqueued into the mempool during micro-steps and executed during the mempool replay.
 
 ### Liquidity Providers
 - Defined in `agents.py` (`LPAgent`, `Position`, and `RebalancerState`) with management logic in `run.py`.
@@ -255,18 +240,17 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   - *Passive baselines* (`is_passive=True` for a fraction `passive_lp_share` of the `N_LP` **strategic** LPs): wide ranges, probabilistic mint/burn rules driven by the block-level targets `passive_mints_per_block`, `passive_burns_per_block`, and width `passive_width_pct` (falls back to `passive_width_ticks` when omitted).
   - *Active narrow LPs* (`is_active_narrow=True` and `is_passive=False`): concentrate liquidity near the current mid, recenter after they have been out of range for a random number of steps between `k_out_min` and `k_out_max`, and follow an EWMA-driven width signal with binomial noise.
   - *Seed/background LPs* (`is_seed=True`, always passive): created by `bootstrap_initial_binomial_hill_sharded` to form the initial binomial hill; they provide background liquidity and evolve via the same passive mint/burn rules but are excluded from `N_LP` counts and from the active/passive LP PnL and wealth series.
-  - JIT LP “Jiter” agent: An MEV-style *Just-in-Time* LP that can join blocks with Bernoulli arrival probability `p_jit` (block mode only, i.e. `block_time > 1`).nAt each block where it arrives, Jiter observes the full mempool and selects up to `N_jit` largest swap intents by input size(excluding the arbitrage intent). For each targeted swap, Jiter mints a very narrow position aligned with the current active tick just before the swap and burns it immediately after, aiming to own a fraction `liquidity_perc_jit` of active liquidity in that band. Jiter’s PnL and wealth are tracked separately from passive/active LP cohorts (as if funded via a flash loan with no extra friction beyond existing pool fees).
+  - JIT LP “Jiter” agent: An MEV-style *Just-in-Time* LP that can join blocks with Bernoulli arrival probability `p_jit`. At each block where it arrives, Jiter observes the full mempool and selects up to `N_jit` largest swap intents by input size (excluding the arbitrage intent). For each targeted swap, Jiter mints a very narrow position aligned with the current active tick just before the swap and burns it immediately after, aiming to own a fraction `liquidity_perc_jit` of active liquidity in that band. Jiter’s PnL and wealth are tracked separately from passive/active LP cohorts (as if funded via a flash loan with no extra friction beyond existing pool fees).
 - **Passive width parameterization (why percent matters)**:
   - Uniswap v3 ticks are log-spaced, so a “symmetric” range in ticks is not symmetric in price. `passive_width_pct` defines the passive LP band as a symmetric ±% around the agent reference price (after snapping to tick spacing), which makes the left/right tick distances generally *asymmetric* but the *price* band symmetric.
 - **Decision process** (per LP):
   - Each LP carries an internal review clock with inter-review times drawn from a geometric distribution with mean `tau`. In any block an LP is either *not due* (clock has not fired yet) or *due* (clock hits zero); only due LPs are allowed to act.
-  - LP activity knobs are specified as **target counts per block** across the population: `narrow_mints_per_block`, `passive_mints_per_block`, and `passive_burns_per_block`. In block mode (`block_time > 1`), the simulator draws Poisson counts per block for these targets and assigns the resulting intents to eligible LPs (review clock due, not in cooldown), allowing multiple intents per LP in a single block while enforcing per-LP budget and per-block deployment caps.
+  - LP activity knobs are specified as **target counts per block** across the population: `narrow_mints_per_block`, `passive_mints_per_block`, and `passive_burns_per_block`. The simulator draws Poisson counts per block for these targets and assigns the resulting intents to eligible LPs (review clock due, not in cooldown), allowing multiple intents per LP in a single block while enforcing per-LP budget and per-block deployment caps.
   - After a burn, an LP enters a cooldown for several steps during which it cannot mint again.
   - Narrow LPs track how many consecutive steps their position has been out-of-range (`out_steps`). Once this reaches `k_out_threshold`, they enqueue a recenter intent that targets a symmetric band around the agent’s reference price **using the current EWMA-driven width signal** (the same `w_ticks` rule used for new narrow mints), rather than reusing the original position width.
   - For **active narrow LPs only** (`is_passive=False`), TP/SL logic is **per-position**: for each open `Position`, it computes PnL in token1 terms as `IL_y + fees_value_y` via `Position.PnL_y(agent_S_ref, validated_cex)` and burns that specific position if its PnL exceeds `theta_TP · hodl0_value_y` or falls below `-theta_SL · hodl0_value_y`. Here `hodl0_value_y` is fixed for that position at the time it is minted (including after any recenter), so each recenter creates a new position with its own TP/SL baseline. Passive LPs do **not** use TP/SL; they exit positions only via the probabilistic burn rule.
 - **Scheduling and execution**:
-  - In non-block mode, LP burns and narrow-LP recenter actions execute directly during their bucket(s) in the per-step schedule A/B/C. New mints are currently handled only in the block-mode mempool path, so for fully budget- and wallet-consistent LP dynamics you should prefer `block_time > 1`.
-  - In block mode, all LP actions (burn, recenter, mint) are added to the mempool as intents (`lp_burn`, `lp_recenter`, `lp_mint`) and executed alongside trader orders when the mempool is replayed.
+  - All LP actions (burn, recenter, mint) are added to the mempool as intents (`lp_burn`, `lp_recenter`, `lp_mint`) and executed alongside trader orders when the mempool is replayed.
 - **Budgets & bootstrap**:
   - Each strategic LP carries a liquidity budget `L_budget` and tracked live deployment `L_live`; new mints are clipped by both a per-step cap (fraction of `L_budget`) and remaining budget.
   - `bootstrap_initial_binomial_hill_sharded` distributes `initial_total_L` across a set of seed LPs (`is_seed=True`) so early burns are staggered and the book has a smooth “hill” shape; these seed LPs are treated as background liquidity and are not counted in `N_LP` or in the passive/active LP cohorts.
@@ -379,7 +363,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
 2. **Per step (block)**:
    - Copy the validated snapshot into agent-facing variables (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`).
    - Update/adapt reference CEX (diffusion + impact) and evolve EWMA signals.
-   - Randomize actor order depending on `block_time`. In block mode: run micro-steps that diffuse the CEX and enqueue smart/noise + LP intents against the snapshot, then insert an arb intent (using the same snapshot) and replay the mempool (arb first) against the live pool.
+   - Run micro-steps that diffuse the CEX and enqueue smart/noise intents against the snapshot, then insert an arb intent (using the same snapshot), add LP intents, and replay the mempool (arb first) against the live pool.
    - Apply fees, update LP positions, and settle agent PnL at the post-impact CEX price.
    - Update the dynamic fee controller, log state, and finally capture the new validated snapshot (live DEX + CEX) for the next iteration.
 3. **Post-processing**:
@@ -396,7 +380,7 @@ Scenario YAML files contain a top-level `fee_mode` label plus a `simulate` mappi
 ```yaml
 fee_mode: static            # scenario label + default fee mode
 simulate:
-  block_time: 5             # 1 => synchronous mode; >1 => mempool mode
+  block_time: 5             # micro-steps per block (mempool execution; must be > 1)
   T: 750                    # number of blocks
   seed: 7
   cex_mu: 0.0
@@ -471,10 +455,10 @@ python run.py --config abm_results/scenarios/test.yml
 ```
 
 Outputs:
-- `abm_results/scenarios/<scenario_name>/logs/<pid>_verbose_steps_<fee_mode>_<n>.txt`: human-readable log per step and mempool replay summaries (includes micro-time traces when `block_time>1`; omitted when `light_mode=True`).
+- `abm_results/scenarios/<scenario_name>/logs/<pid>_verbose_steps_<fee_mode>_<n>.txt`: human-readable log per step and mempool replay summaries (includes micro-time traces; omitted when `light_mode=True`).
 - `abm_results/scenarios/<scenario_name>/png/` & `abm_results/scenarios/<scenario_name>/html/`: figures summarizing prices, liquidity, agent PnLs (smart vs. noise vs. arb, hedged vs. unhedged LPs), fee path, and width signals. PNG export relies on Kaleido (needs Chrome); HTML files are always written.
 - Optional liquidity GIFs can be generated via `utils.make_liquidity_gif(...)` using the recorded `liq_history` and `tick_history` series.
-- JSON-like dict returned by `simulate` with all recorded series (see tail of `run.py` for exact keys, including wallet vs. wealth, fee signals, and the active CEX volatility/regime path). Micro-step traces (block mode) are written to the verbose log but are not currently returned in the output dict.
+- JSON-like dict returned by `simulate` with all recorded series (see tail of `run.py` for exact keys, including wallet vs. wealth, fee signals, and the active CEX volatility/regime path). Micro-step traces are written to the verbose log but are not currently returned in the output dict.
 
 ---
 

@@ -243,6 +243,12 @@ def simulate(
     N_jit = max(0, int(N_jit))
     liquidity_perc_jit = clamp(liquidity_perc_jit, 0.0, 0.999999)
     slippage_tolerance = clamp(slippage_tolerance, 0.0, 1.0)
+    try:
+        block_time = int(block_time)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"block_time must be an integer > 1: got {block_time!r}") from exc
+    if block_time <= 1:
+        raise ValueError("block_time must be > 1 for mempool execution mode.")
 
     if passive_width_pct is not None:
         try:
@@ -274,17 +280,15 @@ def simulate(
 
     passive_share = max(0.0, min(1.0, passive_lp_share))
     
-    # Trade arrivals are modeled as a Poisson process:
-    #   - non-block mode: N ~ Poisson(trades_per_block) per step
-    #   - block mode: per micro-step N_k ~ Poisson(trades_per_block / B)
-    # This allows multiple arrivals per micro-step when trades_per_block > B.
-    B = max(1, int(block_time))
+    # Trade arrivals are modeled as a Poisson process per micro-step.
+    # Each block has B micro-steps, so lambda_micro = trades_per_block / B.
+    B = block_time
     smart_trades_per_block = max(0.0, float(smart_trades_per_block))
     noise_trades_per_block = max(0.0, float(noise_trades_per_block))
     smart_lambda_micro = smart_trades_per_block / B
     noise_lambda_micro = noise_trades_per_block / B
 
-    jiter_enabled = block_time > 1 and p_jit > 0.0 and N_jit > 0 and liquidity_perc_jit > 0.0
+    jiter_enabled = p_jit > 0.0 and N_jit > 0 and liquidity_perc_jit > 0.0
     jiter_agent: Optional[LPAgent] = None
 
     # narrow_agents = max(1e-12, (1.0 - passive_share) * max(1, N_LP))
@@ -482,7 +486,7 @@ def simulate(
     for i in range(N_LP):
         is_narrow = i in active_indices
         is_passive = not is_narrow
-        # LP mint/burn arrival is scheduled explicitly in the block-mode mempool path
+        # LP mint/burn arrival is scheduled explicitly in the mempool path
         # using Poisson counts, so per-LP mintProb is not used for targeting.
         mintProb = 0.0
         LPs.append(
@@ -674,7 +678,7 @@ def simulate(
     cex_regime_series: List[str] = []
     # --- Block-start target band (arb_ref_m) ---
     band_lo_target, band_hi_target = [], []
-    # --- Micro-time traces (for block_time > 1 visualization) ---
+    # --- Micro-time traces (mempool micro-steps) ---
     micro_steps, M_micro, P_micro = [], [], []
     micro_valid_steps, micro_valid_prices = [], []
     micro_counter = 0
@@ -1238,7 +1242,7 @@ def simulate(
             return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), Lff
         return 0.0, 0.0, 0.0, None, 0.0
 
-    # Per-micro-step Poisson intensities (used in block mode)
+    # Per-micro-step Poisson intensities
     smart_lambda_micro_step = smart_lambda_micro
     noise_lambda_micro_step = noise_lambda_micro
 
@@ -1286,7 +1290,6 @@ def simulate(
         agent_S_ref = validated_S
         agent_tick_ref = validated_tick
         cex_ref_for_agents = validated_cex
-        arb_ref_m = cex_ref_for_agents  # default snapshot (end of previous block)
         # --- Apply any committed fee update (commit→reveal) ---
         if fee_cooldown_left > 0:
             fee_cooldown_left -= 1
@@ -1355,7 +1358,7 @@ def simulate(
         dir_arb_this: Optional[str] = None
 
         
-        # --- Mempool structures (for block_time > 1) ---
+        # --- Mempool structures ---
         mempool_orders = []
         jit_targets: Dict[int, Dict[str, Any]] = {}
         jit_open_positions: Dict[int, Position] = {}
@@ -1499,7 +1502,7 @@ def simulate(
         def plan_jiter_targets() -> None:
             """Select top-N swaps by input amount and mark them for JIT mint/burn."""
             nonlocal jit_targets, jit_swap_executed
-            if not jiter_enabled or jiter_agent is None or block_time <= 1:
+            if not jiter_enabled or jiter_agent is None:
                 return
             if N_jit <= 0 or liquidity_perc_jit <= 0.0:
                 return
@@ -1554,7 +1557,7 @@ def simulate(
                 typ = o.get('type')
                 def _record_micro(price_before_local: float) -> None:
                     nonlocal micro_counter
-                    if block_time > 1 and abs(pool.price - price_before_local) > EPS_PRICE_CHANGE:
+                    if abs(pool.price - price_before_local) > EPS_PRICE_CHANGE:
                         micro_steps.append(micro_counter)
                         P_micro.append(pool.price)
                         M_micro.append(ref.m)
@@ -1965,310 +1968,8 @@ def simulate(
             )
             mempool_orders.clear()
 
-        def execute_trader(agent_label: str, probability: float, accumulator: TraderStepAccumulator, enforce_best_ex: bool, m_reference: float) -> None:
-            nonlocal L_pre_trader_this, trader_y_this, _trader_execs, delta_a_cex_this
-            nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
-            nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
-            nonlocal smart_swaps_x_to_y, smart_swaps_y_to_x
-            nonlocal noise_swaps_x_to_y, noise_swaps_y_to_x
-
-            if random.random() >= probability:
-                return
-
-            side = random.choice(["X_to_Y", "Y_to_X"])
-            L_pre_trader_this = pool.L_active
-            P_pre = pool.price
-            tick_before = pool.tick
-
-            if side == "X_to_Y":
-                notional_y = _draw_trader_notional()
-                if notional_y <= 0.0:
-                    return
-                price_snapshot = max(m_reference, 1e-18)
-                dx = notional_y / price_snapshot
-                if dx <= 0.0:
-                    return
-                initial_quote = pool.quote_x_to_y(dx)
-                if initial_quote <= 0.0:
-                    return
-                if enforce_best_ex:
-                    cex_value_y = dx * m_reference
-                    if initial_quote < theta_T * cex_value_y:
-                        # DEX too uncompetitive: execute on CEX instead.
-                        if agent_label == "smart":
-                            trader_steps.append(t)
-                            trader_dirs.append("down")
-                            smart_activity_steps.append(t); smart_activity_signs.append(+1)
-                            delta_y = -cex_value_y
-                            accumulator.notional_y += delta_y
-                            trader_y_this += delta_y
-                            accumulator.record_swap(dx_in=dx, dy_out=cex_value_y)
-                            executed = int(dx > 0.0)
-                            accumulator.execs += executed
-                            _trader_execs += executed
-                            total_smart_swaps_executed += executed
-                            smart_swaps_x_to_y += executed
-                            # Sell token0 on CEX => negative Δa_cex
-                            delta_a_cex_this += -dx
-                            buffer_log(
-                                f"[t={t:03d}] smart CEX swap X_to_Y EXEC dx={dx:.6f} dy_out={cex_value_y:.6f} "
-                                f"@ m={m_reference:.4f}\n"
-                            )
-                        return
-                baseline_quote = _baseline_quote_x_to_y(dx)
-                min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
-                final_quote = pool.quote_x_to_y(dx)
-                if final_quote < min_output:
-                    if agent_label == "smart":
-                        total_smart_swaps_skipped += 1
-                    elif agent_label == "noise":
-                        total_noise_swaps_skipped += 1
-                    buffer_log(
-                        f"[t={t:03d}] {agent_label} swap X_to_Y SKIPPED (slippage). "
-                        f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
-                    )
-                    return
-
-                if pool.L_active <= EPS_LIQ:
-                    return
-
-                S_before = pool.S; tick_before = pool.tick
-                used_dx_pre, dy_out_real, _ = pool.swap_x_to_y(dx, fee_cb=allocate_fees)
-                _assert_active_liquidity_state_fast("trader_swap_x_to_y")
-                if used_dx_pre <= EPS_LIQ:
-                    _rollback_pool_state(tick_before, S_before)
-                    return
-
-                trader_steps.append(t)
-                trader_dirs.append("down")
-                if agent_label == "smart":
-                    smart_activity_steps.append(t); smart_activity_signs.append(+1)
-                elif agent_label == "noise":
-                    noise_activity_steps.append(t); noise_activity_signs.append(+1)
-
-                delta_y = -P_pre * used_dx_pre
-                accumulator.notional_y += delta_y
-                trader_y_this += delta_y
-
-                accumulator.record_swap(dx_in=used_dx_pre, dy_out=dy_out_real)
-
-                executed = int(used_dx_pre > 0)
-                accumulator.execs += executed
-                _trader_execs += executed
-                if agent_label == "smart":
-                    total_smart_swaps_executed += executed
-                    smart_swaps_x_to_y += executed
-                    if executed:
-                        buffer_log(
-                            f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
-                            f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
-                        )
-                elif agent_label == "noise":
-                    total_noise_swaps_executed += executed
-                    noise_swaps_x_to_y += executed
-                    if executed:
-                        buffer_log(
-                            f"[t={t:03d}] noise swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
-                            f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
-                        )
-
-            else:
-                dy = _draw_trader_notional()
-                if dy <= 0.0:
-                    return
-                initial_quote = pool.quote_y_to_x(dy)
-                if initial_quote <= 0.0:
-                    return
-                if enforce_best_ex:
-                    dx_cex = dy / max(m_reference, 1e-18)
-                    if initial_quote < theta_T * dx_cex:
-                        # DEX too uncompetitive: execute on CEX instead.
-                        if agent_label == "smart":
-                            trader_steps.append(t)
-                            trader_dirs.append("up")
-                            smart_activity_steps.append(t); smart_activity_signs.append(-1)
-                            accumulator.notional_y += dy
-                            trader_y_this += dy
-                            accumulator.record_swap(dy_in=dy, dx_out=dx_cex)
-                            executed = int(dy > 0.0)
-                            accumulator.execs += executed
-                            _trader_execs += executed
-                            total_smart_swaps_executed += executed
-                            smart_swaps_y_to_x += executed
-                            # Buy token0 on CEX => positive Δa_cex
-                            delta_a_cex_this += dx_cex
-                            buffer_log(
-                                f"[t={t:03d}] smart CEX swap Y_to_X EXEC dy={dy:.6f} dx_out={dx_cex:.6f} "
-                                f"@ m={m_reference:.4f}\n"
-                            )
-                        return
-                baseline_quote = _baseline_quote_y_to_x(dy)
-                min_output = max(0.0, baseline_quote * (1.0 - slippage_tolerance))
-                final_quote = pool.quote_y_to_x(dy)
-                if final_quote < min_output:
-                    if agent_label == "smart":
-                        total_smart_swaps_skipped += 1
-                    elif agent_label == "noise":
-                        total_noise_swaps_skipped += 1
-                    buffer_log(
-                        f"[t={t:03d}] {agent_label} swap Y_to_X SKIPPED (slippage). "
-                        f"final_quote={final_quote:.4f} < min_output={min_output:.4f} | tick={tick_before}\n"
-                    )
-                    return
-
-                if pool.L_active <= EPS_LIQ:
-                    return
-
-                S_before = pool.S; tick_before = pool.tick
-                used_dy_pre, dx_out_real, _ = pool.swap_y_to_x(dy, fee_cb=allocate_fees)
-                _assert_active_liquidity_state_fast("trader_swap_y_to_x")
-                if used_dy_pre <= EPS_LIQ:
-                    _rollback_pool_state(tick_before, S_before)
-                    return
-
-                trader_steps.append(t)
-                trader_dirs.append("up")
-                if agent_label == "smart":
-                    smart_activity_steps.append(t); smart_activity_signs.append(-1)
-                elif agent_label == "noise":
-                    noise_activity_steps.append(t); noise_activity_signs.append(-1)
-
-                accumulator.notional_y += used_dy_pre
-                trader_y_this += used_dy_pre
-
-                accumulator.record_swap(dy_in=used_dy_pre, dx_out=dx_out_real)
-
-                executed = int(used_dy_pre > 0)
-                accumulator.execs += executed
-                _trader_execs += executed
-                if agent_label == "smart":
-                    total_smart_swaps_executed += executed
-                    smart_swaps_y_to_x += executed
-                    if executed:
-                        buffer_log(
-                            f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
-                            f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
-                        )
-                elif agent_label == "noise":
-                    total_noise_swaps_executed += executed
-                    noise_swaps_y_to_x += executed
-                    if executed:
-                        buffer_log(
-                            f"[t={t:03d}] noise swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
-                            f"| price {P_pre:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
-                        )
-
-        # --- Actor routines (closures) ---
-        """
-        LPs act by burning their positions with a probability proportional to their current profit/loss,
-        and re-centering their positions to a new random point within their current active range.
-        They also probabilistically mint new liquidity within their active range, with the probability of minting
-        increasing with the LP's budget. The amount of liquidity minted is normally distributed with a mean
-        of 0.0 and a standard deviation of 0.1. If the LP is passive, then the liquidity minted is
-        capped at the LP's budget. The LP's budget is the maximum amount of liquidity that the LP can mint
-        probabilistically.
-
-        When an LP is not active, it does not mint new liquidity or burn its positions. When an LP is active
-        but not narrow, it only burns its positions with a probability proportional to its current profit/loss.
-        When an LP is active and narrow, it both burns its positions with a probability proportional to its current
-        profit/loss, and re-centers its positions to a new random point within its current active range.
-
-        The LPs' probabilistic minting and burning is blocked during their cooldown periods.
-
-        During each tick, each LP will probabilistically mint new liquidity within its active range, with the
-        probability of minting increasing with the LP's budget. The amount of liquidity minted is normally
-        distributed with a mean of 0.0 and a standard deviation of 0.1. If the LP is passive, then the
-        liquidity minted is capped at the LP's budget.
-
-        The LP's budget is the maximum amount of liquidity that the LP can mint probabilistically.
-
-        Each LP's budget is initialized to its initial budget. The LP's budget is updated whenever the LP
-        probabilistically mints new liquidity. The LP's budget is updated by adding the amount of liquidity minted
-        to the LP's current budget.
-
-        The LPs' probabilistic minting and burning is blocked during their cooldown periods.
-
-        :param w_ticks: The number of ticks in the LPs' active range.
-        :param passive_width_pct: The percentage of the LPs' active range in which to mint new liquidity when the LP is passive.
-        :param passive_mint_prob: The probability of minting new liquidity when the LP is passive.
-        :param passive_burn_prob: The probability of burning the LP's positions when the LP is passive.
-        :param mint_mu: The mean of the normal distribution used to mint new liquidity.
-        :param mint_sigma: The standard deviation of the normal distribution used to mint new liquidity.
-        :param L_scale: The scale factor used to mint new liquidity.
-        :param initial_total_L: The total amount of liquidity initially available to all LPs.
-        :param N_lp: The number of LPs.
-        :param k_out_max: The maximum number of ticks that an LP can be out of its active range.
-        :param theta_TP: The profit/loss threshold above which an LP will probabilistically burn its positions.
-        :param theta_SL: The profit/loss threshold below which an LP will probabilistically burn its positions.
-        :param agent_S_ref: The reference price used to calculate the profit/loss of each LP.
-        :param ref: The reference price used to calculate the profit/loss of each LP.
-     st of LP objects.
-        :param t: The current tick number.
-        :param agent_label: The label of the agent (smart or noise).
-        """
-
-        def act_smart_router():
-            # Poisson arrivals per step (non-block mode).
-            if smart_trades_per_block <= 0.0:
-                return
-            n_intents = int(np.random.poisson(smart_trades_per_block))
-            for _ in range(n_intents):
-                execute_trader("smart", 1.0, sr_acc, True, cex_ref_for_agents)
-
-        def act_noise_trader():
-            # Poisson arrivals per step (non-block mode).
-            if noise_trades_per_block <= 0.0:
-                return
-            n_intents = int(np.random.poisson(noise_trades_per_block))
-            for _ in range(n_intents):
-                execute_trader("noise", 1.0, noise_acc, False, cex_ref_for_agents)
-
-        def act_arbitrageur():
-            nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
-
-            prev_in, prev_x_out, prev_y_out, prev_dir, _ = preview_arbitrage_to_target(arb_ref_m)
-            expected_profit = 0.0
-            expected_flash_fee = 0.0
-            if prev_dir == "up":
-                expected_flash_fee = flash_loan_fee * prev_in
-                expected_profit = prev_x_out * arb_ref_m - prev_in - expected_flash_fee
-            elif prev_dir == "down":
-                notional_y = prev_in * arb_ref_m
-                expected_flash_fee = flash_loan_fee * notional_y
-                expected_profit = prev_y_out - notional_y - expected_flash_fee
-            if prev_dir is None or expected_profit <= 0.0:
-                arb_skip_steps.append(t)
-                buffer_log(
-                    f"[t={t:03d}] arb SKIPPED (unprofitable): dir={prev_dir} "
-                    f"expected_profit={expected_profit:.6f} flash_fee={expected_flash_fee:.6f} "
-                    f"| price={pool.price:.4f} cex={arb_ref_m:.4f}\n"
-                )
-                return
-
-            in_used, x_out_from_dex, y_out_from_dex, dir_arb, L_first = arbitrage_to_target(arb_ref_m)
-            if in_used > 0 and dir_arb is not None:
-                L_pre_arb_eff_this = L_first
-                dir_arb_this = dir_arb
-                arb_steps.append(t); arb_dirs.append(dir_arb)
-
-                if dir_arb == "up":
-                    # DEX cheap: buy A on DEX (A out), sell A on CEX @ m_now
-                    delta_a_cex_this += -x_out_from_dex
-                    arb_y_this = +in_used
-                    arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
-                    _arb_execs += int(in_used > 0)
-                    # Fees already allocated per span via fee_cb
-                else:
-                    # DEX expensive: sell A on DEX (A in), buy A on CEX @ m_now
-                    delta_a_cex_this += +in_used
-                    arb_y_this = -pool.price * in_used
-                    arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
-                    _arb_execs += int(in_used > 0)
-                    # Fees already allocated per span via fee_cb
-
-        # --- async LP micro-scheduler: A → trader → B → arb → C ---
-
-        # figure out which LPs are due to act this step
+        # --- LP scheduling ---
+        # Figure out which LPs are due to act this step.
         due = []
         for i, lp in enumerate(LPs):
             if getattr(lp, "is_jiter", False):
@@ -2283,261 +1984,234 @@ def simulate(
                 due.append(i)
                 lp.next_review = int(np.random.geometric(lp.review_rate))
 
-        # split due LPs into 3 buckets so we can interleave them
         random.shuffle(due)
-        n = len(due)
-        k1 = np.random.binomial(n, 1/3) if n > 0 else 0
-        k2 = np.random.binomial(n - k1, 1/2) if (n - k1) > 0 else 0
-        bucketA = due[:k1]
-        bucketB = due[k1:k1+k2]
-        bucketC = due[k1+k2:]
 
         def _enable(indices):
             s = set(indices)
             for j, lp in enumerate(LPs):
                 lp.can_act = (j in s)
 
-        # ===================== BLOCK SCHEDULING & ORDER =====================
-        # Non-block mode (block_time == 1): A -> Smart+Noise -> B -> Arb -> C.
-        # Block mode (block_time > 1):
-        #   - Snapshot CEX at block start: arb_ref_m
-        #   - Micro-steps: diffuse-only; enqueue Poisson-arrival intents per micro-step
-        #   - Boundary order (current): Arb -> (populate+execute mempool)  (LPs act via mempool)
+        # ===================== MEMPOOL SCHEDULING & ORDER =====================
+        # Freeze the validated snapshot, run micro-steps that diffuse the CEX
+        # and enqueue trader intents, then replay the mempool (arb first) with
+        # LP intents included.
         # =====================================================================
-        # run the schedule
-        if block_time == 1:
-            # target band uses validated CEX snapshot in non-block mode
-            target_band_m = cex_ref_for_agents
-            band_lo_target.append(target_band_m * r)
-            band_hi_target.append(target_band_m / r)
-            _enable(bucketA)
-            act_LPs()
+        arb_ref_m_start = ref.m  # block-start CEX snapshot (diagnostic only; arb targets end-of-block)
+        # prepare micro-time arrays (event-time logging)
+        buffer_log(f"[t={t:03d}] BLOCK start m={arb_ref_m_start:.4f} due_lp={len(due)}\n")
+        micro_steps.append(micro_counter)
+        P_micro.append(pool.price)
+        M_micro.append(ref.m)
+        micro_counter += 1
+        for _k in range(block_time):
+            # Allow volatility_oracle fees to react at micro-step granularity
+            # based on the *current* CEX volatility.
+            if fee_mode == "volatility_oracle":
+                sigma_signal_micro = float(ref.sigma)
+                f_raw_micro = f0 + k_sigma * sigma_signal_micro * math.sqrt(block_time)
+                f_tgt_micro = clamp(f_raw_micro, f_min, f_max)
+                min_step_micro = fee_step_bps_min / 1e4
+                max_step_micro = fee_step_bps_max / 1e4
+                delta_f_micro = f_tgt_micro - pool.f
+                if abs(delta_f_micro) >= min_step_micro:
+                    step_micro = math.copysign(min(abs(delta_f_micro), max_step_micro), delta_f_micro)
+                    f_new_micro = clamp(pool.f + step_micro, f_min, f_max)
+                    if abs(f_new_micro - pool.f) >= 1e-12:
+                        pool.f = f_new_micro
 
-            _enable(bucketB)
-            act_smart_router()
-            act_noise_trader()
-            act_LPs()
-
-            _enable(bucketC)
-            act_arbitrageur()
-            act_LPs()
-        else:
-            arb_ref_m_start = ref.m  # block-start CEX snapshot (diagnostic only; arb targets end-of-block)
-            # prepare micro-time arrays (event-time logging)
-            buffer_log(f"[t={t:03d}] BLOCK start m={arb_ref_m_start:.4f} due_lp={len(due)}\n")
+            if smart_lambda_micro_step > 0.0:
+                n_smart = int(np.random.poisson(smart_lambda_micro_step))
+                for _ in range(n_smart):
+                    maybe_enqueue_smart_router_intent(cex_ref_for_agents)
+            if noise_lambda_micro_step > 0.0:
+                n_noise = int(np.random.poisson(noise_lambda_micro_step))
+                for _ in range(n_noise):
+                    maybe_enqueue_noise_trader_intent(cex_ref_for_agents)
+            ref.diffuse_only()
+            _broadcast_price_move(ref.m)
             micro_steps.append(micro_counter)
             P_micro.append(pool.price)
             M_micro.append(ref.m)
             micro_counter += 1
-            for _k in range(block_time):
-                # In block mode, allow volatility_oracle fees to react at
-                # micro-step granularity based on the *current* CEX volatility.
-                if fee_mode == "volatility_oracle":
-                    sigma_signal_micro = float(ref.sigma)
-                    f_raw_micro = f0 + k_sigma * sigma_signal_micro * math.sqrt(block_time)
-                    f_tgt_micro = clamp(f_raw_micro, f_min, f_max)
-                    min_step_micro = fee_step_bps_min / 1e4
-                    max_step_micro = fee_step_bps_max / 1e4
-                    delta_f_micro = f_tgt_micro - pool.f
-                    if abs(delta_f_micro) >= min_step_micro:
-                        step_micro = math.copysign(min(abs(delta_f_micro), max_step_micro), delta_f_micro)
-                        f_new_micro = clamp(pool.f + step_micro, f_min, f_max)
-                        if abs(f_new_micro - pool.f) >= 1e-12:
-                            pool.f = f_new_micro
 
-                if smart_lambda_micro_step > 0.0:
-                    n_smart = int(np.random.poisson(smart_lambda_micro_step))
-                    for _ in range(n_smart):
-                        maybe_enqueue_smart_router_intent(cex_ref_for_agents)
-                if noise_lambda_micro_step > 0.0:
-                    n_noise = int(np.random.poisson(noise_lambda_micro_step))
-                    for _ in range(n_noise):
-                        maybe_enqueue_noise_trader_intent(cex_ref_for_agents)
-                ref.diffuse_only()
-                _broadcast_price_move(ref.m)
-                micro_steps.append(micro_counter)
-                P_micro.append(pool.price)
-                M_micro.append(ref.m)
-                micro_counter += 1
+        # --- Arbitrage intent (executes first in mempool) ---
+        arb_ref_m = cex_ref_for_agents  # snapshot from end of previous block
+        target_band_m = cex_ref_for_agents
+        band_lo_target.append(target_band_m * r)
+        band_hi_target.append(target_band_m / r)
+        mempool_orders.append({'type': 'arb', 'arb_ref_m': arb_ref_m})
 
-            # --- Arbitrage intent (executes first in mempool) ---
-            arb_ref_m = cex_ref_for_agents  # snapshot from end of previous block
-            target_band_m = cex_ref_for_agents
-            band_lo_target.append(target_band_m * r)
-            band_hi_target.append(target_band_m / r)
-            mempool_orders.append({'type': 'arb', 'arb_ref_m': arb_ref_m})
+        # --- Include LP intents in the mempool (shuffled with traders) ---
+        # Allow due LPs to act this block
+        _enable(due)
+        # Track planned deployments within this block so multiple mint intents for the
+        # same LP cannot exceed its per-block cap or budget (since L_live updates on execution).
+        planned_L_live: Dict[int, float] = {}
+        planned_L_step_used: Dict[int, float] = defaultdict(float)
+        for lp_idx in due:
+            lp = LPs[lp_idx]
+            if getattr(lp, "is_jiter", False):
+                continue
+            if not lp.can_act:
+                continue
+            planned_L_live[lp.id] = float(getattr(lp, "L_live", 0.0))
 
-            # --- Include LP intents in the mempool (shuffled with traders) ---
-            # Allow due LPs to act this block
-            _enable(due)
-            # Track planned deployments within this block so multiple mint intents for the
-            # same LP cannot exceed its per-block cap or budget (since L_live updates on execution).
-            planned_L_live: Dict[int, float] = {}
-            planned_L_step_used: Dict[int, float] = defaultdict(float)
+        # Burns (TP/SL + passive Poisson targets)
+        if passive_burns_per_block > 0.0:
+            burnable_positions: List[Tuple[int, int, int, float]] = []
             for lp_idx in due:
                 lp = LPs[lp_idx]
                 if getattr(lp, "is_jiter", False):
                     continue
-                if not lp.can_act:
+                if not lp.can_act or not bool(getattr(lp, "is_passive", False)):
                     continue
-                planned_L_live[lp.id] = float(getattr(lp, "L_live", 0.0))
+                for pos in getattr(lp, "positions", []):
+                    burnable_positions.append((lp.id, pos.lower, pos.upper, float(pos.L)))
+            if burnable_positions:
+                n_burn_intents = int(np.random.poisson(passive_burns_per_block))
+                n_burn_intents = min(n_burn_intents, len(burnable_positions))
+                if n_burn_intents > 0:
+                    for lp_id, lower, upper, L_val in random.sample(burnable_positions, k=n_burn_intents):
+                        mempool_orders.append({'type':'lp_burn','lp_id': lp_id,'lower': lower,'upper': upper,'L': L_val})
 
-            # Burns (TP/SL + passive Poisson targets)
-            if passive_burns_per_block > 0.0:
-                burnable_positions: List[Tuple[int, int, int, float]] = []
-                for lp_idx in due:
-                    lp = LPs[lp_idx]
-                    if getattr(lp, "is_jiter", False):
-                        continue
-                    if not lp.can_act or not bool(getattr(lp, "is_passive", False)):
-                        continue
-                    for pos in getattr(lp, "positions", []):
-                        burnable_positions.append((lp.id, pos.lower, pos.upper, float(pos.L)))
-                if burnable_positions:
-                    n_burn_intents = int(np.random.poisson(passive_burns_per_block))
-                    n_burn_intents = min(n_burn_intents, len(burnable_positions))
-                    if n_burn_intents > 0:
-                        for lp_id, lower, upper, L_val in random.sample(burnable_positions, k=n_burn_intents):
-                            mempool_orders.append({'type':'lp_burn','lp_id': lp_id,'lower': lower,'upper': upper,'L': L_val})
+        for lp_idx in due:
+            lp = LPs[lp_idx]
+            if getattr(lp, "is_jiter", False):
+                continue
+            if not lp.can_act:
+                continue
+            if lp.is_passive:
+                continue
+            to_burn = []
+            for i, pos in enumerate(lp.positions):
+                pnl = pos.PnL_y(agent_S_ref, ref.m)
+                if pnl >= theta_TP * pos.hodl0_value_y or pnl <= -theta_SL * pos.hodl0_value_y:
+                    to_burn.append(i)
+            for i in reversed(to_burn):
+                pos = lp.positions[i]
+                mempool_orders.append({'type':'lp_burn','lp_id': lp.id,'lower': pos.lower,'upper': pos.upper,'L': pos.L})
 
-            for lp_idx in due:
-                lp = LPs[lp_idx]
-                if getattr(lp, "is_jiter", False):
-                    continue
-                if not lp.can_act:
-                    continue
-                if lp.is_passive:
-                    continue
-                to_burn = []
-                for i, pos in enumerate(lp.positions):
-                    pnl = pos.PnL_y(agent_S_ref, ref.m)
-                    if pnl >= theta_TP * pos.hodl0_value_y or pnl <= -theta_SL * pos.hodl0_value_y:
-                        to_burn.append(i)
-                for i in reversed(to_burn):
-                    pos = lp.positions[i]
-                    mempool_orders.append({'type':'lp_burn','lp_id': lp.id,'lower': pos.lower,'upper': pos.upper,'L': pos.L})
-
-            # Recenter (narrow LPs that have been out-of-range past their threshold)
-            for lp_idx in due:
-                lp = LPs[lp_idx]
-                if getattr(lp, "is_jiter", False):
-                    continue
-                if not lp.can_act:
-                    continue
-                to_recenters = []
-                for i, pos in enumerate(lp.positions):
-                    in_rng = pos.in_range(agent_tick_ref)
-                    out_steps = getattr(pos, "out_steps", 0)
-                    out_steps = 0 if in_rng else out_steps + 1
-                    setattr(pos, "out_steps", out_steps)
-                    k_out_thresh = getattr(lp, "k_out_threshold", k_out_max)
-                    if lp.is_active_narrow and out_steps >= k_out_thresh:
-                        to_recenters.append(i)
-                for i in reversed(to_recenters):
-                    pos = lp.positions[i]
-                    width_ticks = w_ticks
-                    n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
-                    S_now = agent_S_ref
-                    sps = pool.tick_spacing
-                    nb = n_bands
-                    denom = (1.0 + (pool.g ** (nb * sps)))
-                    if denom <= 0.0:
-                        denom = 1.0
-                    lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-                    lower = pool._snap(int(round(lower_real)))
-                    upper = lower + nb * sps
-                    mempool_orders.append({'type':'lp_recenter','lp_id': lp.id,
-                                           'old_lower': pos.lower,'old_upper': pos.upper,'old_L': pos.L,
-                                           'new_lower': lower,'new_upper': upper,'new_L': pos.L})
-
-            def _enqueue_lp_mint(lp: LPAgent, is_passive_mint: bool) -> None:
-                if getattr(lp, "cooldown", 0) > 0:
-                    return
-                X = np.random.lognormal(mint_mu, mint_sigma)
-                try:
-                    _L_SCALE = L_SCALE
-                except NameError:
-                    _L_SCALE = initial_total_L / max(1, N_LP)
-                want = float(X) * float(_L_SCALE)
-                if want <= 0.0:
-                    return
-                L_budget = float(getattr(lp, "L_budget", want))
-                L_live_planned = float(planned_L_live.get(lp.id, getattr(lp, "L_live", 0.0)))
-                cap_left = max(0.0, L_budget - L_live_planned)
-                cap_step_total = 0.25 * L_budget
-                cap_step_left = max(0.0, cap_step_total - float(planned_L_step_used.get(lp.id, 0.0)))
-                L_new = max(0.0, min(want, cap_step_left, cap_left))
-                if L_new <= 0.0:
-                    return
-
+        # Recenter (narrow LPs that have been out-of-range past their threshold)
+        for lp_idx in due:
+            lp = LPs[lp_idx]
+            if getattr(lp, "is_jiter", False):
+                continue
+            if not lp.can_act:
+                continue
+            to_recenters = []
+            for i, pos in enumerate(lp.positions):
+                in_rng = pos.in_range(agent_tick_ref)
+                out_steps = getattr(pos, "out_steps", 0)
+                out_steps = 0 if in_rng else out_steps + 1
+                setattr(pos, "out_steps", out_steps)
+                k_out_thresh = getattr(lp, "k_out_threshold", k_out_max)
+                if lp.is_active_narrow and out_steps >= k_out_thresh:
+                    to_recenters.append(i)
+            for i in reversed(to_recenters):
+                pos = lp.positions[i]
+                width_ticks = w_ticks
+                n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
                 S_now = agent_S_ref
-                n_bands: Optional[int] = None
-                if is_passive_mint:
-                    if passive_width_pct is None:
-                        width_ticks = max(int(passive_width_ticks), pool.tick_spacing)
-                        n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
-                else:
-                    n_bands = max(1, int(round(w_ticks / pool.tick_spacing)))
+                sps = pool.tick_spacing
+                nb = n_bands
+                denom = (1.0 + (pool.g ** (nb * sps)))
+                if denom <= 0.0:
+                    denom = 1.0
+                lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
+                lower = pool._snap(int(round(lower_real)))
+                upper = lower + nb * sps
+                mempool_orders.append({'type':'lp_recenter','lp_id': lp.id,
+                                       'old_lower': pos.lower,'old_upper': pos.upper,'old_L': pos.L,
+                                       'new_lower': lower,'new_upper': upper,'new_L': pos.L})
 
-                if is_passive_mint and passive_width_pct is not None:
-                    lower, upper = _passive_range_ticks_from_pct(S_now)
-                else:
-                    assert n_bands is not None
-                    sps = pool.tick_spacing
-                    nb = n_bands
-                    denom = (1.0 + (pool.g ** (nb * sps)))
-                    if denom <= 0.0:
-                        denom = 1.0
-                    lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
-                    lower = pool._snap(int(round(lower_real)))
-                    upper = lower + nb * sps
-                    if upper <= lower:
-                        upper = lower + pool.tick_spacing
+        def _enqueue_lp_mint(lp: LPAgent, is_passive_mint: bool) -> None:
+            if getattr(lp, "cooldown", 0) > 0:
+                return
+            X = np.random.lognormal(mint_mu, mint_sigma)
+            try:
+                _L_SCALE = L_SCALE
+            except NameError:
+                _L_SCALE = initial_total_L / max(1, N_LP)
+            want = float(X) * float(_L_SCALE)
+            if want <= 0.0:
+                return
+            L_budget = float(getattr(lp, "L_budget", want))
+            L_live_planned = float(planned_L_live.get(lp.id, getattr(lp, "L_live", 0.0)))
+            cap_left = max(0.0, L_budget - L_live_planned)
+            cap_step_total = 0.25 * L_budget
+            cap_step_left = max(0.0, cap_step_total - float(planned_L_step_used.get(lp.id, 0.0)))
+            L_new = max(0.0, min(want, cap_step_left, cap_left))
+            if L_new <= 0.0:
+                return
 
-                planned_L_live[lp.id] = L_live_planned + L_new
-                planned_L_step_used[lp.id] = float(planned_L_step_used.get(lp.id, 0.0)) + L_new
-                mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'L': L_new})
+            S_now = agent_S_ref
+            n_bands: Optional[int] = None
+            if is_passive_mint:
+                if passive_width_pct is None:
+                    width_ticks = max(int(passive_width_ticks), pool.tick_spacing)
+                    n_bands = max(1, int(round(width_ticks / pool.tick_spacing)))
+            else:
+                n_bands = max(1, int(round(w_ticks / pool.tick_spacing)))
 
-            # New mints (Poisson targets; respect due/cooldown/budget)
-            if narrow_mints_per_block > 0.0:
-                narrow_candidates = []
-                for lp_idx in due:
-                    lp = LPs[lp_idx]
-                    if getattr(lp, "is_jiter", False):
-                        continue
-                    if not lp.can_act or bool(getattr(lp, "is_passive", False)):
-                        continue
-                    if getattr(lp, "cooldown", 0) > 0:
-                        continue
-                    narrow_candidates.append(lp)
-                if narrow_candidates:
-                    n_mints = int(np.random.poisson(narrow_mints_per_block))
-                    for _ in range(n_mints):
-                        _enqueue_lp_mint(random.choice(narrow_candidates), is_passive_mint=False)
+            if is_passive_mint and passive_width_pct is not None:
+                lower, upper = _passive_range_ticks_from_pct(S_now)
+            else:
+                assert n_bands is not None
+                sps = pool.tick_spacing
+                nb = n_bands
+                denom = (1.0 + (pool.g ** (nb * sps)))
+                if denom <= 0.0:
+                    denom = 1.0
+                lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
+                lower = pool._snap(int(round(lower_real)))
+                upper = lower + nb * sps
+                if upper <= lower:
+                    upper = lower + pool.tick_spacing
 
-            if passive_mints_per_block > 0.0:
-                passive_candidates = []
-                for lp_idx in due:
-                    lp = LPs[lp_idx]
-                    if getattr(lp, "is_jiter", False):
-                        continue
-                    if not lp.can_act or not bool(getattr(lp, "is_passive", False)):
-                        continue
-                    if getattr(lp, "cooldown", 0) > 0:
-                        continue
-                    passive_candidates.append(lp)
-                if passive_candidates:
-                    n_mints = int(np.random.poisson(passive_mints_per_block))
-                    for _ in range(n_mints):
-                        _enqueue_lp_mint(random.choice(passive_candidates), is_passive_mint=True)
+            planned_L_live[lp.id] = L_live_planned + L_new
+            planned_L_step_used[lp.id] = float(planned_L_step_used.get(lp.id, 0.0)) + L_new
+            mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'L': L_new})
 
-            # Execute all mempool intents (traders + LPs) in random order
-            L_pre_trader_this = pool.L_active
-            plan_jiter_targets()
-            execute_mempool_orders()
-            if block_time > 1 and micro_steps:
-                micro_valid_steps.append(micro_steps[-1])
-                micro_valid_prices.append(pool.price)
+        # New mints (Poisson targets; respect due/cooldown/budget)
+        if narrow_mints_per_block > 0.0:
+            narrow_candidates = []
+            for lp_idx in due:
+                lp = LPs[lp_idx]
+                if getattr(lp, "is_jiter", False):
+                    continue
+                if not lp.can_act or bool(getattr(lp, "is_passive", False)):
+                    continue
+                if getattr(lp, "cooldown", 0) > 0:
+                    continue
+                narrow_candidates.append(lp)
+            if narrow_candidates:
+                n_mints = int(np.random.poisson(narrow_mints_per_block))
+                for _ in range(n_mints):
+                    _enqueue_lp_mint(random.choice(narrow_candidates), is_passive_mint=False)
+
+        if passive_mints_per_block > 0.0:
+            passive_candidates = []
+            for lp_idx in due:
+                lp = LPs[lp_idx]
+                if getattr(lp, "is_jiter", False):
+                    continue
+                if not lp.can_act or not bool(getattr(lp, "is_passive", False)):
+                    continue
+                if getattr(lp, "cooldown", 0) > 0:
+                    continue
+                passive_candidates.append(lp)
+            if passive_candidates:
+                n_mints = int(np.random.poisson(passive_mints_per_block))
+                for _ in range(n_mints):
+                    _enqueue_lp_mint(random.choice(passive_candidates), is_passive_mint=True)
+
+        # Execute all mempool intents (traders + LPs) in random order
+        L_pre_trader_this = pool.L_active
+        plan_jiter_targets()
+        execute_mempool_orders()
+        if micro_steps:
+            micro_valid_steps.append(micro_steps[-1])
+            micro_valid_prices.append(pool.price)
 
         # disable everyone for next step
         _enable([])
@@ -2546,10 +2220,7 @@ def simulate(
         _rebalance_all(ref.m, pool.S)
 
         # ---- CEX update  ----
-        if block_time == 1:
-            ref.step(delta_a_cex_this)
-        else:
-            ref.apply_impact_only(delta_a_cex_this)
+        ref.apply_impact_only(delta_a_cex_this)
         _broadcast_price_move(ref.m)
 
         settlement_m = ref.m
@@ -2561,10 +2232,9 @@ def simulate(
 
         # ================== Dynamic fee controller  ==================
         # By default, signals are based on END-OF-STEP state and the new
-        # fee applies NEXT step. For fee_mode == "volatility_oracle" in
-        # block mode (block_time > 1), the fee has already been allowed
-        # to react at micro-step granularity inside the block; the logic
-        # below is then used only for recording diagnostics.
+        # fee applies NEXT step. For fee_mode == "volatility_oracle", the
+        # fee may already have reacted at micro-step granularity inside the
+        # block; the logic below is then used only for diagnostics.
 
         # 1) Volatility of CEX (abs log-return / oracle)
         try:
@@ -2601,12 +2271,8 @@ def simulate(
         if fee_mode == "volatility":
             f_raw = f0 + k_sigma * sigma_signal * np.sqrt(block_time)
         elif fee_mode == "volatility_oracle":
-            # In non-block mode, or when block_time == 1, volatility_oracle
-            # behaves like a per-step oracle fee using ref.sigma. In block
-            # mode we already reacted per micro-step, so keep f_raw as the
-            # current pool.f for update logic below.
-            if block_time == 1:
-                f_raw = f0 + k_sigma * sigma_signal * np.sqrt(block_time)
+            # Fee already updated at micro-step granularity; keep current pool.f.
+            f_raw = pool.f
         elif fee_mode == "toxicity":
             f_raw = f0 + k_basis * basis_ticks
         else:
@@ -2622,10 +2288,9 @@ def simulate(
             ctrl_sig = 0.0
         fee_signal_series.append(ctrl_sig)
         # Clip and apply hysteresis (min/max step in bps, cooldown). In
-        # volatility_oracle + block_time > 1 mode, micro-step updates
-        # already adjusted pool.f directly, so we only stage changes here
-        # for other modes (or for non-block volatility_oracle).
-        if not (fee_mode == "volatility_oracle" and block_time > 1):
+        # volatility_oracle mode, micro-step updates already adjusted
+        # pool.f directly, so we only stage changes here for other modes.
+        if fee_mode != "volatility_oracle":
             f_tgt = clamp(f_raw, f_min, f_max)
             min_step = fee_step_bps_min / 1e4
             max_step = fee_step_bps_max / 1e4
@@ -3129,7 +2794,7 @@ def simulate(
         _save_plotly("1_price", fig1)
 
         # ----- 1b) Micro-time price panel -----
-        if block_time > 1 and len(M_micro) == len(P_micro) == len(micro_steps) and len(micro_steps) > 0:
+        if len(M_micro) == len(P_micro) == len(micro_steps) and len(micro_steps) > 0:
             fig1b = go.Figure()
             fig1b.add_trace(
                 go.Scatter(x=micro_steps, y=P_micro, mode="lines", name="DEX price (micro)", line=dict(width=1.2))

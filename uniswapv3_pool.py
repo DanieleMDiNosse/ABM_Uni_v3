@@ -286,6 +286,7 @@ class V3Pool:
                 dx = self.L_active * (1 / self.S - 1 / S_hi)
                 self.S = S_hi
                 dy_eff -= dy_to
+                dy_used += dy_to
                 dx_out += dx
                 # Per-segment fee (token Y)
                 _fee_seg = (dy_to / self.r) - dy_to

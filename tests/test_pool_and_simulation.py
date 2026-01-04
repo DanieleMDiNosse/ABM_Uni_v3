@@ -33,6 +33,7 @@ def _base_simulate_kwargs(tmp_path, **overrides: Any) -> Dict[str, Any]:
         block_time=5,
         T=5,
         seed=1,
+        liquidity_for_gif=False,
         # Market
         cex_mu=0.0,
         cex_sigma=0.00015,
@@ -120,6 +121,24 @@ def test_quote_y_to_x_matches_swap_result():
     used_dy, dx_out, _ = pool_for_swap.swap_y_to_x(dy_in, fee_cb=None)
     assert used_dy == pytest.approx(dy_in)
     assert dx_out == pytest.approx(quoted, rel=1e-9, abs=1e-9)
+
+
+def test_swap_y_to_x_tracks_used_input_across_tick_crossing():
+    """
+    swap_y_to_x() should report the full input amount even when the swap crosses one or more tick boundaries.
+    """
+    pool = _prepare_pool()
+    tick_before = pool.tick
+    S_before = pool.S
+    S_hi = pool.s_upper()
+    dy_to = pool.L_active * (S_hi - S_before)  # post-fee amount needed to reach the next boundary
+    dy_in = dy_to / pool.r + 1.0  # cross one boundary, then consume a tiny remainder
+
+    used_dy, _dx_out, fee_y = pool.swap_y_to_x(dy_in, fee_cb=None)
+
+    assert pool.tick == tick_before + pool.tick_spacing
+    assert used_dy == pytest.approx(dy_in)
+    assert fee_y == pytest.approx(dy_in * pool.f)
 
 
 def test_quote_returns_zero_without_liquidity():

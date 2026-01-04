@@ -108,7 +108,7 @@ These quantities are written for total/active/passive cohorts and plotted in the
 
 #### C. Wealth Conservation in LP Operations
 
-To ensure the $V_T^{LP}$ term (LP Wealth) is tracked correctly across rebalancing events, the simulation enforces strict wealth conservation during `burn` and `mint` operations in the block-mode (mempool) path:
+To ensure the $V_T^{LP}$ term (LP Wealth) is tracked correctly across rebalancing events, the simulation enforces strict wealth conservation during `burn` and `mint` operations in the mempool execution path:
 
 1.  **Burning:** When a position is burned, its **full value** (Principal + Uncollected Fees) is credited to the LP's wallet.
     ```python
@@ -126,9 +126,9 @@ To ensure the $V_T^{LP}$ term (LP Wealth) is tracked correctly across rebalancin
     ```
     This converts cash into a position of equal initial value.
 
-In synchronous mode (`block_time == 1`) legacy re-centering logic mints new ranges directly instead of going through the mempool accounting; for wealth-conserving LP PnL you should prefer block-mode runs (`block_time > 1`), which use the explicit wallet debits above.
+All mint/recenter operations route through the mempool accounting and use the explicit wallet debits above, preserving wealth conservation.
 
-By ensuring that `Wealth = Wallet + Open_Positions` is invariant during rebalancing in block mode, the simulation guarantees that changes in the hedged LP PnL series (`lp_pnl_*`) reflect only genuine economic performance (Fees - LVR) and not accounting artifacts.
+By ensuring that `Wealth = Wallet + Open_Positions` is invariant during rebalancing in mempool execution, the simulation guarantees that changes in the hedged LP PnL series (`lp_pnl_*`) reflect only genuine economic performance (Fees - LVR) and not accounting artifacts.
 
 ## 3. Outputs and Diagnostics
 
