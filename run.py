@@ -9,6 +9,7 @@ import math
 import os
 import random
 import inspect
+from datetime import datetime
 from tqdm import tqdm
 from pathlib import Path
 from typing import Any, Dict, Tuple, List, Optional, Callable, Set
@@ -749,7 +750,9 @@ def simulate(
                 verbose_log.write("".join(log_buffer))
                 log_buffer.clear()
 
+        run_timestamp = datetime.now().isoformat(sep=" ", timespec="seconds")
         buffer_log(f"# PID {pid_str}\n")
+        buffer_log(f"# Run date {run_timestamp}\n")
         buffer_log("# Simulation parameters\n")
         for key in sorted(initial_params):
             buffer_log(f"{key} = {initial_params[key]}\n")
@@ -1505,10 +1508,15 @@ def simulate(
             swap_orders = [o for o in mempool_orders if o.get("type") == "swap"]
             if not swap_orders:
                 return
-            # Sort by raw input amount (dx for X_to_Y, dy for Y_to_X)
+            # Sort by input amount normalized to token1 using current CEX reference price.
+            price_ref = max(cex_ref_for_agents, 1e-18)
             sorted_swaps = sorted(
                 swap_orders,
-                key=lambda o: float(o.get("amount", 0.0)),
+                key=lambda o: (
+                    float(o.get("amount", 0.0)) * price_ref
+                    if o.get("unit") == "dx"
+                    else float(o.get("amount", 0.0))
+                ),
                 reverse=True,
             )
             targets = sorted_swaps[:N_jit]
@@ -2432,7 +2440,7 @@ def simulate(
                     S_now = agent_S_ref
                     sps = pool.tick_spacing
                     nb = n_bands
-                    denom = (1.0 + (pool.g ** (nb * sps + sps)))
+                    denom = (1.0 + (pool.g ** (nb * sps)))
                     if denom <= 0.0:
                         denom = 1.0
                     lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
@@ -2477,7 +2485,7 @@ def simulate(
                     assert n_bands is not None
                     sps = pool.tick_spacing
                     nb = n_bands
-                    denom = (1.0 + (pool.g ** (nb * sps + sps)))
+                    denom = (1.0 + (pool.g ** (nb * sps)))
                     if denom <= 0.0:
                         denom = 1.0
                     lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
@@ -2698,8 +2706,8 @@ def simulate(
                 jiter_wealth_now = lp_wealth_y(lp, pool.S, ref.m)
                 rb = lp.rebalancer
                 jiter_rebal_value_now = rb.initial_rebal_value_y + rb.cumulative_R
-                # "Hedged PnL" in LVR accounting is (LVR - fees) = V^reb - V^LP.
-                jiter_pnl_now = jiter_rebal_value_now - jiter_wealth_now
+                # Hedged PnL = V^LP - V^reb (matches LP cohort sign convention)
+                jiter_pnl_now = jiter_wealth_now - jiter_rebal_value_now
                 continue
             if getattr(lp, "is_seed", False):
                 continue
@@ -3534,7 +3542,7 @@ def simulate(
                 x=steps_list,
                 y=jiter_pnl_series_v,
                 mode="lines",
-                name="Jiter hedged (LVR - fees)",
+                name="Jiter hedged (fees - LVR)",
                 line=dict(width=2, color="#d62728"),
             ),
             row=1,

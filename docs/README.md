@@ -9,28 +9,24 @@ nav_order: 2
   <img src="../abm_results/cex_dex_price.png" alt="Simulation example" width="500"/>
 </p>
 
-Agent-based market (ABM) simulator for a Uniswap v3 style pool that extends the Angeris et al. model (“An analysis of Uniswap markets”). The project focuses on **microstructure effects** such as block mempools, asynchronous LP management, dynamic fee schedules, and realistic arbitrage/trader interactions.
+Agent-Based Market (ABM) simulator for a Uniswap v3 style pool. The project focuses on **microstructure effects** such as block mempools, asynchronous LP management, dynamic fee schedules, MEV and realistic arbitrage/trader interactions.
 
-The implementation lives in `run.py` and is configured via YAML files consumed by `utils.load_simulation_parameters` (top-level `fee_mode` + a complete `simulate` section). Example scenario configs in this repo live under `abm_results/scenarios/` (see `abm_results/scenarios/test.yml` and the `sigma_sine_fee_*.yml` files). Per-scenario results, plots, and verbose logs are written under `abm_results/scenarios/<scenario_name>/`.
+The implementation lives in `run.py` and is configured via YAML files. Example scenario configs in this repo live under `abm_results/scenarios/` (see for example `abm_results/scenarios/test.yml`). Per-scenario results, plots, and verbose logs are written under `abm_results/scenarios/<scenario_name>/`.
 
 ---
 
 ## High-Level Features
-- **Full Uniswap v3 math**: concentrated-liquidity pool with tick-aware liquidity net, span-by-span fee accounting, and range re-centering logic.
+- **Full Uniswap v3 math**: concentrated-liquidity pool with tick crossing math, tick-aware liquidity net, span-by-span fee accounting.
 - **Rich agent roster**:
   - **Smart router**: opportunistic trader enforcing best-execution vs. a reference CEX.
   - **Noise trader**: flow provider without valuation discipline, used to stress spreads/liquidity.
   - **Arbitrageur**: clears price discrepancies between the DEX and the CEX reference band; in block mode the arb executes **before** any mempool order (pre-trade CEX vs. DEX snapshot).
   - **LPs**: passive baselines and active narrow LPs. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
+  - **Jiter**: MEV searcher that select the top N swaps in the mempool according to their size and perform a Just-In-Time liquidity strategy.
 - **Block-aware mempool**:
   - `block_time == 1`: deterministic schedule `LP bucket A → smart+noise → LP bucket B → arb → LP bucket C`.
   - `block_time > 1`: freeze the validated snapshot, then run `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents; at the block boundary enqueue a single arb intent plus LP intents (burn/recenter/mint) and replay the shuffled mempool (arb first) against the live pool.
-- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block LPs, noise traders, the arbitrageur, and the smart router all reference this shared “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`) when forming orders; in block mode the CEX path still diffuses in the background for rebalancing and diagnostics, but mempool orders are priced off the frozen snapshot and executed together at the block boundary.
-- **JIT LP “Jiter” agent (optional)**:
-  - An MEV-style *Just-in-Time* LP that can join blocks with Bernoulli arrival probability `p_jit` (block mode only, i.e. `block_time > 1`).
-  - At each block where it arrives, Jiter observes the full mempool and selects up to `N_jit` **largest swap intents by input size** (excluding the arbitrage intent).
-  - For each targeted swap, Jiter mints a very narrow position aligned with the **current active tick** just before the swap and burns it immediately after, aiming to own a fraction `liquidity_perc_jit` of active liquidity in that band.
-  - Jiter’s PnL and wealth are tracked separately from passive/active LP cohorts (as if funded via a flash loan with no extra friction beyond existing pool fees).
+- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block all the agents reference this shared “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`) when forming orders; in block mode the CEX path still diffuses in the background for rebalancing and diagnostics, but mempool orders are priced off the frozen snapshot and executed together at the block boundary.
 - **Dynamic fee controller** with four modes:
   - `static` fixes the fee at `f0`.
   - `volatility` adds a multiple of EWMA(|log-return|).
@@ -42,8 +38,6 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
 - **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (block mode), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python run.py --config ...`).
 
 ---
-
-## Agent Behaviour Details
 
 ### Reference Market (CEX)
 - Implemented as `ReferenceMarket` in `utils.py`.
@@ -105,6 +99,8 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
   - `cex_sigma_series` continues to contain the *per-step* volatility used in the GBM/Heston update; in Heston mode this is `sqrt(v_t)` at each step.
   - The existing PnL figure (`6_pnl`) uses a volatility subplot whenever the sigma path is dynamic. Heston mode enables this subplot (`sigma_panel = True`) so you can inspect `cex_sigma_series` under the agent PnL panel.
   - The `cex_regime_series` remains available for consistency; in Heston mode it is a simple label (`"H"`) and not used for logic.
+
+## Agent Behaviour Details
 
 ### Arbitrageur
 - Encoded in `arbitrage_to_target` and the `arb` branch of `execute_mempool_orders` in `run.py`.
@@ -259,6 +255,7 @@ The implementation lives in `run.py` and is configured via YAML files consumed b
   - *Passive baselines* (`is_passive=True` for a fraction `passive_lp_share` of the `N_LP` **strategic** LPs): wide ranges, probabilistic mint/burn rules driven by the block-level targets `passive_mints_per_block`, `passive_burns_per_block`, and width `passive_width_pct` (falls back to `passive_width_ticks` when omitted).
   - *Active narrow LPs* (`is_active_narrow=True` and `is_passive=False`): concentrate liquidity near the current mid, recenter after they have been out of range for a random number of steps between `k_out_min` and `k_out_max`, and follow an EWMA-driven width signal with binomial noise.
   - *Seed/background LPs* (`is_seed=True`, always passive): created by `bootstrap_initial_binomial_hill_sharded` to form the initial binomial hill; they provide background liquidity and evolve via the same passive mint/burn rules but are excluded from `N_LP` counts and from the active/passive LP PnL and wealth series.
+  - JIT LP “Jiter” agent: An MEV-style *Just-in-Time* LP that can join blocks with Bernoulli arrival probability `p_jit` (block mode only, i.e. `block_time > 1`).nAt each block where it arrives, Jiter observes the full mempool and selects up to `N_jit` largest swap intents by input size(excluding the arbitrage intent). For each targeted swap, Jiter mints a very narrow position aligned with the current active tick just before the swap and burns it immediately after, aiming to own a fraction `liquidity_perc_jit` of active liquidity in that band. Jiter’s PnL and wealth are tracked separately from passive/active LP cohorts (as if funded via a flash loan with no extra friction beyond existing pool fees).
 - **Passive width parameterization (why percent matters)**:
   - Uniswap v3 ticks are log-spaced, so a “symmetric” range in ticks is not symmetric in price. `passive_width_pct` defines the passive LP band as a symmetric ±% around the agent reference price (after snapping to tick spacing), which makes the left/right tick distances generally *asymmetric* but the *price* band symmetric.
 - **Decision process** (per LP):
@@ -484,7 +481,9 @@ Outputs:
 ## Batch Runners & Analysis Helpers
 - `run_scenarios_mean_std.py --scenarios-dir abm_results/scenarios --runs 5`: run every YAML scenario multiple times and emit mean ± std PnL charts for each agent class.
 - `run_parameter_grid_2d_violin_parallel.py`: parallel 2D parameter sweeps (fee sensitivity + another axis) with cached CSVs and 3D violin plots under `abm_results/grid_search/plots_3d/`.
-- `run_parameter_surface_3d_k_sigma_slider.py` / `run_parameter_surface_nd_pnl_fee_dashboard.py`: larger parameter sweeps that cache results and write interactive Plotly outputs under `abm_results/grid_search/`.
+- `run_parameter_surface_3d_k_sigma_slider.py`: larger parameter sweeps that cache results and write interactive Plotly outputs under `abm_results/grid_search/`.
+- `run_parameter_surface_nd_pnl_fee_dashboard.py`: ND parameter sweeps (cache-only) writing CSV + metadata under `abm_results/grid_search/dashboard_nd/data/`.
+- `build_parameter_surface_nd_pnl_fee_dashboard.py`: build the standalone HTML dashboard from the cached CSV under `abm_results/grid_search/dashboard_nd/html/`.
 - `sigma_calibration.py`: derive realistic per-second `cex_sigma` from Binance 1s ETH/USDC data (CSV/Parquet/pickle) and optionally persist the computed series.
 - `visualize_distributions.py`: generate and save figures for the stochastic components used by the simulator (Heston price/volatility paths, binomial-hill initial liquidity, binomial width noise, log-normal trader and LP mint-size distributions, and geometric LP review clocks), useful for validating input distributions and for documentation figures.
 

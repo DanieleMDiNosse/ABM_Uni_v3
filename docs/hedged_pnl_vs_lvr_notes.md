@@ -271,7 +271,7 @@ These are more speculative and model‑dependent, but they are levers you alread
 To systematically explore “can I make hedged PnL positive?”:
 
 1. Define a small set of **target scenarios** (e.g., low‑vol / high‑noise / frictional arb).
-2. For each scenario, use `run_parameter_grid_2d_violin_parallel.py` (2D sweeps) or `run_parameter_surface_nd_pnl_fee_dashboard.py` (multi-parameter sweeps) to sweep over:
+2. For each scenario, use `run_parameter_grid_2d_violin_parallel.py` (2D sweeps) or `run_parameter_surface_nd_pnl_fee_dashboard.py` (multi-parameter sweeps) to sweep over, then render the HTML with `build_parameter_surface_nd_pnl_fee_dashboard.py`:
    - `noise_trades_per_block`, `smart_trades_per_block`, `theta_T`,
    - `f0`, `f_min`, `f_max`, `k_sigma`, `k_basis`, `fee_half_life`,
    - `flash_loan_fee` or additional arb costs.
