@@ -14,7 +14,7 @@ from utils import (
     EPS_LIQ2, EPS_LIQ, EPS_BOUNDARY, TITLE_FONT_SIZE, LABEL_FONT_SIZE,
     minted_amounts_at_S, ReferenceMarket
 )
-from numba_accel import _current_amounts_impl
+from miscellaneous.numba_accel import _current_amounts_impl
 
 
 # =============================================================================

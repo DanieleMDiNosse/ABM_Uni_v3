@@ -137,4 +137,4 @@ By ensuring that `Wealth = Wallet + Open_Positions` is invariant during rebalanc
 - `lp_pnl_*` (hedged) and `lp_lvr_*` are complementary: `lp_lvr_* = fee_value_* - lp_pnl_*`.
 - `lp_wallet_*` and `lp_wealth_*` expose realized wallet value vs. wealth including open positions; all are split into active/passive/total cohorts.
 
-The batch runners (`run_scenarios_mean_std.py`, `run_parameter_grid_2d_violin_parallel.py`, `run_parameter_surface_*`) consume these series to compare fee modes and parameter choices.
+The batch runners (e.g. `run_parameter_grid_2d_violin_parallel.py`, `run_parameter_surface_*`) consume these series to compare fee modes and parameter choices.

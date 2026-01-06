@@ -16,8 +16,8 @@ This document describes, series by series, what the main simulation routine
 
 Unless otherwise stated, all series below are one value **per simulation step**
 (per *block*), indexed by `t = 0, 1, …, T-1`, where `T` is the `T` argument to
-`simulate`. In mempool execution (`block_time > 1`) micro‑steps are internal to a step
-and not directly exposed.
+`simulate`. The current implementation requires mempool-style execution with
+`block_time > 1`; micro‑steps are internal to a step and not directly exposed.
 
 Most numeric series are returned as Python lists (`list[float]`); the main
 per-step state paths are NumPy arrays (e.g. `DEX_price`, `CEX_price`,
@@ -362,7 +362,7 @@ Series below aggregate these quantities across LP cohorts.
 
 ### 4.4. Jiter (JIT LP) accounting
 
-When Jiter is enabled (`block_time > 1`, `p_jit > 0`, `N_jit > 0`, `liquidity_perc_jit > 0`), these track the single Jiter agent separately from the strategic LP cohorts. When disabled, these series are identically zero.
+When Jiter is enabled (`p_jit > 0`, `N_jit > 0`, `liquidity_perc_jit > 0`), these track the single Jiter agent separately from the strategic LP cohorts. When disabled, these series are identically zero.
 
 - `jiter_wallet_series[t]`, `jiter_wealth_series[t]`  
   Jiter wallet and total wealth in token1 (wealth = wallet + mark-to-market of open positions).

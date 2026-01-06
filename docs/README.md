@@ -20,11 +20,11 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
 - **Rich agent roster**:
   - **Smart router**: opportunistic trader enforcing best-execution vs. a reference CEX.
   - **Noise trader**: flow provider without valuation discipline, used to stress spreads/liquidity.
-  - **Arbitrageur**: clears price discrepancies between the DEX and the CEX reference band; the arb executes **before** any mempool order (pre-trade CEX vs. DEX snapshot).
+- **Arbitrageur**: clears price discrepancies between the DEX and the CEX reference band; the arb executes **before** any mempool order (pre-trade CEX vs. DEX snapshot).
   - **LPs**: passive baselines and active narrow LPs. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
   - **Jiter**: MEV searcher that select the top N swaps in the mempool according to their size and perform a Just-In-Time liquidity strategy.
-- **Block-aware mempool**: the simulator runs in mempool execution mode (`block_time > 1`). It freezes the validated snapshot, runs `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents, then enqueues a single arb intent plus LP intents (burn/recenter/mint) and replays the shuffled mempool (arb first) against the live pool.
-- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and the CEX mark. During the following block all the agents reference this shared “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`) when forming orders; the CEX path still diffuses in the background for rebalancing and diagnostics, but mempool orders are priced off the frozen snapshot and executed together at the block boundary.
+- **Block-aware mempool**: the simulator runs in mempool execution mode (`block_time` micro-steps per block; the current implementation requires `block_time > 1`). It freezes the validated snapshot, runs `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents, then enqueues a single arb intent plus LP intents (burn/recenter/mint) and replays the shuffled mempool (arb first) against the live pool.
+- **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and a CEX mark. Swap intents (smart/noise) and the arbitrage target are formed off this “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`), while the CEX path still diffuses during micro-steps for the rebalancing benchmark, fee signals, and some LP diagnostics. All intents are executed together at the block boundary via the mempool replay.
 - **Dynamic fee controller** with four modes:
   - `static` fixes the fee at `f0`.
   - `volatility` adds a multiple of EWMA(|log-return|).
@@ -48,7 +48,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   - or **Heston-like stochastic volatility** (`cex_sigma_mode: heston`), where the variance `v_t = σ_t^2` follows a mean-reverting square-root process with parameters `cex_heston_kappa`, `cex_heston_theta`, `cex_heston_sigma_v`, correlation `cex_heston_rho`, and optional initial variance `cex_heston_v0` (falling back to `cex_sigma^2` when omitted).
   The center for the noisy-sine mode defaults to `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` when provided); in scenarios using `noisy_sine` the amplitude is typically specified explicitly via `cex_sigma_sine_amp`. The active path is returned as `cex_sigma_series` and `cex_regime_series`.
 - In non-Heston modes the diffusion step uses `m ← m · exp(cex_mu - 0.5 · σ_t^2 + σ_t · z)` with `z ~ N(0,1)`, so `σ_t` is interpreted directly as the per-microstep volatility (no squaring). In Heston mode, the variance `v_t` and price `m_t` are updated jointly with correlated Gaussian shocks while keeping `σ_t = sqrt(v_t)` in the returned series.
-- The CEX diffuses during intra-block micro-steps (`ref.diffuse_only()`), while impact from arbitrage is applied once at the end via `ref.apply_impact_only(Δa_cex)`. This decouples diffusion from impact and matches the code in `run.py`.
+- The CEX diffuses during intra-block micro-steps (`ref.diffuse_only()`), while permanent impact from **net CEX order flow** (smart-router CEX legs + arbitrage hedges) is applied once at the end via `ref.apply_impact_only(Δa_cex)`. This decouples diffusion from impact and matches the code in `run.py`.
 
 #### Heston Volatility Mode (details)
 - **Continuous-time model** (conceptual): in Heston mode the CEX price `m_t` and variance `v_t` are thought of as solving
@@ -248,7 +248,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   - LP activity knobs are specified as **target counts per block** across the population: `narrow_mints_per_block`, `passive_mints_per_block`, and `passive_burns_per_block`. The simulator draws Poisson counts per block for these targets and assigns the resulting intents to eligible LPs (review clock due, not in cooldown), allowing multiple intents per LP in a single block while enforcing per-LP budget and per-block deployment caps.
   - After a burn, an LP enters a cooldown for several steps during which it cannot mint again.
   - Narrow LPs track how many consecutive steps their position has been out-of-range (`out_steps`). Once this reaches `k_out_threshold`, they enqueue a recenter intent that targets a symmetric band around the agent’s reference price **using the current EWMA-driven width signal** (the same `w_ticks` rule used for new narrow mints), rather than reusing the original position width.
-  - For **active narrow LPs only** (`is_passive=False`), TP/SL logic is **per-position**: for each open `Position`, it computes PnL in token1 terms as `IL_y + fees_value_y` via `Position.PnL_y(agent_S_ref, validated_cex)` and burns that specific position if its PnL exceeds `theta_TP · hodl0_value_y` or falls below `-theta_SL · hodl0_value_y`. Here `hodl0_value_y` is fixed for that position at the time it is minted (including after any recenter), so each recenter creates a new position with its own TP/SL baseline. Passive LPs do **not** use TP/SL; they exit positions only via the probabilistic burn rule.
+  - For **active narrow LPs only** (`is_passive=False`), TP/SL logic is **per-position**: for each open `Position`, it computes PnL in token1 terms as `IL_y + fees_value_y` via `Position.PnL_y(agent_S_ref, ref.m)` and burns that specific position if its PnL exceeds `theta_TP · hodl0_value_y` or falls below `-theta_SL · hodl0_value_y`. Here `hodl0_value_y` is fixed for that position at the time it is minted (including after any recenter), so each recenter creates a new position with its own TP/SL baseline. Passive LPs do **not** use TP/SL; they exit positions only via the probabilistic burn rule.
 - **Scheduling and execution**:
   - All LP actions (burn, recenter, mint) are added to the mempool as intents (`lp_burn`, `lp_recenter`, `lp_mint`) and executed alongside trader orders when the mempool is replayed.
 - **Budgets & bootstrap**:
@@ -463,7 +463,7 @@ Outputs:
 ---
 
 ## Batch Runners & Analysis Helpers
-- `run_scenarios_mean_std.py --scenarios-dir abm_results/scenarios --runs 5`: run every YAML scenario multiple times and emit mean ± std PnL charts for each agent class.
+- There is no dedicated multi-seed “run all scenarios” script tracked in this repo; for multi-seed comparisons, either vary `seed` in the YAMLs and call `python run.py --config ...`, or import `run.simulate` + `utils.load_simulation_parameters` in a small driver and override `seed` / `results_root` programmatically, or use the parameter-grid runners below.
 - `run_parameter_grid_2d_violin_parallel.py`: parallel 2D parameter sweeps (fee sensitivity + another axis) with cached CSVs and 3D violin plots under `abm_results/grid_search/plots_3d/`.
 - `run_parameter_surface_3d_k_sigma_slider.py`: larger parameter sweeps that cache results and write interactive Plotly outputs under `abm_results/grid_search/`.
 - `run_parameter_surface_nd_pnl_fee_dashboard.py`: ND parameter sweeps (cache-only) writing CSV + metadata under `abm_results/grid_search/dashboard_nd/data/`.
