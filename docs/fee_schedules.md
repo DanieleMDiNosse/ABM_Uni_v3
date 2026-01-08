@@ -11,12 +11,13 @@ The fee logic is primarily implemented in `run.py` within the `simulate` functio
 
 ## Fee Modes
 
-There are four supported fee modes:
+There are five supported fee modes:
 
 1.  **Static** (`static`)
 2.  **Volatility-based** (`volatility`)
 3.  **Volatility-oracle-based** (`volatility_oracle`)
 4.  **Toxicity-based** (`toxicity`)
+5.  **LVR-gap EWMA-based** (`lvr_fee_ewma`)
 
 ### 1. Static Fee
 
@@ -114,6 +115,32 @@ $$ f_{raw} = f_0 + k_{basis} \cdot \text{basis\_ticks}_t $$
 *   **Parameters:**
     *   $f_0$: Baseline fee.
     *   $k_{basis}$: Scaling factor for basis ticks (parameter `k_basis`).
+
+### 5. LVR-gap EWMA-based Fee
+
+This mode adjusts the fee using the EWMA of the per-step gap between LVR and fees, normalized by the executed DEX notional. The controller raises fees when LVR exceeds fees and lowers them when fees exceed LVR.
+
+**Formula:**
+
+$$ g_{obs, t} = \frac{\Delta \text{LVR}_t - \Delta \text{Fees}_t}{\text{Notional}_t} $$
+
+$$ g_{\hat{t}} = \text{EWMA}(g_{obs, t}) $$
+
+$$ f_{raw} = f_{current} + k_{lvr} \cdot g_{\hat{t}} $$
+
+**Components:**
+
+*   **Per-step increments (pool-wide totals):**
+    $$ \Delta \text{LVR}_t = \text{LVR}_t - \text{LVR}_{t-1} $$
+    $$ \Delta \text{Fees}_t = \text{Fees}_t - \text{Fees}_{t-1} $$
+    where $\text{LVR}_t$ and $\text{Fees}_t$ are the cumulative pool-wide totals over all non-seed LPs (active + passive).
+
+*   **DEX notional (token1 units):**
+    $$ \text{Notional}_t = \sum_{i \in \text{DEX swaps}} |\text{input}_i| $$
+    This uses the absolute input notional of executed DEX swaps in token1 units (including arbitrage). If $\text{Notional}_t = 0$, the controller skips the update for that step.
+
+*   **Parameters:**
+    *   $k_{lvr}$: Feedback gain (parameter `k_lvr`), applied around the current fee.
 
 ## Fee Update Mechanism (Controller)
 

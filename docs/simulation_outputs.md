@@ -401,7 +401,7 @@ series below expose its internal signals.
   **end-of-step** value of `pool.f` after all intra-block updates.
 
 - `fee_mode`  
-  Active fee controller mode: `"static"`, `"volatility"`, `"volatility_oracle"`, or `"toxicity"`.
+  Active fee controller mode: `"static"`, `"volatility"`, `"volatility_oracle"`, `"toxicity"`, or `"lvr_fee_ewma"`.
 
 - `f_min`, `f_max`  
   Hard lower/upper bounds for `fee_series` (same values as the `f_min`,
@@ -454,6 +454,11 @@ series below expose its internal signals.
     $$
     ) in `"volatility"` / `"volatility_oracle"` modes,
   - `basis_ticks` in `"toxicity"` mode,
+  - EWMA of 
+    $$
+    (\Delta \text{LVR}_t - \Delta \text{Fees}_t) / \text{Notional}_t
+    $$
+    in `"lvr_fee_ewma"` mode (skipped when DEX notional is zero),
   - `0` in `"static"` mode.
 
 ---

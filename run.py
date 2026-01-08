@@ -185,7 +185,7 @@ def simulate(
     initial_total_L: float,
     
     # === Fee controller parameters ===
-    fee_mode: str,      # "static" | "volatility" | "volatility_oracle" | "toxicity"
+    fee_mode: str,      # "static" | "volatility" | "volatility_oracle" | "toxicity" | "lvr_fee_ewma"
     f0: float,             # baseline fee (e.g., 30 bps)
     f_min: float,         # 5 bps
     f_max: float,           # 200 bps safety cap
@@ -195,6 +195,7 @@ def simulate(
     fee_step_bps_min: float, # do not change fee unless ≥ 0.5 bps move
     fee_step_bps_max: float, # max step per update (bps)
     fee_cooldown: int,         # blocks between fee changes (hysteresis)
+    k_lvr: float = 0.0,     # feedback gain for "lvr_fee_ewma" (dimensionless)
     
     # === Cost parameters ===
     flash_loan_fee: float = 0.0,  # percentage cost on arbitrage notional (e.g., 0.0005 = 5 bps)
@@ -231,7 +232,7 @@ def simulate(
     verbose: bool = True,
 ) -> Dict[str, Any]:
 
-    valid_fee_modes = {"static", "volatility", "volatility_oracle", "toxicity"}
+    valid_fee_modes = {"static", "volatility", "volatility_oracle", "toxicity", "lvr_fee_ewma"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
     if k_out_min <= 0 or k_out_max <= 0:
@@ -872,7 +873,11 @@ def simulate(
     # EWMA signals for controllers
     ewma_sigma_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # |log m_t - log m_{t-1}|
     ewma_basis_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # fee-adjusted log gap
+    # EWMA of (dLVR - dFees) normalized by DEX notional (token1)
+    ewma_lvr_gap_fee = EWMA(half_life_steps=fee_half_life, init=0.0)
     prev_m_for_vol = ref.m
+    prev_lp_fee_value_total = 0.0
+    prev_lp_lvr_total = 0.0
 
     # ------------------ LVR rebalancer helpers ------------------
     REBAL_EPS = 1e-18
@@ -1344,6 +1349,7 @@ def simulate(
         # --- Per-step accumulators (so we can randomize actor order) ---
         trader_y_this = 0.0
         arb_y_this = 0.0
+        dex_notional_y_this = 0.0
         trader_pnl_this = 0.0
         arb_pnl_this = 0.0
         _trader_execs = 0
@@ -1535,6 +1541,7 @@ def simulate(
 
         def execute_mempool_orders():
             nonlocal trader_y_this, sr_acc, noise_acc
+            nonlocal dex_notional_y_this
             nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
             nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
             nonlocal micro_counter
@@ -1545,6 +1552,7 @@ def simulate(
 
             def _exec_one(o):
                 nonlocal P_pre_exec, trader_y_this, sr_acc, noise_acc
+                nonlocal dex_notional_y_this
                 nonlocal total_noise_swaps_executed, total_noise_swaps_skipped
                 nonlocal total_smart_swaps_executed, total_smart_swaps_skipped
                 nonlocal smart_swaps_x_to_y, smart_swaps_y_to_x
@@ -1796,6 +1804,7 @@ def simulate(
                             # DEX cheap: buy token0 on DEX, sell on CEX
                             delta_a_cex_this += -x_out_from_dex
                             arb_y_this = +in_used
+                            dex_notional_y_this += abs(in_used)
                             arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
                             buffer_log(
                                 f"[t={t:03d}] arb swap up dy_in={in_used:.6f} dx_out={x_out_from_dex:.6f} "
@@ -1805,6 +1814,7 @@ def simulate(
                             # DEX expensive: sell token0 on DEX, buy on CEX
                             delta_a_cex_this += +in_used
                             arb_y_this = -pool.price * in_used
+                            dex_notional_y_this += abs(price_before * in_used)
                             arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
                             buffer_log(
                                 f"[t={t:03d}] arb swap down dx_in={in_used:.6f} dy_out={y_out_from_dex:.6f} "
@@ -1838,6 +1848,7 @@ def simulate(
                     if used_dx_pre <= EPS_LIQ:
                         _rollback_pool_state(tick_before, S_before)
                         return
+                    dex_notional_y_this += abs(P_pre_exec * used_dx_pre)
                     executed = int(used_dx_pre > 0)
                     tgt = o.get("jit_target")
                     if executed and tgt is not None:
@@ -1901,6 +1912,7 @@ def simulate(
                     if used_dy_pre <= EPS_LIQ:
                         _rollback_pool_state(tick_before, S_before)
                         return
+                    dex_notional_y_this += abs(used_dy_pre)
                     executed = int(used_dy_pre > 0)
                     tgt = o.get("jit_target")
                     if executed and tgt is not None:
@@ -2230,84 +2242,6 @@ def simulate(
         arb_acc.settle(settlement_m)
         arb_pnl_this = arb_acc.pnl
 
-        # ================== Dynamic fee controller  ==================
-        # By default, signals are based on END-OF-STEP state and the new
-        # fee applies NEXT step. For fee_mode == "volatility_oracle", the
-        # fee may already have reacted at micro-step granularity inside the
-        # block; the logic below is then used only for diagnostics.
-
-        # 1) Volatility of CEX (abs log-return / oracle)
-        try:
-            log_m_now = math.log(max(ref.m, 1e-18))
-            log_m_prev = math.log(max(prev_m_for_vol, 1e-18))
-            vol_obs = abs(log_m_now - log_m_prev)
-        except ValueError:
-            _vprint("[fee_mode] ValueError in log computation for volatility observation")
-            vol_obs = 0.0
-        prev_m_for_vol = ref.m
-        sigma_hat_ewma = ewma_sigma_fee.update(vol_obs)
-
-        # 2) Toxicity / basis (fee-adjusted log gap)
-        fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f))
-        log_gap = abs(math.log(max(pool.price, 1e-18)) - math.log(max(ref.m, 1e-18)))
-        B_obs = max(0.0, log_gap - fee_band_ln)
-        B_hat = ewma_basis_fee.update(B_obs)
-        basis_ticks = B_hat / TICK_LN   # convert log-gap to "ticks"
-
-        # Record raw signals for diagnostics/plotting
-        # For volatility-based fee modes, fee_sigma_series tracks the sigma
-        # signal actually fed into the controller:
-        #   - "volatility": EWMA(|log-return|),
-        #   - "volatility_oracle": ReferenceMarket.sigma (per-step, no smoothing).
-        if fee_mode == "volatility_oracle":
-            sigma_signal = float(ref.sigma)
-        else:
-            sigma_signal = sigma_hat_ewma
-        fee_sigma_series.append(sigma_signal)
-        fee_basis_ticks_series.append(basis_ticks)
-
-        # Select controller
-        f_raw = pool.f
-        if fee_mode == "volatility":
-            f_raw = f0 + k_sigma * sigma_signal * np.sqrt(block_time)
-        elif fee_mode == "volatility_oracle":
-            # Fee already updated at micro-step granularity; keep current pool.f.
-            f_raw = pool.f
-        elif fee_mode == "toxicity":
-            f_raw = f0 + k_basis * basis_ticks
-        else:
-            f_raw = pool.f  # "static": no change
-
-
-        # Controller signal used for plotting (depends on fee_mode)
-        if fee_mode in ("volatility", "volatility_oracle"):
-            ctrl_sig = sigma_signal
-        elif fee_mode == "toxicity":
-            ctrl_sig = basis_ticks
-        else:
-            ctrl_sig = 0.0
-        fee_signal_series.append(ctrl_sig)
-        # Clip and apply hysteresis (min/max step in bps, cooldown). In
-        # volatility_oracle mode, micro-step updates already adjusted
-        # pool.f directly, so we only stage changes here for other modes.
-        if fee_mode != "volatility_oracle":
-            f_tgt = clamp(f_raw, f_min, f_max)
-            min_step = fee_step_bps_min / 1e4
-            max_step = fee_step_bps_max / 1e4
-            delta_f = f_tgt - pool.f
-            if abs(delta_f) >= min_step:
-                step = math.copysign(min(abs(delta_f), max_step), delta_f)
-                f_new = clamp(pool.f + step, f_min, f_max)
-                if abs(f_new - pool.f) >= 1e-12:
-                    fee_next = f_new
-                    # Only start the cooldown when scheduling a new change; otherwise countdown would restart every step.
-                    if fee_cooldown_left <= 0:
-                        fee_cooldown_left = max(0, int(fee_cooldown))
-
-        # record current fee (before next-step commit)
-        fee_series.append(pool.f)
-        # ==================================================================
-
         _assert_active_liquidity_state_full("end_of_step")
 
         # ---- Record end-of-step + invariants ----
@@ -2448,6 +2382,107 @@ def simulate(
         jiter_position_value_series.append(jiter_position_value_now)
         jiter_wealth_series.append(jiter_wealth_now)
         jiter_pnl_series.append(jiter_pnl_now)
+
+        # ================== Dynamic fee controller  ==================
+        # By default, signals are based on END-OF-STEP state and the new
+        # fee applies NEXT step. For fee_mode == "volatility_oracle", the
+        # fee may already have reacted at micro-step granularity inside the
+        # block; the logic below is then used only for diagnostics.
+
+        # 1) Volatility of CEX (abs log-return / oracle)
+        try:
+            log_m_now = math.log(max(ref.m, 1e-18))
+            log_m_prev = math.log(max(prev_m_for_vol, 1e-18))
+            vol_obs = abs(log_m_now - log_m_prev)
+        except ValueError:
+            _vprint("[fee_mode] ValueError in log computation for volatility observation")
+            vol_obs = 0.0
+        prev_m_for_vol = ref.m
+        sigma_hat_ewma = ewma_sigma_fee.update(vol_obs)
+
+        # 2) Toxicity / basis (fee-adjusted log gap)
+        fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f))
+        log_gap = abs(math.log(max(pool.price, 1e-18)) - math.log(max(ref.m, 1e-18)))
+        B_obs = max(0.0, log_gap - fee_band_ln)
+        B_hat = ewma_basis_fee.update(B_obs)
+        basis_ticks = B_hat / TICK_LN   # convert log-gap to "ticks"
+
+        # 3) LVR-gap (dLVR - dFees), normalized by DEX notional (token1)
+        delta_fee_value_total = lp_fee_value_total - prev_lp_fee_value_total
+        delta_lvr_total = lp_lvr_total - prev_lp_lvr_total
+        prev_lp_fee_value_total = lp_fee_value_total
+        prev_lp_lvr_total = lp_lvr_total
+        lvr_gap_signal = ewma_lvr_gap_fee.v
+        lvr_gap_signal_valid = dex_notional_y_this > 1e-18
+        if lvr_gap_signal_valid:
+            lvr_gap_obs = (delta_lvr_total - delta_fee_value_total) / dex_notional_y_this
+            lvr_gap_signal = ewma_lvr_gap_fee.update(lvr_gap_obs)
+
+        # Record raw signals for diagnostics/plotting
+        # For volatility-based fee modes, fee_sigma_series tracks the sigma
+        # signal actually fed into the controller:
+        #   - "volatility": EWMA(|log-return|),
+        #   - "volatility_oracle": ReferenceMarket.sigma (per-step, no smoothing).
+        if fee_mode == "volatility_oracle":
+            sigma_signal = float(ref.sigma)
+        else:
+            sigma_signal = sigma_hat_ewma
+        fee_sigma_series.append(sigma_signal)
+        fee_basis_ticks_series.append(basis_ticks)
+
+        # Select controller
+        f_raw = pool.f
+        stage_update = True
+        if fee_mode == "volatility":
+            f_raw = f0 + k_sigma * sigma_signal * np.sqrt(block_time)
+        elif fee_mode == "volatility_oracle":
+            # Fee already updated at micro-step granularity; keep current pool.f.
+            f_raw = pool.f
+            stage_update = False
+        elif fee_mode == "toxicity":
+            f_raw = f0 + k_basis * basis_ticks
+        elif fee_mode == "lvr_fee_ewma":
+            # Feedback controller around the current fee.
+            if not lvr_gap_signal_valid:
+                f_raw = pool.f
+                stage_update = False
+            else:
+                f_raw = pool.f + k_lvr * lvr_gap_signal
+        else:
+            f_raw = pool.f  # "static": no change
+
+        # Controller signal used for plotting (depends on fee_mode)
+        if fee_mode in ("volatility", "volatility_oracle"):
+            ctrl_sig = sigma_signal
+        elif fee_mode == "toxicity":
+            ctrl_sig = basis_ticks
+        elif fee_mode == "lvr_fee_ewma":
+            ctrl_sig = lvr_gap_signal
+        else:
+            ctrl_sig = 0.0
+        fee_signal_series.append(ctrl_sig)
+
+        # Clip and apply hysteresis (min/max step in bps, cooldown). In
+        # volatility_oracle mode, micro-step updates already adjusted
+        # pool.f directly, so we only stage changes here for other modes.
+        if stage_update:
+            f_tgt = clamp(f_raw, f_min, f_max)
+            min_step = fee_step_bps_min / 1e4
+            max_step = fee_step_bps_max / 1e4
+            delta_f = f_tgt - pool.f
+            if abs(delta_f) >= min_step:
+                step = math.copysign(min(abs(delta_f), max_step), delta_f)
+                f_new = clamp(pool.f + step, f_min, f_max)
+                if abs(f_new - pool.f) >= 1e-12:
+                    fee_next = f_new
+                    # Only start the cooldown when scheduling a new change; otherwise countdown would restart every step.
+                    if fee_cooldown_left <= 0:
+                        fee_cooldown_left = max(0, int(fee_cooldown))
+
+        # record current fee (before next-step commit)
+        fee_series.append(pool.f)
+        # ==================================================================
+
         # store per-step trader/arb details (now that order is randomized)
         trader_y_series.append(trader_y_this)
         arb_y_series.append(arb_y_this)
@@ -3289,6 +3324,9 @@ def simulate(
         elif fee_mode == "toxicity":
             secondary_vals = fee_basis_ticks_series_v
             secondary_label = "Basis (ticks)"
+        elif fee_mode == "lvr_fee_ewma":
+            secondary_vals = fee_signal_series_v
+            secondary_label = "EWMA(dLVR - dFees) / notional"
         else:
             secondary_vals = fee_signal_series_v
             secondary_label = "Controller signal"

@@ -1,5 +1,5 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: volatility
+fee_mode: lvr_fee_ewma
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
@@ -133,6 +133,8 @@ simulate:
   k_sigma: 3
   # Multiplier converting EWMA basis (ticks) into a fee adjustment (toxicity mode)
   k_basis: 0.01
+  # Feedback gain for EWMA(dLVR - dFees) / notional (lvr_fee_ewma mode)
+  k_lvr: 1.0
   # Minimum absolute fee change (in bps) required before committing an update. A value of 0.001 corresponds to 0.00001 = 0.001% of the previous fee
   fee_step_bps_min: 0.0005
   # Maximum fee change (in bps) allowed per update step
