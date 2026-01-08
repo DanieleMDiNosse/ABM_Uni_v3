@@ -217,6 +217,22 @@ def _write_dashboard_html(
       --muted: #94a3b8;
       --accent: #38bdf8;
       --accent-soft: #0ea5e9;
+      --bg-grad-1: #101826;
+      --bg-grad-2: #0b0f14;
+      --bg-grad-3: #070a0d;
+    }}
+    [data-theme="light"] {{
+      --bg: #f6f7fb;
+      --bg-elev: #ffffff;
+      --panel: #ffffff;
+      --panel-border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #475569;
+      --accent: #1d4ed8;
+      --accent-soft: #2563eb;
+      --bg-grad-1: #f0f4ff;
+      --bg-grad-2: #f6f7fb;
+      --bg-grad-3: #ffffff;
     }}
     * {{
       box-sizing: border-box;
@@ -226,7 +242,7 @@ def _write_dashboard_html(
       margin: 0;
       padding: 0;
       background:
-        radial-gradient(900px circle at 10% 10%, #101826 0%, #0b0f14 55%, #070a0d 100%);
+        radial-gradient(900px circle at 10% 10%, var(--bg-grad-1) 0%, var(--bg-grad-2) 55%, var(--bg-grad-3) 100%);
       color: var(--text);
     }}
     header {{
@@ -234,6 +250,9 @@ def _write_dashboard_html(
       background: rgba(10, 14, 20, 0.85);
       border-bottom: 1px solid var(--panel-border);
       backdrop-filter: blur(6px);
+    }}
+    [data-theme="light"] header {{
+      background: rgba(255, 255, 255, 0.85);
     }}
     header h1 {{
       font-size: 18px;
@@ -260,6 +279,13 @@ def _write_dashboard_html(
       border-radius: 14px;
       padding: 14px;
       box-shadow: 0 10px 30px rgba(2, 6, 12, 0.35);
+    }}
+    .panel-tall {{
+      min-height: 720px;
+    }}
+    [data-theme="light"] .panel {{
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98));
+      box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
     }}
     .panel h2 {{
       font-size: 13px;
@@ -310,13 +336,59 @@ def _write_dashboard_html(
     }}
     .plot {{
       width: 100%;
-      height: 520px;
+      height: 620px;
       border-radius: 12px;
     }}
     .plot-small {{
       width: 100%;
-      height: 360px;
+      height: 420px;
       border-radius: 12px;
+    }}
+    .plot-grid {{
+      display: grid;
+      grid-template-columns: minmax(360px, 1.6fr) minmax(260px, 1fr);
+      gap: 14px;
+      align-items: start;
+    }}
+    .stats-box {{
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--panel-border);
+      background: rgba(2, 6, 12, 0.18);
+    }}
+    [data-theme="light"] .stats-box {{
+      background: rgba(226, 232, 240, 0.55);
+    }}
+    .stats-title {{
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 8px 0;
+    }}
+    .stats-grid {{
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .stat {{
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.25);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+    }}
+    [data-theme="light"] .stat {{
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid rgba(15, 23, 42, 0.12);
+    }}
+    .stat .k {{
+      font-size: 11px;
+      color: var(--muted);
+    }}
+    .stat .v {{
+      margin-top: 2px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
     }}
     .hint {{
       font-size: 12px;
@@ -334,6 +406,10 @@ def _write_dashboard_html(
       font-size: 12px;
       line-height: 1.35;
     }}
+    [data-theme="light"] .warning {{
+      background: rgba(37, 99, 235, 0.08);
+      border: 1px solid rgba(37, 99, 235, 0.3);
+    }}
     .footer {{
       font-size: 12px;
       color: var(--muted);
@@ -341,6 +417,13 @@ def _write_dashboard_html(
     }}
     @media (max-width: 1100px) {{
       .container {{ grid-template-columns: 1fr; }}
+    }}
+    @media (max-width: 1200px) {{
+      .plot-grid {{ grid-template-columns: 1fr; }}
+      .stats-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+    }}
+    @media (max-width: 700px) {{
+      .stats-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     }}
   </style>
 </head>
@@ -350,9 +433,16 @@ def _write_dashboard_html(
     <div class="meta">Scenario: <b>{scenario_label}</b> • Config: <code>{config_path}</code></div>
   </header>
   <div class="container">
-    <div class="panel">
+    <div class="panel panel-tall">
       <h2>Controls</h2>
       <div class="controls">
+        <div class="row">
+          <label for="themeSelect">Theme</label>
+          <select id="themeSelect">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </div>
         <div class="row">
           <label for="xAxis">X axis</label>
           <select id="xAxis"></select>
@@ -372,16 +462,47 @@ def _write_dashboard_html(
         </div>
       </div>
     </div>
-    <div class="panel">
-      <h2>Median Final PnL Surface</h2>
-      <div id="pnlSurface" class="plot"></div>
-      <div id="seedWarning" class="warning" style="display: none;">
-        <b>Note:</b> with <code>passive_lp_share = 1</code>, narrow mints are inactive. Any
-        surface changes you see while varying <code>narrow_mints_per_block</code> come from
-        random seeding across runs.
+    <div class="panel panel-tall">
+      <div class="plot-grid">
+        <section>
+          <h2>Median Final PnL Surface</h2>
+          <div id="pnlSurface" class="plot"></div>
+          <div id="seedWarning" class="warning" style="display: none;">
+            <b>Note:</b> with <code>passive_lp_share = 1</code>, narrow mints are inactive. Any
+            surface changes you see while varying <code>narrow_mints_per_block</code> come from
+            random seeding across runs.
+          </div>
+        </section>
+        <section>
+          <h2>Fee Distribution (Selected Point)</h2>
+          <div id="feeHist" class="plot-small"></div>
+          <div id="feePercentilesBox" class="stats-box">
+            <div class="stats-title">Fee percentiles (empirical)</div>
+            <div class="stats-grid">
+              <div class="stat">
+                <div class="k">P25</div>
+                <div class="v" id="feeP25">—</div>
+              </div>
+              <div class="stat">
+                <div class="k">P50</div>
+                <div class="v" id="feeP50">—</div>
+              </div>
+              <div class="stat">
+                <div class="k">P75</div>
+                <div class="v" id="feeP75">—</div>
+              </div>
+              <div class="stat">
+                <div class="k">P95</div>
+                <div class="v" id="feeP95">—</div>
+              </div>
+              <div class="stat">
+                <div class="k">P99</div>
+                <div class="v" id="feeP99">—</div>
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
-      <h2 style="margin-top: 14px;">Fee Distribution (Selected Point)</h2>
-      <div id="feeHist" class="plot-small"></div>
     </div>
   </div>
   <div class="footer">
@@ -411,16 +532,37 @@ def _write_dashboard_html(
     const REC_FEE_MEAN = GRID.records.fee_mean;
     const REC_FEE_MEDIAN = GRID.records.fee_median;
     const REC_FEE_HIST = GRID.records.fee_hist;
-    const THEME = {{
-      bg: "#0b0f14",
-      grid: "#1f2937",
-      text: "#e2e8f0",
-      muted: "#94a3b8",
-      accent: "#38bdf8",
-      accentSoft: "#0ea5e9",
-      mean: "#f59e0b",
-      median: "#e2e8f0",
+    const THEMES = {{
+      dark: {{
+        bg: "#0b0f14",
+        grid: "#1f2937",
+        text: "#e2e8f0",
+        muted: "#94a3b8",
+        accent: "#38bdf8",
+        accentSoft: "#0ea5e9",
+        mean: "#f59e0b",
+        median: "#22c55e",
+        template: "plotly_dark",
+        colorscale: "Cividis",
+        axisText: "#e2e8f0",
+        legendText: "#94a3b8",
+      }},
+      light: {{
+        bg: "#ffffff",
+        grid: "#cbd5e1",
+        text: "#0f172a",
+        muted: "#475569",
+        accent: "#1d4ed8",
+        accentSoft: "#2563eb",
+        mean: "#b45309",
+        median: "#22c55e",
+        template: "plotly_white",
+        colorscale: "Viridis",
+        axisText: "#000000",
+        legendText: "#000000",
+      }},
     }};
+    let currentTheme = THEMES.dark;
 
     const N_PARAMS = PARAM_ORDER.length;
     const PARAM_LENGTHS = PARAM_ORDER.map(p => (PARAM_VALUES[p] || []).length);
@@ -504,8 +646,15 @@ def _write_dashboard_html(
     const xAxisEl = document.getElementById("xAxis");
     const yAxisEl = document.getElementById("yAxis");
     const metricEl = document.getElementById("metric");
+    const themeEl = document.getElementById("themeSelect");
     const slidersEl = document.getElementById("sliders");
     const seedWarningEl = document.getElementById("seedWarning");
+    const feePercentilesBoxEl = document.getElementById("feePercentilesBox");
+    const feeP25El = document.getElementById("feeP25");
+    const feeP50El = document.getElementById("feeP50");
+    const feeP75El = document.getElementById("feeP75");
+    const feeP95El = document.getElementById("feeP95");
+    const feeP99El = document.getElementById("feeP99");
 
     function populateSelect(el, options, selectedValue) {{
       el.innerHTML = "";
@@ -523,6 +672,79 @@ def _write_dashboard_html(
     let pendingSurfaceRAF = null;
     let pendingFeeRAF = null;
     let pendingMarkerRAF = null;
+
+    function histogramQuantile(counts, edges, q) {{
+      if (!counts || !edges) return NaN;
+      const n = counts.length;
+      if (edges.length !== n + 1) return NaN;
+      const qq = Math.min(1, Math.max(0, Number(q)));
+      if (!Number.isFinite(qq)) return NaN;
+
+      let total = 0;
+      for (let i = 0; i < n; i++) {{
+        const c = Number(counts[i]);
+        if (Number.isFinite(c) && c > 0) total += c;
+      }}
+      if (!(total > 0)) return NaN;
+
+      const target = qq * total;
+      let cum = 0;
+      for (let i = 0; i < n; i++) {{
+        const c = Number(counts[i]);
+        if (!Number.isFinite(c) || c <= 0) continue;
+        const next = cum + c;
+        if (next >= target) {{
+          const left = Number(edges[i]);
+          const right = Number(edges[i + 1]);
+          if (!Number.isFinite(left) || !Number.isFinite(right)) return NaN;
+          const frac = (target - cum) / c;
+          const t = Math.min(1, Math.max(0, frac));
+          return left + t * (right - left);
+        }}
+        cum = next;
+      }}
+      const last = Number(edges[edges.length - 1]);
+      return Number.isFinite(last) ? last : NaN;
+    }}
+
+    function setPercentileValue(el, value) {{
+      if (!el) return;
+      el.textContent = Number.isFinite(value) ? formatValue("fee", value) : "—";
+    }}
+
+    function clearFeePercentiles() {{
+      setPercentileValue(feeP25El, NaN);
+      setPercentileValue(feeP50El, NaN);
+      setPercentileValue(feeP75El, NaN);
+      setPercentileValue(feeP95El, NaN);
+      setPercentileValue(feeP99El, NaN);
+      if (feePercentilesBoxEl) feePercentilesBoxEl.style.display = "none";
+    }}
+
+    function updateFeePercentiles(counts, feeMedian) {{
+      const p25 = histogramQuantile(counts, FEE_EDGES, 0.25);
+      const p75 = histogramQuantile(counts, FEE_EDGES, 0.75);
+      const p95 = histogramQuantile(counts, FEE_EDGES, 0.95);
+      const p99 = histogramQuantile(counts, FEE_EDGES, 0.99);
+      const p50 = Number.isFinite(feeMedian) ? Number(feeMedian) : histogramQuantile(counts, FEE_EDGES, 0.5);
+
+      setPercentileValue(feeP25El, p25);
+      setPercentileValue(feeP50El, p50);
+      setPercentileValue(feeP75El, p75);
+      setPercentileValue(feeP95El, p95);
+      setPercentileValue(feeP99El, p99);
+      if (feePercentilesBoxEl) feePercentilesBoxEl.style.display = "block";
+    }}
+
+    function applyTheme(name) {{
+      const themeName = THEMES[name] ? name : "dark";
+      currentTheme = THEMES[themeName];
+      document.documentElement.dataset.theme = themeName;
+      renderSurface();
+      if (state.selectedPoint) {{
+        renderFeeHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+      }}
+    }}
 
     function scheduleSurfaceRender() {{
       if (pendingSurfaceRAF !== null) return;
@@ -717,7 +939,7 @@ def _write_dashboard_html(
         x: xVals,
         y: yVals,
         z: z,
-        colorscale: "Cividis",
+        colorscale: currentTheme.colorscale || "Cividis",
         cmin: zMin,
         cmax: zMax,
         colorbar: {{ title: metricLabel(), len: 0.75 }},
@@ -735,7 +957,7 @@ def _write_dashboard_html(
             x: [],
             y: [],
             z: [],
-            marker: {{ size: 5, color: THEME.text }},
+            marker: {{ size: 5, color: currentTheme.text }},
             name: "Selected",
             hoverinfo: "skip",
             showlegend: false,
@@ -752,7 +974,7 @@ def _write_dashboard_html(
             x: [],
             y: [],
             z: [],
-            marker: {{ size: 5, color: THEME.text }},
+            marker: {{ size: 5, color: currentTheme.text }},
             name: "Selected",
             hoverinfo: "skip",
             showlegend: false,
@@ -765,7 +987,7 @@ def _write_dashboard_html(
           x: [xVals[xi]],
           y: [yVals[yi]],
           z: [val],
-          marker: {{ size: 5, color: THEME.text }},
+          marker: {{ size: 5, color: currentTheme.text }},
           name: "Selected",
           hoverinfo: "skip",
           showlegend: false,
@@ -774,37 +996,40 @@ def _write_dashboard_html(
       }})();
 
       const layout = {{
-        template: "plotly_dark",
+        template: currentTheme.template,
         paper_bgcolor: "rgba(0,0,0,0)",
         plot_bgcolor: "rgba(0,0,0,0)",
-        font: {{ color: THEME.text }},
+        font: {{ color: currentTheme.text }},
         margin: {{ l: 0, r: 0, t: 24, b: 0 }},
         title: {{ text: `${{metricLabel()}} (median final)`, x: 0.01, xanchor: "left", font: {{ size: 14 }} }},
         scene: {{
-          bgcolor: THEME.bg,
+          bgcolor: currentTheme.bg,
           xaxis: {{
             title: state.xParam,
-            color: THEME.text,
-            gridcolor: THEME.grid,
-            zerolinecolor: THEME.grid,
-            backgroundcolor: THEME.bg,
+            color: currentTheme.text,
+            gridcolor: currentTheme.grid,
+            gridwidth: 1.2,
+            zerolinecolor: currentTheme.grid,
+            backgroundcolor: currentTheme.bg,
             showbackground: true,
           }},
           yaxis: {{
             title: state.yParam,
-            color: THEME.text,
-            gridcolor: THEME.grid,
-            zerolinecolor: THEME.grid,
-            backgroundcolor: THEME.bg,
+            color: currentTheme.text,
+            gridcolor: currentTheme.grid,
+            gridwidth: 1.2,
+            zerolinecolor: currentTheme.grid,
+            backgroundcolor: currentTheme.bg,
             showbackground: true,
           }},
           zaxis: {{
             title: metricLabel(),
             range: [zMin, zMax],
-            color: THEME.text,
-            gridcolor: THEME.grid,
-            zerolinecolor: THEME.grid,
-            backgroundcolor: THEME.bg,
+            color: currentTheme.text,
+            gridcolor: currentTheme.grid,
+            gridwidth: 1.2,
+            zerolinecolor: currentTheme.grid,
+            backgroundcolor: currentTheme.bg,
             showbackground: true,
           }},
         }},
@@ -860,10 +1085,16 @@ def _write_dashboard_html(
 
     function renderFeeHist(xIdx, yIdx) {{
       const {{ idxRow, rec }} = computePointValue(xIdx, yIdx);
-      if (rec < 0) return;
+      if (rec < 0) {{
+        clearFeePercentiles();
+        return;
+      }}
 
       const counts = REC_FEE_HIST[rec];
-      if (!counts || counts.length === 0) return;
+      if (!counts || counts.length === 0) {{
+        clearFeePercentiles();
+        return;
+      }}
       const feeMean = REC_FEE_MEAN[rec];
       const feeMedian = REC_FEE_MEDIAN[rec];
 
@@ -880,7 +1111,7 @@ def _write_dashboard_html(
         type: "bar",
         x: centers,
         y: counts,
-        marker: {{ color: THEME.accent }},
+        marker: {{ color: currentTheme.accent }},
         name: "Fee distribution",
         opacity: 0.8,
       }};
@@ -889,8 +1120,8 @@ def _write_dashboard_html(
         x: meanVisible ? [feeMean, feeMean] : [0, 0],
         y: meanVisible ? [0, maxCount] : [0, 0],
         mode: "lines",
-        line: {{ color: THEME.mean, width: 2, dash: "dash" }},
-        name: "Mean (fee)",
+        line: {{ color: currentTheme.mean, width: 2, dash: "dash" }},
+        name: "Mean",
         visible: meanVisible,
       }};
       const medianTrace = {{
@@ -898,8 +1129,8 @@ def _write_dashboard_html(
         x: medianVisible ? [feeMedian, feeMedian] : [0, 0],
         y: medianVisible ? [0, maxCount] : [0, 0],
         mode: "lines",
-        line: {{ color: THEME.median, width: 2, dash: "dot" }},
-        name: "Median (fee)",
+        line: {{ color: currentTheme.median, width: 2, dash: "dot" }},
+        name: "Median",
         visible: medianVisible,
       }};
       const data = [bar, meanTrace, medianTrace];
@@ -907,25 +1138,40 @@ def _write_dashboard_html(
       const title = "Fee distribution";
       const topMargin = 40;
 
+      const axisText = currentTheme.axisText || currentTheme.text;
+      const legendText = currentTheme.legendText || currentTheme.muted || currentTheme.text;
       const layout = {{
-        template: "plotly_dark",
+        template: currentTheme.template,
         paper_bgcolor: "rgba(0,0,0,0)",
         plot_bgcolor: "rgba(0,0,0,0)",
-        font: {{ color: THEME.text }},
+        font: {{ color: currentTheme.text }},
         margin: {{ l: 40, r: 10, t: topMargin, b: 40 }},
         title: {{ text: title, x: 0.01, xanchor: "left", font: {{ size: 12 }} }},
-        xaxis: {{ title: "Fee", gridcolor: THEME.grid, zerolinecolor: THEME.grid, color: THEME.text }},
-        yaxis: {{ title: "Count", gridcolor: THEME.grid, zerolinecolor: THEME.grid, color: THEME.text }},
+        xaxis: {{
+          title: {{ text: "Fee", font: {{ color: axisText }} }},
+          tickfont: {{ color: axisText }},
+          gridcolor: currentTheme.grid,
+          zerolinecolor: currentTheme.grid,
+          color: axisText,
+        }},
+        yaxis: {{
+          title: {{ text: "Count", font: {{ color: axisText }} }},
+          tickfont: {{ color: axisText }},
+          gridcolor: currentTheme.grid,
+          zerolinecolor: currentTheme.grid,
+          color: axisText,
+        }},
         legend: {{
           orientation: "v",
           yanchor: "top",
           y: 1,
           xanchor: "right",
           x: 1,
-          font: {{ color: THEME.muted }},
+          font: {{ color: legendText }},
         }},
       }};
 
+      updateFeePercentiles(counts, feeMedian);
       if (!feeHistInitialized) {{
         Plotly.newPlot("feeHist", data, layout, {{ responsive: true }});
         feeHistInitialized = true;
@@ -949,7 +1195,7 @@ def _write_dashboard_html(
         }} else {{
           Plotly.restyle("feeHist", {{ visible: false }}, [2]);
         }}
-        Plotly.relayout("feeHist", {{ "title.text": title, "yaxis.autorange": true }});
+        Plotly.relayout("feeHist", {{ ...layout, "yaxis.autorange": true }});
       }}
     }}
 
@@ -1003,8 +1249,12 @@ def _write_dashboard_html(
         renderSurface();
         if (state.selectedPoint) renderFeeHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
       }});
+      themeEl.addEventListener("change", () => {{
+        applyTheme(themeEl.value);
+      }});
 
       setAxes(state.xParam, state.yParam);
+      applyTheme(themeEl.value);
     }}
 
     init();

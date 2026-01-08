@@ -1,0 +1,15 @@
+name: abm_uni_v3
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - plotly
+  - tqdm
+  - pyyaml
+  - numba
+  - scikit-learn
+  - pytest

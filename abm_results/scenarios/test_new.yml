@@ -4,7 +4,7 @@ fee_mode: volatility
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
   config_name: test
-  liquidity_for_gif: false
+  liquidity_for_gif: true
   verbose: true
   light_mode: false
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
