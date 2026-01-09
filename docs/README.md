@@ -25,13 +25,12 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   - **Jiter**: MEV searcher that select the top N swaps in the mempool according to their size and perform a Just-In-Time liquidity strategy.
 - **Block-aware mempool**: the simulator runs in mempool execution mode (`block_time` micro-steps per block; the current implementation requires `block_time > 1`). It freezes the validated snapshot, runs `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents, then enqueues a single arb intent plus LP intents (burn/recenter/mint) and replays the shuffled mempool (arb first) against the live pool.
 - **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and a CEX mark. Swap intents (smart/noise) and the arbitrage target are formed off this “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`), while the CEX path still diffuses during micro-steps for the rebalancing benchmark, fee signals, and some LP diagnostics. All intents are executed together at the block boundary via the mempool replay.
-- **Dynamic fee controller** with five modes:
+- **Dynamic fee controller** with four modes:
   - `static` fixes the fee at `f0`.
   - `volatility` adds a multiple of EWMA(|log-return|).
-  - `volatility_oracle` uses the per-step CEX volatility path `σ_t` directly as the fee signal (no smoothing); it can move *within* a block at micro-step resolution based on the current `σ_t`.
   - `toxicity` adds a multiple of the fee-adjusted log basis (in ticks).
   - `lvr_fee_ewma` applies a feedback update based on an EWMA of the per-step (LVR - fees) gap normalized by DEX notional.
-  Fee moves are clipped by `fee_step_bps_min/max` and gated by `fee_cooldown` (except for intra-block `volatility_oracle` reactions, which apply immediately but still respect the step-size thresholds).
+  Fee moves are clipped by `fee_step_bps_min/max` and gated by `fee_cooldown`.
 - **Liquidity bootstrapping**: simulations always start from an evolved/sharded binomial hill that allocates `initial_total_L` across synthetic *seed* LPs (`is_seed=True`) that provide background liquidity and can optionally be plotted; these seed LPs are excluded from the strategic LP cohorts and PnL statistics.
 - **LP width rule**: narrow LPs size their ranges off an EWMA of the fee-adjusted basis plus a configurable binomial noise term (`binom_n`, `binom_p`), then clamp to `[w_min_ticks, w_max_ticks]`.
 - **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (per block), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python run.py --config ...`).

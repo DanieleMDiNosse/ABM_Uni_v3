@@ -185,7 +185,7 @@ def simulate(
     initial_total_L: float,
     
     # === Fee controller parameters ===
-    fee_mode: str,      # "static" | "volatility" | "volatility_oracle" | "toxicity" | "lvr_fee_ewma"
+    fee_mode: str,      # "static" | "volatility" | "toxicity" | "lvr_fee_ewma"
     f0: float,             # baseline fee (e.g., 30 bps)
     f_min: float,         # 5 bps
     f_max: float,           # 200 bps safety cap
@@ -232,7 +232,7 @@ def simulate(
     verbose: bool = True,
 ) -> Dict[str, Any]:
 
-    valid_fee_modes = {"static", "volatility", "volatility_oracle", "toxicity", "lvr_fee_ewma"}
+    valid_fee_modes = {"static", "volatility", "toxicity", "lvr_fee_ewma"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
     if k_out_min <= 0 or k_out_max <= 0:
@@ -2016,21 +2016,6 @@ def simulate(
         M_micro.append(ref.m)
         micro_counter += 1
         for _k in range(block_time):
-            # Allow volatility_oracle fees to react at micro-step granularity
-            # based on the *current* CEX volatility.
-            if fee_mode == "volatility_oracle":
-                sigma_signal_micro = float(ref.sigma)
-                f_raw_micro = f0 + k_sigma * sigma_signal_micro * math.sqrt(block_time)
-                f_tgt_micro = clamp(f_raw_micro, f_min, f_max)
-                min_step_micro = fee_step_bps_min / 1e4
-                max_step_micro = fee_step_bps_max / 1e4
-                delta_f_micro = f_tgt_micro - pool.f
-                if abs(delta_f_micro) >= min_step_micro:
-                    step_micro = math.copysign(min(abs(delta_f_micro), max_step_micro), delta_f_micro)
-                    f_new_micro = clamp(pool.f + step_micro, f_min, f_max)
-                    if abs(f_new_micro - pool.f) >= 1e-12:
-                        pool.f = f_new_micro
-
             if smart_lambda_micro_step > 0.0:
                 n_smart = int(np.random.poisson(smart_lambda_micro_step))
                 for _ in range(n_smart):
@@ -2385,11 +2370,9 @@ def simulate(
 
         # ================== Dynamic fee controller  ==================
         # By default, signals are based on END-OF-STEP state and the new
-        # fee applies NEXT step. For fee_mode == "volatility_oracle", the
-        # fee may already have reacted at micro-step granularity inside the
-        # block; the logic below is then used only for diagnostics.
+        # fee applies NEXT step.
 
-        # 1) Volatility of CEX (abs log-return / oracle)
+        # 1) Volatility of CEX (abs log-return)
         try:
             log_m_now = math.log(max(ref.m, 1e-18))
             log_m_prev = math.log(max(prev_m_for_vol, 1e-18))
@@ -2418,15 +2401,9 @@ def simulate(
             lvr_gap_obs = (delta_lvr_total - delta_fee_value_total) / dex_notional_y_this
             lvr_gap_signal = ewma_lvr_gap_fee.update(lvr_gap_obs)
 
-        # Record raw signals for diagnostics/plotting
-        # For volatility-based fee modes, fee_sigma_series tracks the sigma
-        # signal actually fed into the controller:
-        #   - "volatility": EWMA(|log-return|),
-        #   - "volatility_oracle": ReferenceMarket.sigma (per-step, no smoothing).
-        if fee_mode == "volatility_oracle":
-            sigma_signal = float(ref.sigma)
-        else:
-            sigma_signal = sigma_hat_ewma
+        # Record raw signals for diagnostics/plotting.
+        # For volatility-based fee mode, fee_sigma_series tracks EWMA(|log-return|).
+        sigma_signal = sigma_hat_ewma
         fee_sigma_series.append(sigma_signal)
         fee_basis_ticks_series.append(basis_ticks)
 
@@ -2435,10 +2412,6 @@ def simulate(
         stage_update = True
         if fee_mode == "volatility":
             f_raw = f0 + k_sigma * sigma_signal * np.sqrt(block_time)
-        elif fee_mode == "volatility_oracle":
-            # Fee already updated at micro-step granularity; keep current pool.f.
-            f_raw = pool.f
-            stage_update = False
         elif fee_mode == "toxicity":
             f_raw = f0 + k_basis * basis_ticks
         elif fee_mode == "lvr_fee_ewma":
@@ -2452,7 +2425,7 @@ def simulate(
             f_raw = pool.f  # "static": no change
 
         # Controller signal used for plotting (depends on fee_mode)
-        if fee_mode in ("volatility", "volatility_oracle"):
+        if fee_mode == "volatility":
             ctrl_sig = sigma_signal
         elif fee_mode == "toxicity":
             ctrl_sig = basis_ticks
@@ -2462,9 +2435,7 @@ def simulate(
             ctrl_sig = 0.0
         fee_signal_series.append(ctrl_sig)
 
-        # Clip and apply hysteresis (min/max step in bps, cooldown). In
-        # volatility_oracle mode, micro-step updates already adjusted
-        # pool.f directly, so we only stage changes here for other modes.
+        # Clip and apply hysteresis (min/max step in bps, cooldown).
         if stage_update:
             f_tgt = clamp(f_raw, f_min, f_max)
             min_step = fee_step_bps_min / 1e4
@@ -3318,9 +3289,6 @@ def simulate(
         if fee_mode == "volatility":
             secondary_vals = fee_sigma_series_v
             secondary_label = "σ̂ (abs log-return)"
-        elif fee_mode == "volatility_oracle":
-            secondary_vals = fee_sigma_series_v
-            secondary_label = "σ_oracle (CEX σ_t)"
         elif fee_mode == "toxicity":
             secondary_vals = fee_basis_ticks_series_v
             secondary_label = "Basis (ticks)"

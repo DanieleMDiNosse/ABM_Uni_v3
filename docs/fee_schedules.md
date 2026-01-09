@@ -9,15 +9,31 @@ This document explains the fee schedules implemented in the simulation, includin
 
 The fee logic is primarily implemented in `run.py` within the `simulate` function.
 
+## Exponentially Weighted Moving Average (EWMA)
+
+Several fee controllers smooth noisy per-step signals using an Exponentially Weighted Moving Average (EWMA). Given a per-step observation series $x_t$ (e.g., absolute log-returns or a basis signal), the EWMA state $v_t$ is updated recursively as:
+
+$$ v_t = \lambda v_{t-1} + (1-\lambda)x_t $$
+
+This is equivalent to the common EMA form $v_t = (1-\alpha)v_{t-1} + \alpha x_t$ with $\alpha = 1-\lambda$.
+
+**What controls how closely it follows the underlying signal?** The smoothing parameter $\alpha$ (or, equivalently, $\lambda$ / the half-life) controls responsiveness:
+
+* Larger $\alpha$ (smaller half-life) puts more weight on the newest observation, so $v_t$ tracks $x_t$ more closely but is noisier.
+* Smaller $\alpha$ (larger half-life) puts more weight on past values, so $v_t$ is smoother but lags changes in $x_t$.
+
+In this codebase, the EWMA is parameterized by a *half-life in steps* (e.g. `fee_half_life`). The decay is chosen so that the influence of past information halves every `half_life_steps`:
+
+$$ \lambda = \exp\left(-\frac{\ln 2}{\text{half\_life\_steps}}\right) \quad\Rightarrow\quad \alpha = 1-\lambda $$
+
 ## Fee Modes
 
-There are five supported fee modes:
+There are four supported fee modes:
 
 1.  **Static** (`static`)
 2.  **Volatility-based** (`volatility`)
-3.  **Volatility-oracle-based** (`volatility_oracle`)
-4.  **Toxicity-based** (`toxicity`)
-5.  **LVR-gap EWMA-based** (`lvr_fee_ewma`)
+3.  **Toxicity-based** (`toxicity`)
+4.  **LVR-gap EWMA-based** (`lvr_fee_ewma`)
 
 ### 1. Static Fee
 
@@ -49,41 +65,7 @@ $$ f_{raw} = f_0 + k_\sigma \cdot \hat{\sigma}_t \cdot \sqrt{\text{block\_time}}
     *   $f_0$: Baseline fee.
     *   $k_\sigma$: Scaling factor for volatility (parameter `k_sigma`).
 
-### 3. Volatility-Oracle-Based Fee
-
-This mode adjusts the fee using the *instantaneous* CEX volatility signal from the reference market, without any additional smoothing. Instead of estimating volatility from realized log-returns, the controller directly consumes the per-step volatility path $\sigma_t$ used by the CEX process (e.g. regime, noisy-sine, or Heston).
-
-**Per-step formula (conceptual):**
-
-$$ f_{raw} = f_0 + k_\sigma \cdot \sigma_t \cdot \sqrt{\text{block\_time}} $$
-
-where:
-
-*   **Oracle volatility:**
-    $$ \sigma_t = \text{ReferenceMarket.sigma at step } t $$
-    which is exactly the volatility used when diffusing the CEX price in
-    `utils.ReferenceMarket` (static / regime / noisy-sine / Heston).
-*   **Parameters:**
-    *   $f_0$: Baseline fee.
-    *   $k_\sigma$: Scaling factor for volatility (parameter `k_sigma`),
-        re-used from the standard volatility mode.
-
-**Timing behaviour (mempool execution):**
-
-*   The simulator lets the fee react *within* each block at micro-step granularity. At each
-    micro-step $k$ inside block $t$, **before** enqueuing smart/noise intents, it:
-      1. reads the current oracle volatility 
-         $$
-         \sigma_{t,k} = \text{ReferenceMarket.sigma}
-         $$
-      2. computes a micro-step raw fee
-         $$
-           f_{raw}^{(micro)} = f_0 + k_\sigma \cdot \sigma_{t,k} \cdot \sqrt{\text{block\_time}};
-         $$
-      3. clamps and step-limits this value using the same `f_min` / `f_max` / `fee_step_bps_min` / `fee_step_bps_max` logic; if the implied change is large enough, it updates `pool.f` **immediately** (no `fee_next`, no cooldown gating).  
-*   The fee can update during the micro-step phase *before* the mempool replay. Since swaps execute during the replay, all swaps in a given block use the fee in force at execution time; however, intents created earlier in the block may have computed their slippage baselines under an earlier fee, which can affect whether they pass the slippage check when the mempool is replayed. The block-level controller at the end of the step records the volatility signal and fee path for plotting but does not stage an additional fee move in this mode.
-
-### 4. Toxicity-based Fee
+### 3. Toxicity-based Fee
 
 This mode adjusts the fee based on the "toxic" flow, measured by the arbitrage opportunity size (basis) that exceeds the current fee band. This effectively measures how far the DEX price is lagging behind the CEX price.
 
@@ -116,7 +98,7 @@ $$ f_{raw} = f_0 + k_{basis} \cdot \text{basis\_ticks}_t $$
     *   $f_0$: Baseline fee.
     *   $k_{basis}$: Scaling factor for basis ticks (parameter `k_basis`).
 
-### 5. LVR-gap EWMA-based Fee
+### 4. LVR-gap EWMA-based Fee
 
 This mode adjusts the fee using the EWMA of the per-step gap between LVR and fees, normalized by the executed DEX notional. The controller raises fees when LVR exceeds fees and lowers them when fees exceed LVR.
 

@@ -395,31 +395,21 @@ series below expose its internal signals.
   $$
   f_t
   $$
-   on the AMM at step `t` (fraction, e.g. 0.003 = 30 bps).  
-  In mempool execution with `fee_mode: volatility_oracle`, the fee can vary
-  within a block at micro-step resolution; `fee_series[t]` records the
-  **end-of-step** value of `pool.f` after all intra-block updates.
+   on the AMM at step `t` (fraction, e.g. 0.003 = 30 bps).
 
 - `fee_mode`  
-  Active fee controller mode: `"static"`, `"volatility"`, `"volatility_oracle"`, `"toxicity"`, or `"lvr_fee_ewma"`.
+  Active fee controller mode: `"static"`, `"volatility"`, `"toxicity"`, or `"lvr_fee_ewma"`.
 
 - `f_min`, `f_max`  
   Hard lower/upper bounds for `fee_series` (same values as the `f_min`,
   `f_max` parameters to `simulate`).
 
 - `fee_sigma_series[t]`  
-  Volatility signal used by volatility-based fee modes:
-  - in `"volatility"` mode, this is the EWMA of absolute CEX log-returns
-    $$
-      \hat{\sigma}_t = \text{EWMA}\bigl(|\log m_t - \log m_{t-1}|\bigr),
-    $$
-    with half-life `fee_half_life`;
-  - in `"volatility_oracle"` mode, this is the per-step CEX volatility path
-    
-    $$
-    \sigma_t
-    $$
-     taken directly from `ReferenceMarket.sigma` (no smoothing).
+  Volatility signal used by the volatility fee mode: the EWMA of absolute CEX log-returns
+  $$
+    \hat{\sigma}_t = \text{EWMA}\bigl(|\log m_t - \log m_{t-1}|\bigr),
+  $$
+  with half-life `fee_half_life`.
 
 - `fee_basis_ticks_series[t]`  
   EWMA of fee‑adjusted log basis (in ticks) used in toxicity mode:
@@ -448,11 +438,7 @@ series below expose its internal signals.
 
 - `fee_signal_series[t]`  
   The controller’s primary signal:
-  - volatility signal (`sigma_hat` or 
-    $$
-    \sigma_t
-    $$
-    ) in `"volatility"` / `"volatility_oracle"` modes,
+  - volatility signal (`sigma_hat`) in `"volatility"` mode,
   - `basis_ticks` in `"toxicity"` mode,
   - EWMA of 
     $$
