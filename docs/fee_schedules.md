@@ -41,7 +41,7 @@ In the static mode, the fee remains constant throughout the simulation.
 
 $$ f_t = f_0 $$
 
-*   $f_0$: Baseline fee (parameter `f0`).
+*   $f_0$: Initial fee level (parameter `f0`). In `static` mode this is the fixed fee; in the dynamic modes it is only the starting value at $t=0$.
 
 ### 2. Volatility-based Fee
 
@@ -49,7 +49,9 @@ This mode adjusts the fee based on the realized volatility of the CEX price. The
 
 **Formula:**
 
-$$ f_{raw} = f_0 + k_\sigma \cdot \hat{\sigma}_t \cdot \sqrt{\text{block\_time}} $$
+$$ f_{raw} = k_\sigma \cdot \hat{\sigma}_t \cdot \sqrt{\text{block\_time}} $$
+
+Since this controller is *pure-signal* (no additive baseline), when $\hat{\sigma}_t$ is small the applied fee will typically be clamped to $f_{min}$ by the update mechanism below.
 
 **Components:**
 
@@ -62,7 +64,6 @@ $$ f_{raw} = f_0 + k_\sigma \cdot \hat{\sigma}_t \cdot \sqrt{\text{block\_time}}
     The Exponentially Weighted Moving Average (EWMA) is updated at each step using a half-life parameter (`fee_half_life`). No squaring is applied; the controller works directly with the smoothed absolute log-return.
 
 *   **Parameters:**
-    *   $f_0$: Baseline fee.
     *   $k_\sigma$: Scaling factor for volatility (parameter `k_sigma`).
 
 ### 3. Toxicity-based Fee
@@ -71,7 +72,9 @@ This mode adjusts the fee based on the "toxic" flow, measured by the arbitrage o
 
 **Formula:**
 
-$$ f_{raw} = f_0 + k_{basis} \cdot \text{basis\_ticks}_t $$
+$$ f_{raw} = k_{basis} \cdot \text{basis\_ticks}_t $$
+
+Since this controller is *pure-signal* (no additive baseline), when $\text{basis\_ticks}_t$ is small the applied fee will typically be clamped to $f_{min}$ by the update mechanism below.
 
 **Components:**
 
@@ -95,7 +98,6 @@ $$ f_{raw} = f_0 + k_{basis} \cdot \text{basis\_ticks}_t $$
     Converts the log-basis into an equivalent number of ticks.
 
 *   **Parameters:**
-    *   $f_0$: Baseline fee.
     *   $k_{basis}$: Scaling factor for basis ticks (parameter `k_basis`).
 
 ### 4. LVR-gap EWMA-based Fee

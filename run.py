@@ -186,7 +186,7 @@ def simulate(
     
     # === Fee controller parameters ===
     fee_mode: str,      # "static" | "volatility" | "toxicity" | "lvr_fee_ewma"
-    f0: float,             # baseline fee (e.g., 30 bps)
+    f0: float,             # initial fee (and static fee level), e.g. 30 bps
     f_min: float,         # 5 bps
     f_max: float,           # 200 bps safety cap
     fee_half_life: int,       # EWMA half-life (steps) for signals
@@ -423,7 +423,7 @@ def simulate(
         sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
         _vprint(f"\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
         sigma_for_ref = cex_sigma
-    _vprint(f"[CONFIG] Fee: {initial_params.get('f0', 0.0005)*10000:.1f} bps\n")
+    _vprint(f"[CONFIG] Initial fee f0: {initial_params.get('f0', 0.0005)*10000:.1f} bps\n")
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
@@ -865,7 +865,7 @@ def simulate(
     ewma_B = EWMA(half_life_steps=basis_half_life)
 
     # --- Dynamic fee controller state (new) ---
-    pool.f = float(f0)  # controller baseline overrides builder default
+    pool.f = float(f0)  # initial fee overrides builder default
     fee_next: Optional[float] = None
     fee_cooldown_left: int = 0
     fee_series: List[float] = []
@@ -2411,9 +2411,9 @@ def simulate(
         f_raw = pool.f
         stage_update = True
         if fee_mode == "volatility":
-            f_raw = f0 + k_sigma * sigma_signal * np.sqrt(block_time)
+            f_raw = k_sigma * sigma_signal * np.sqrt(block_time)
         elif fee_mode == "toxicity":
-            f_raw = f0 + k_basis * basis_ticks
+            f_raw = k_basis * basis_ticks
         elif fee_mode == "lvr_fee_ewma":
             # Feedback controller around the current fee.
             if not lvr_gap_signal_valid:
@@ -3310,9 +3310,25 @@ def simulate(
             col=1,
             secondary_y=True,
         )
-        # Empirical distribution of fees with mean/median markers
-        fee_mean = float(np.mean(fee_series_v)) if len(fee_series_v) > 0 else 0.0
-        fee_median = float(np.median(fee_series_v)) if len(fee_series_v) > 0 else 0.0
+        # Empirical distribution of fees with mean/median/percentile markers
+        fee_series_arr = np.asarray(fee_series_v, dtype=float)
+        fee_has_data = fee_series_arr.size > 0
+        fee_mean = float(np.mean(fee_series_arr)) if fee_has_data else 0.0
+        fee_median = float(np.median(fee_series_arr)) if fee_has_data else 0.0
+        percentile_levels = [5, 25, 75, 95]
+        fee_percentiles = (
+            [(p, float(np.percentile(fee_series_arr, p))) for p in percentile_levels]
+            if fee_has_data
+            else []
+        )
+        percentile_styles = [
+            dict(color="#6b7280", dash="dot"),
+            dict(color="#9ca3af", dash="dash"),
+            dict(color="#4b5563", dash="dashdot"),
+            dict(color="#374151", dash="longdash"),
+        ]
+        hist_xref = "x2"
+        hist_yref = "y3 domain"
         fig7.add_trace(
             go.Histogram(
                 x=fee_series_v,
@@ -3323,15 +3339,15 @@ def simulate(
             row=2,
             col=1,
         )
-        if len(fee_series_v) > 0:
+        if fee_has_data:
             fig7.add_shape(
                 type="line",
                 x0=fee_mean,
                 x1=fee_mean,
                 y0=0,
                 y1=1,
-                xref="x2",
-                yref="paper",
+                xref=hist_xref,
+                yref=hist_yref,
                 line=dict(color="firebrick", width=2, dash="dash"),
             )
             fig7.add_shape(
@@ -3340,17 +3356,28 @@ def simulate(
                 x1=fee_median,
                 y0=0,
                 y1=1,
-                xref="x2",
-                yref="paper",
+                xref=hist_xref,
+                yref=hist_yref,
                 line=dict(color="black", width=2, dash="dot"),
             )
-            # legend handles for mean/median
+            # for (p_level, p_value), style in zip(fee_percentiles, percentile_styles):
+            #     fig7.add_shape(
+            #         type="line",
+            #         x0=p_value,
+            #         x1=p_value,
+            #         y0=0,
+            #         y1=1,
+            #         xref=hist_xref,
+            #         yref=hist_yref,
+            #         line=dict(color=style["color"], width=1.6, dash=style["dash"]),
+            #     )
+            # legend handles for mean/median/percentiles
             fig7.add_trace(
                 go.Scatter(
                     x=[None],
                     y=[None],
                     mode="lines",
-                    name="Mean (fee)",
+                    name=f"Mean = {fee_mean:.5f}",
                     line=dict(color="firebrick", width=2, dash="dash"),
                     showlegend=True,
                 ),
@@ -3362,13 +3389,26 @@ def simulate(
                     x=[None],
                     y=[None],
                     mode="lines",
-                    name="Median (fee)",
+                    name=f"Median = {fee_median:.5f}",
                     line=dict(color="black", width=2, dash="dot"),
                     showlegend=True,
                 ),
                 row=2,
                 col=1,
             )
+            for (p_level, p_value), style in zip(fee_percentiles, percentile_styles):
+                fig7.add_trace(
+                    go.Scatter(
+                        x=[None],
+                        y=[None],
+                        mode="lines",
+                        name=f"P{p_level:02d} = {p_value:.5f}",
+                        line=dict(color=style["color"], width=1.6, dash=style["dash"]),
+                        showlegend=True,
+                    ),
+                    row=2,
+                    col=1,
+                )
         fig7.update_layout(
             template="plotly_white",
             title="Fee & Controller Signal",
