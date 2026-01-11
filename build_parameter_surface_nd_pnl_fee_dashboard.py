@@ -8,9 +8,10 @@ Inputs:
 
 Output:
   - A single HTML file (Plotly loaded via CDN) with:
-      * a 3D surface of median final PnL (select X/Y axes + metric)
+      * a 3D surface of a cached PnL summary (select X/Y axes + metric)
       * sliders for non-axis parameters
       * a fee histogram for the selected surface point (click-to-update)
+      * a smart-router DEX share histogram for the selected surface point (click-to-update)
 
 This script exists to keep the expensive grid computation separate from the (iterable) dashboard UI.
 """
@@ -68,6 +69,37 @@ def _infer_fee_hist_bins(columns: Sequence[str]) -> int:
     if not indices:
         raise SystemExit("Cache CSV has no fee histogram columns (fee_hist_0, fee_hist_1, ...).")
     return int(max(indices) + 1)
+
+
+def _infer_smart_router_dex_share_hist_bins(columns: Sequence[str]) -> int:
+    indices: List[int] = []
+    prefix = "smart_router_dex_share_hist_"
+    for col in columns:
+        if not col.startswith(prefix):
+            continue
+        tail = col[len(prefix) :]
+        if not tail.isdigit():
+            continue
+        indices.append(int(tail))
+    if not indices:
+        raise SystemExit(
+            "Cache CSV has no smart-router DEX share histogram columns "
+            "(smart_router_dex_share_hist_0, smart_router_dex_share_hist_1, ...)."
+        )
+    return int(max(indices) + 1)
+
+
+def _sanitize_for_json(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    if isinstance(value, np.floating):
+        v = float(value)
+        return v if np.isfinite(v) else None
+    if isinstance(value, dict):
+        return {k: _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_for_json(v) for v in value]
+    return value
 
 
 def _infer_param_order_from_columns(columns: Sequence[str]) -> List[str]:
@@ -159,17 +191,25 @@ def _write_dashboard_html(
     title: str,
     scenario_label: str,
     config_path: Path,
+    pnl_summary_label: str,
     param_order: Sequence[str],
     sweep_values: Mapping[str, Sequence[float | int]],
     int_params: Sequence[str],
     metrics: Sequence[Mapping[str, str]],
     default_indices: Mapping[str, int],
     fee_bin_edges: Sequence[float],
+    smart_router_dex_share_bin_edges: Optional[Sequence[float]],
     records_idx: Sequence[Sequence[int]],
     records_pnl: Sequence[Sequence[float]],
+    records_pnl_p10: Optional[Sequence[Sequence[float]]],
+    records_pnl_p90: Optional[Sequence[Sequence[float]]],
+    records_pnl_p_loss: Optional[Sequence[Sequence[float]]],
     records_fee_mean: Sequence[float],
     records_fee_median: Sequence[float],
     records_fee_hist: Sequence[Sequence[int]],
+    records_smart_router_dex_share_mean: Optional[Sequence[float]],
+    records_smart_router_dex_share_median: Optional[Sequence[float]],
+    records_smart_router_dex_share_hist: Optional[Sequence[Sequence[int]]],
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -177,22 +217,39 @@ def _write_dashboard_html(
         "title": title,
         "scenario_label": scenario_label,
         "config_path": str(config_path),
+        "pnl_summary": {"label": str(pnl_summary_label)},
         "param_order": list(param_order),
         "param_values": {k: list(v) for k, v in sweep_values.items()},
         "int_params": list(int_params),
         "metrics": list(metrics),
         "defaults": {k: int(v) for k, v in default_indices.items()},
         "fee_bin_edges": list(map(float, fee_bin_edges)),
+        "smart_router_dex_share_bin_edges": None
+        if smart_router_dex_share_bin_edges is None
+        else list(map(float, smart_router_dex_share_bin_edges)),
         "records": {
             "idx": [list(map(int, row)) for row in records_idx],
             "pnl": [list(map(float, row)) for row in records_pnl],
+            "pnl_p10": None if records_pnl_p10 is None else [list(map(float, row)) for row in records_pnl_p10],
+            "pnl_p90": None if records_pnl_p90 is None else [list(map(float, row)) for row in records_pnl_p90],
+            "pnl_p_loss": None if records_pnl_p_loss is None else [list(map(float, row)) for row in records_pnl_p_loss],
             "fee_mean": list(map(float, records_fee_mean)),
             "fee_median": list(map(float, records_fee_median)),
             "fee_hist": [list(map(int, row)) for row in records_fee_hist],
+            "smart_router_dex_share_mean": None
+            if records_smart_router_dex_share_mean is None
+            else list(map(float, records_smart_router_dex_share_mean)),
+            "smart_router_dex_share_median": None
+            if records_smart_router_dex_share_median is None
+            else list(map(float, records_smart_router_dex_share_median)),
+            "smart_router_dex_share_hist": None
+            if records_smart_router_dex_share_hist is None
+            else [list(map(int, row)) for row in records_smart_router_dex_share_hist],
         },
     }
 
-    data_json = json.dumps(payload, separators=(",", ":"))
+    payload = _sanitize_for_json(payload)
+    data_json = json.dumps(payload, separators=(",", ":"), allow_nan=False)
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -457,15 +514,15 @@ def _write_dashboard_html(
         </div>
         <div id="sliders"></div>
         <div class="hint">
-          - Surface shows the <b>median final PnL</b> over repeated runs.<br/>
-          - Click a point on the surface to update the <b>fee distribution</b> for that exact parameter combo.
+          - Surface shows <b>{pnl_summary_label}</b> over repeated runs.<br/>
+          - Click a point on the surface to update the <b>fee distribution</b> and <b>smart-router DEX share</b> for that exact parameter combo.
         </div>
       </div>
     </div>
     <div class="panel panel-tall">
       <div class="plot-grid">
         <section>
-          <h2>Median Final PnL Surface</h2>
+          <h2>PnL Surface</h2>
           <div id="pnlSurface" class="plot"></div>
           <div id="seedWarning" class="warning" style="display: none;">
             <b>Note:</b> with <code>passive_lp_share = 1</code>, narrow mints are inactive. Any
@@ -501,6 +558,10 @@ def _write_dashboard_html(
               </div>
             </div>
           </div>
+          <div id="srDexShareWrapper" style="margin-top: 14px;">
+            <h2>Smart-Router DEX Share (Selected Point)</h2>
+            <div id="srDexShareHist" class="plot-small"></div>
+          </div>
         </section>
       </div>
     </div>
@@ -527,11 +588,35 @@ def _write_dashboard_html(
       return centers;
     }})();
 
-    const REC_IDX = GRID.records.idx;
-    const REC_PNL = GRID.records.pnl;
-    const REC_FEE_MEAN = GRID.records.fee_mean;
-    const REC_FEE_MEDIAN = GRID.records.fee_median;
-    const REC_FEE_HIST = GRID.records.fee_hist;
+	    const REC_IDX = GRID.records.idx;
+	    const REC_PNL = GRID.records.pnl;
+	    const PNL_SUMMARY_LABEL = GRID?.pnl_summary?.label ? String(GRID.pnl_summary.label) : "median final PnL";
+	    const REC_PNL_P10 = GRID.records.pnl_p10;
+	    const REC_PNL_P90 = GRID.records.pnl_p90;
+	    const REC_PNL_P_LOSS = GRID.records.pnl_p_loss;
+	    const HAS_PNL_BANDS =
+	      Array.isArray(REC_PNL_P10) && Array.isArray(REC_PNL_P90) && Array.isArray(REC_PNL_P_LOSS);
+	    const REC_FEE_MEAN = GRID.records.fee_mean;
+	    const REC_FEE_MEDIAN = GRID.records.fee_median;
+	    const REC_FEE_HIST = GRID.records.fee_hist;
+	    const SR_EDGES = GRID.smart_router_dex_share_bin_edges;
+	    const REC_SR_DEX_SHARE_MEAN = GRID.records.smart_router_dex_share_mean;
+	    const REC_SR_DEX_SHARE_MEDIAN = GRID.records.smart_router_dex_share_median;
+	    const REC_SR_DEX_SHARE_HIST = GRID.records.smart_router_dex_share_hist;
+	    const HAS_SR_DEX_SHARE_HIST =
+	      Array.isArray(SR_EDGES) &&
+	      SR_EDGES.length > 1 &&
+	      Array.isArray(REC_SR_DEX_SHARE_HIST) &&
+	      Array.isArray(REC_SR_DEX_SHARE_MEAN) &&
+	      Array.isArray(REC_SR_DEX_SHARE_MEDIAN);
+	    const SR_CENTERS = (() => {{
+	      if (!HAS_SR_DEX_SHARE_HIST) return [];
+	      const centers = [];
+	      for (let i = 0; i < SR_EDGES.length - 1; i++) {{
+	        centers.push(0.5 * (SR_EDGES[i] + SR_EDGES[i + 1]));
+	      }}
+	      return centers;
+	    }})();
     const THEMES = {{
       dark: {{
         bg: "#0b0f14",
@@ -623,7 +708,7 @@ def _write_dashboard_html(
     function formatValue(param, value) {{
       if (INT_PARAMS.has(param)) return String(Math.round(value));
       const v = Number(value);
-      if (!isFinite(v)) return String(value);
+      if (!Number.isFinite(v)) return String(value);
       const abs = Math.abs(v);
       if (abs >= 1000 || (abs > 0 && abs < 1e-3)) return v.toExponential(3);
       return v.toPrecision(6).replace(/0+$/,'').replace(/\\.$/,'');
@@ -655,6 +740,7 @@ def _write_dashboard_html(
     const feeP75El = document.getElementById("feeP75");
     const feeP95El = document.getElementById("feeP95");
     const feeP99El = document.getElementById("feeP99");
+    const srDexShareWrapperEl = document.getElementById("srDexShareWrapper");
 
     function populateSelect(el, options, selectedValue) {{
       el.innerHTML = "";
@@ -669,6 +755,7 @@ def _write_dashboard_html(
 
     let pnlSurfaceInitialized = false;
     let feeHistInitialized = false;
+    let srDexShareHistInitialized = false;
     let pendingSurfaceRAF = null;
     let pendingFeeRAF = null;
     let pendingMarkerRAF = null;
@@ -743,6 +830,9 @@ def _write_dashboard_html(
       renderSurface();
       if (state.selectedPoint) {{
         renderFeeHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+        if (HAS_SR_DEX_SHARE_HIST) {{
+          renderSmartRouterDexShareHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+        }}
       }}
     }}
 
@@ -760,6 +850,9 @@ def _write_dashboard_html(
       pendingFeeRAF = requestAnimationFrame(() => {{
         pendingFeeRAF = null;
         renderFeeHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+        if (HAS_SR_DEX_SHARE_HIST) {{
+          renderSmartRouterDexShareHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+        }}
       }});
     }}
 
@@ -893,7 +986,7 @@ def _write_dashboard_html(
       }}
 
       const {{ rec, val }} = computePointValue(xIdx, yIdx);
-      if (rec < 0 || !isFinite(val)) {{
+      if (rec < 0 || !Number.isFinite(val)) {{
         Plotly.restyle("pnlSurface", {{ visible: false }}, [1]);
         return;
       }}
@@ -910,42 +1003,68 @@ def _write_dashboard_html(
       );
     }}
 
-    function renderSurface() {{
-      const xVals = PARAM_VALUES[state.xParam] || [];
-      const yVals = PARAM_VALUES[state.yParam] || [];
+	    function renderSurface() {{
+	      const xVals = PARAM_VALUES[state.xParam] || [];
+	      const yVals = PARAM_VALUES[state.yParam] || [];
 
-      const z = [];
-      let zMin = null;
-      let zMax = null;
-      for (let yi = 0; yi < yVals.length; yi++) {{
-        const row = [];
+	      const z = [];
+	      const customdata = HAS_PNL_BANDS ? [] : null;
+	      let zMin = null;
+	      let zMax = null;
+	      for (let yi = 0; yi < yVals.length; yi++) {{
+	        const row = [];
+	        const rowCustom = HAS_PNL_BANDS ? [] : null;
         for (let xi = 0; xi < xVals.length; xi++) {{
           const {{ rec, val }} = computePointValue(xi, yi);
-          if (rec >= 0 && isFinite(val)) {{
+          if (rec >= 0 && Number.isFinite(val)) {{
             zMin = (zMin === null) ? val : Math.min(zMin, val);
             zMax = (zMax === null) ? val : Math.max(zMax, val);
           }}
-          row.push(val);
-        }}
-        z.push(row);
-      }}
-      if (zMin === null || zMax === null) {{
-        zMin = 0;
-        zMax = 1;
-      }}
+	          if (HAS_PNL_BANDS) {{
+	            let p10 = NaN;
+	            let p90 = NaN;
+	            let pLoss = NaN;
+	            if (rec >= 0) {{
+	              p10 = REC_PNL_P10[rec][state.metricIndex];
+	              p90 = REC_PNL_P90[rec][state.metricIndex];
+	              pLoss = REC_PNL_P_LOSS[rec][state.metricIndex];
+	            }}
+	            rowCustom.push([p10, p90, pLoss]);
+	          }}
+	          row.push(val);
+	        }}
+	        z.push(row);
+	        if (HAS_PNL_BANDS) {{
+	          customdata.push(rowCustom);
+	        }}
+	      }}
+	      if (zMin === null || zMax === null) {{
+	        zMin = 0;
+	        zMax = 1;
+	      }}
 
-      const surfaceTrace = {{
-        type: "surface",
-        x: xVals,
-        y: yVals,
-        z: z,
-        colorscale: currentTheme.colorscale || "Cividis",
-        cmin: zMin,
-        cmax: zMax,
-        colorbar: {{ title: metricLabel(), len: 0.75 }},
-        hovertemplate:
-          `${{state.xParam}}=%{{x}}<br>${{state.yParam}}=%{{y}}<br>${{metricLabel()}}=%{{z}}<extra></extra>`,
-      }};
+	      const hoverTemplateBase =
+	        `${{state.xParam}}=%{{x}}<br>${{state.yParam}}=%{{y}}<br>` +
+	        `${{metricLabel()}} (${{PNL_SUMMARY_LABEL}})=%{{z}}`;
+	      const hoverTemplate = HAS_PNL_BANDS
+	        ? (hoverTemplateBase +
+	          `<br>P10=%{{customdata[0]}}<br>P90=%{{customdata[1]}}<br>P(rate&lt;0)=%{{customdata[2]:.1%}}<extra></extra>`)
+	        : (hoverTemplateBase + `<extra></extra>`);
+
+	      const surfaceTrace = {{
+	        type: "surface",
+	        x: xVals,
+	        y: yVals,
+	        z: z,
+	        colorscale: currentTheme.colorscale || "Cividis",
+	        cmin: zMin,
+	        cmax: zMax,
+	        colorbar: {{ title: metricLabel(), len: 0.75 }},
+	        hovertemplate: hoverTemplate,
+	      }};
+	      if (HAS_PNL_BANDS) {{
+	        surfaceTrace.customdata = customdata;
+	      }}
 
       // Always include a dedicated marker trace; on-click we move it via Plotly.restyle
       // (avoids full Plotly.react on each click, which can freeze on some browsers/GPU stacks).
@@ -967,7 +1086,7 @@ def _write_dashboard_html(
         const xi = state.selectedPoint.xIdx;
         const yi = state.selectedPoint.yIdx;
         const {{ rec, val }} = computePointValue(xi, yi);
-        if (rec < 0 || !isFinite(val) || xi < 0 || yi < 0 || xi >= xVals.length || yi >= yVals.length) {{
+        if (rec < 0 || !Number.isFinite(val) || xi < 0 || yi < 0 || xi >= xVals.length || yi >= yVals.length) {{
           return {{
             type: "scatter3d",
             mode: "markers",
@@ -999,12 +1118,12 @@ def _write_dashboard_html(
         template: currentTheme.template,
         paper_bgcolor: "rgba(0,0,0,0)",
         plot_bgcolor: "rgba(0,0,0,0)",
-        font: {{ color: currentTheme.text }},
-        margin: {{ l: 0, r: 0, t: 24, b: 0 }},
-        title: {{ text: `${{metricLabel()}} (median final)`, x: 0.01, xanchor: "left", font: {{ size: 14 }} }},
-        scene: {{
-          bgcolor: currentTheme.bg,
-          xaxis: {{
+	        font: {{ color: currentTheme.text }},
+	        margin: {{ l: 0, r: 0, t: 24, b: 0 }},
+	        title: {{ text: `${{metricLabel()}} (${{PNL_SUMMARY_LABEL}})`, x: 0.01, xanchor: "left", font: {{ size: 14 }} }},
+	        scene: {{
+	          bgcolor: currentTheme.bg,
+	          xaxis: {{
             title: state.xParam,
             color: currentTheme.text,
             gridcolor: currentTheme.grid,
@@ -1104,8 +1223,8 @@ def _write_dashboard_html(
       }}
 
       const centers = FEE_CENTERS;
-      const meanVisible = isFinite(feeMean);
-      const medianVisible = isFinite(feeMedian);
+      const meanVisible = Number.isFinite(feeMean);
+      const medianVisible = Number.isFinite(feeMedian);
 
       const bar = {{
         type: "bar",
@@ -1199,6 +1318,117 @@ def _write_dashboard_html(
       }}
     }}
 
+    function renderSmartRouterDexShareHist(xIdx, yIdx) {{
+      if (!HAS_SR_DEX_SHARE_HIST) return;
+      const {{ idxRow, rec }} = computePointValue(xIdx, yIdx);
+      if (rec < 0) return;
+
+      const counts = REC_SR_DEX_SHARE_HIST[rec];
+      if (!counts || counts.length === 0) return;
+      const srMean = REC_SR_DEX_SHARE_MEAN[rec];
+      const srMedian = REC_SR_DEX_SHARE_MEDIAN[rec];
+
+      let maxCount = 1;
+      for (const c of counts) {{
+        if (Number.isFinite(c) && c > maxCount) maxCount = c;
+      }}
+
+      const centers = SR_CENTERS;
+      const meanVisible = Number.isFinite(srMean);
+      const medianVisible = Number.isFinite(srMedian);
+
+      const bar = {{
+        type: "bar",
+        x: centers,
+        y: counts,
+        marker: {{ color: currentTheme.accentSoft }},
+        name: "DEX share distribution",
+        opacity: 0.82,
+      }};
+      const meanTrace = {{
+        type: "scatter",
+        x: meanVisible ? [srMean, srMean] : [0, 0],
+        y: meanVisible ? [0, maxCount] : [0, 0],
+        mode: "lines",
+        line: {{ color: currentTheme.mean, width: 2, dash: "dash" }},
+        name: "Mean",
+        visible: meanVisible,
+      }};
+      const medianTrace = {{
+        type: "scatter",
+        x: medianVisible ? [srMedian, srMedian] : [0, 0],
+        y: medianVisible ? [0, maxCount] : [0, 0],
+        mode: "lines",
+        line: {{ color: currentTheme.median, width: 2, dash: "dot" }},
+        name: "Median",
+        visible: medianVisible,
+      }};
+      const data = [bar, meanTrace, medianTrace];
+
+      const title = "Smart-router DEX share distribution";
+      const topMargin = 40;
+
+      const axisText = currentTheme.axisText || currentTheme.text;
+      const legendText = currentTheme.legendText || currentTheme.muted || currentTheme.text;
+      const layout = {{
+        template: currentTheme.template,
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+        font: {{ color: currentTheme.text }},
+        margin: {{ l: 40, r: 10, t: topMargin, b: 40 }},
+        title: {{ text: title, x: 0.01, xanchor: "left", font: {{ size: 12 }} }},
+        xaxis: {{
+          title: {{ text: "DEX share", font: {{ color: axisText }} }},
+          tickfont: {{ color: axisText }},
+          tickformat: ".0%",
+          gridcolor: currentTheme.grid,
+          zerolinecolor: currentTheme.grid,
+          color: axisText,
+        }},
+        yaxis: {{
+          title: {{ text: "Count", font: {{ color: axisText }} }},
+          tickfont: {{ color: axisText }},
+          gridcolor: currentTheme.grid,
+          zerolinecolor: currentTheme.grid,
+          color: axisText,
+        }},
+        legend: {{
+          orientation: "v",
+          yanchor: "top",
+          y: 1,
+          xanchor: "right",
+          x: 1,
+          font: {{ color: legendText }},
+        }},
+      }};
+
+      if (!srDexShareHistInitialized) {{
+        Plotly.newPlot("srDexShareHist", data, layout, {{ responsive: true }});
+        srDexShareHistInitialized = true;
+      }} else {{
+        Plotly.restyle("srDexShareHist", {{ x: [centers], y: [counts] }}, [0]);
+        if (meanVisible) {{
+          Plotly.restyle(
+            "srDexShareHist",
+            {{ x: [[srMean, srMean]], y: [[0, maxCount]], visible: true }},
+            [1]
+          );
+        }} else {{
+          Plotly.restyle("srDexShareHist", {{ visible: false }}, [1]);
+        }}
+        if (medianVisible) {{
+          Plotly.restyle(
+            "srDexShareHist",
+            {{ x: [[srMedian, srMedian]], y: [[0, maxCount]], visible: true }},
+            [2]
+          );
+        }} else {{
+          Plotly.restyle("srDexShareHist", {{ visible: false }}, [2]);
+        }}
+        Plotly.relayout("srDexShareHist", {{ ...layout, "yaxis.autorange": true }});
+      }}
+    }}
+
     function setAxes(xParam, yParam) {{
       state.xParam = xParam;
       state.yParam = yParam;
@@ -1217,6 +1447,9 @@ def _write_dashboard_html(
       updateSeedWarning();
       renderSurface();
       renderFeeHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+      if (HAS_SR_DEX_SHARE_HIST) {{
+        renderSmartRouterDexShareHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+      }}
     }}
 
     function init() {{
@@ -1247,11 +1480,20 @@ def _write_dashboard_html(
       metricEl.addEventListener("change", () => {{
         state.metricIndex = Number(metricEl.value);
         renderSurface();
-        if (state.selectedPoint) renderFeeHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+        if (state.selectedPoint) {{
+          renderFeeHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+          if (HAS_SR_DEX_SHARE_HIST) {{
+            renderSmartRouterDexShareHist(state.selectedPoint.xIdx, state.selectedPoint.yIdx);
+          }}
+        }}
       }});
       themeEl.addEventListener("change", () => {{
         applyTheme(themeEl.value);
       }});
+
+      if (!HAS_SR_DEX_SHARE_HIST && srDexShareWrapperEl) {{
+        srDexShareWrapperEl.style.display = "none";
+      }}
 
       setAxes(state.xParam, state.yParam);
       applyTheme(themeEl.value);
@@ -1376,6 +1618,29 @@ def main() -> None:
             )
         fee_bin_edges = np.linspace(f_min, f_max, fee_hist_bins + 1, dtype=float).tolist()
 
+    smart_router_dex_share_hist_bins: Optional[int]
+    if meta is not None and meta.get("smart_router_dex_share_hist_bins") is not None:
+        smart_router_dex_share_hist_bins = int(meta["smart_router_dex_share_hist_bins"])
+    else:
+        try:
+            smart_router_dex_share_hist_bins = _infer_smart_router_dex_share_hist_bins(list(dataframe.columns))
+        except SystemExit:
+            smart_router_dex_share_hist_bins = None
+
+    smart_router_dex_share_bin_edges: Optional[List[float]] = None
+    if smart_router_dex_share_hist_bins is not None:
+        if (
+            meta is not None
+            and isinstance(meta.get("smart_router_dex_share_bin_edges"), list)
+            and len(meta["smart_router_dex_share_bin_edges"]) == smart_router_dex_share_hist_bins + 1
+        ):
+            smart_router_dex_share_bin_edges = [float(v) for v in meta["smart_router_dex_share_bin_edges"]]
+        else:
+            # DEX share is a ratio in [0, 1]. We use fixed bin edges so the histogram is comparable across points.
+            smart_router_dex_share_bin_edges = np.linspace(
+                0.0, 1.0, int(smart_router_dex_share_hist_bins) + 1, dtype=float
+            ).tolist()
+
     default_indices = _default_selection_indices(
         base_params=base_params,
         param_order=param_order,
@@ -1390,25 +1655,81 @@ def main() -> None:
         dataframe = dataframe.drop_duplicates(subset=sort_cols, keep="last")
         dataframe = dataframe.sort_values(by=sort_cols, kind="mergesort")
 
-    pnl_cols = [f"median_final_{m['key']}" for m in metrics]
+    metric_keys: List[str] = []
+    for metric in metrics:
+        key = metric.get("key")
+        if not isinstance(key, str) or not key:
+            raise SystemExit(f"Invalid metric entry in meta; expected {{'key': str, 'label': str}}, got: {metric}")
+        metric_keys.append(key)
+
+    # Prefer the newer, horizon-normalized PnL summaries if present; fall back to the legacy
+    # `median_final_*` columns for old caches.
+    pnl_summary_label = "median final PnL"
+    pnl_cols = [f"median_final_{key}" for key in metric_keys]
+    pnl_p10_cols: Optional[List[str]] = None
+    pnl_p90_cols: Optional[List[str]] = None
+    pnl_p_loss_cols: Optional[List[str]] = None
+
+    candidate_rate_p50 = [f"pnl_rate_p50_{key}" for key in metric_keys]
+    if all(col in dataframe.columns for col in candidate_rate_p50):
+        pnl_summary_label = "p50 per-step PnL rate"
+        pnl_cols = candidate_rate_p50
+        candidate_rate_p10 = [f"pnl_rate_p10_{key}" for key in metric_keys]
+        candidate_rate_p90 = [f"pnl_rate_p90_{key}" for key in metric_keys]
+        candidate_rate_p_loss = [f"pnl_rate_p_loss_{key}" for key in metric_keys]
+        if all(col in dataframe.columns for col in candidate_rate_p10):
+            pnl_p10_cols = candidate_rate_p10
+        if all(col in dataframe.columns for col in candidate_rate_p90):
+            pnl_p90_cols = candidate_rate_p90
+        if all(col in dataframe.columns for col in candidate_rate_p_loss):
+            pnl_p_loss_cols = candidate_rate_p_loss
     hist_cols = [f"fee_hist_{b}" for b in range(fee_hist_bins)]
     required_cols = set(sort_cols) | set(pnl_cols) | {"fee_mean", "fee_median"} | set(hist_cols)
+    sr_hist_cols: Optional[List[str]] = None
+    if smart_router_dex_share_hist_bins is not None:
+        sr_hist_cols = [f"smart_router_dex_share_hist_{b}" for b in range(int(smart_router_dex_share_hist_bins))]
+        required_cols |= {
+            "smart_router_dex_share_mean",
+            "smart_router_dex_share_median",
+            *sr_hist_cols,
+        }
     missing_cols = sorted(required_cols - set(dataframe.columns))
     if missing_cols:
         raise SystemExit(f"Cache is missing required columns: {missing_cols}")
 
     records_idx: List[List[int]] = []
     records_pnl: List[List[float]] = []
+    records_pnl_p10: Optional[List[List[float]]] = [] if pnl_p10_cols is not None else None
+    records_pnl_p90: Optional[List[List[float]]] = [] if pnl_p90_cols is not None else None
+    records_pnl_p_loss: Optional[List[List[float]]] = [] if pnl_p_loss_cols is not None else None
     records_fee_mean: List[float] = []
     records_fee_median: List[float] = []
     records_fee_hist: List[List[int]] = []
+    records_smart_router_dex_share_mean: Optional[List[float]] = [] if sr_hist_cols is not None else None
+    records_smart_router_dex_share_median: Optional[List[float]] = [] if sr_hist_cols is not None else None
+    records_smart_router_dex_share_hist: Optional[List[List[int]]] = [] if sr_hist_cols is not None else None
 
     for _, row in dataframe.iterrows():
         records_idx.append([int(row[f"i__{name}"]) for name in param_order])
         records_pnl.append([float(row[col]) for col in pnl_cols])
+        if records_pnl_p10 is not None and pnl_p10_cols is not None:
+            records_pnl_p10.append([float(row[col]) for col in pnl_p10_cols])
+        if records_pnl_p90 is not None and pnl_p90_cols is not None:
+            records_pnl_p90.append([float(row[col]) for col in pnl_p90_cols])
+        if records_pnl_p_loss is not None and pnl_p_loss_cols is not None:
+            records_pnl_p_loss.append([float(row[col]) for col in pnl_p_loss_cols])
         records_fee_mean.append(float(row["fee_mean"]))
         records_fee_median.append(float(row["fee_median"]))
         records_fee_hist.append([int(row[col]) for col in hist_cols])
+        if (
+            records_smart_router_dex_share_mean is not None
+            and records_smart_router_dex_share_median is not None
+            and records_smart_router_dex_share_hist is not None
+            and sr_hist_cols is not None
+        ):
+            records_smart_router_dex_share_mean.append(float(row["smart_router_dex_share_mean"]))
+            records_smart_router_dex_share_median.append(float(row["smart_router_dex_share_median"]))
+            records_smart_router_dex_share_hist.append([int(row[col]) for col in sr_hist_cols])
 
     title = args.title
     if title is None:
@@ -1427,17 +1748,25 @@ def main() -> None:
         title=title,
         scenario_label=str(scenario_label),
         config_path=config_path,
+        pnl_summary_label=pnl_summary_label,
         param_order=param_order,
         sweep_values=sweeps,
         int_params=int_params,
         metrics=metrics,
         default_indices=default_indices,
         fee_bin_edges=fee_bin_edges,
+        smart_router_dex_share_bin_edges=smart_router_dex_share_bin_edges,
         records_idx=records_idx,
         records_pnl=records_pnl,
+        records_pnl_p10=records_pnl_p10,
+        records_pnl_p90=records_pnl_p90,
+        records_pnl_p_loss=records_pnl_p_loss,
         records_fee_mean=records_fee_mean,
         records_fee_median=records_fee_median,
         records_fee_hist=records_fee_hist,
+        records_smart_router_dex_share_mean=records_smart_router_dex_share_mean,
+        records_smart_router_dex_share_median=records_smart_router_dex_share_median,
+        records_smart_router_dex_share_hist=records_smart_router_dex_share_hist,
     )
 
     print(f"[dashboard_nd] cache: {cache_path}")

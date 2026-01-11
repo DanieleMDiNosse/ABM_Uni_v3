@@ -73,11 +73,11 @@ The simulator implements a fairly harsh environment for passive LPs:
 - The arbitrageur (`arbitrage_to_target` plus arb branches in `run.py`) sees a **validated snapshot** of the CEX price and trades the pool back into a **no‑arb band**:
   - lower bound: 
 $$
-    m_t (1 - f_t)
+    \frac{m_t (1 - f_t)}{1 + \phi_{\text{flash}}}
     $$
   - upper bound: 
     $$
-    m_t / (1 - f_t)
+    \frac{m_t (1 + \phi_{\text{flash}})}{1 - f_t}
     $$
   where $f_t$ is the current taker fee.
 - Without extra costs, this arb is:

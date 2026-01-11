@@ -20,7 +20,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
 - **Rich agent roster**:
   - **Smart router**: opportunistic trader enforcing best-execution vs. a reference CEX.
   - **Noise trader**: flow provider without valuation discipline, used to stress spreads/liquidity.
-- **Arbitrageur**: clears price discrepancies between the DEX and the CEX reference band; the arb executes **before** any mempool order (pre-trade CEX vs. DEX snapshot).
+  - **Arbitrageur**: clears DEX/CEX dislocations to a no-arb band formed from the **last validated** CEX snapshot; executes **first** in each block’s mempool replay (and can be softened via `flash_loan_fee`).
   - **LPs**: passive baselines and active narrow LPs. Each LP carries a budget, cooldown, and rebalancing benchmark to compute Loss-versus-Rebalancing (LVR).
   - **Jiter**: MEV searcher that select the top N swaps in the mempool according to their size and perform a Just-In-Time liquidity strategy.
 - **Block-aware mempool**: the simulator runs in mempool execution mode (`block_time` micro-steps per block; the current implementation requires `block_time > 1`). It freezes the validated snapshot, runs `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents, then enqueues a single arb intent plus LP intents (burn/recenter/mint) and replays the shuffled mempool (arb first) against the live pool.
@@ -101,19 +101,21 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
 
 ### Arbitrageur
 - Encoded in `arbitrage_to_target` and the `arb` branch of `execute_mempool_orders` in `run.py`.
-- Let $m^{\text{ref}}_t$ be the **validated** CEX snapshot seen by agents at step $t$ (`cex_ref_for_agents`) and let $f_t$ be the taker fee, $r_t = 1 - f_t$
+- **Timing / information**: $m^{\text{ref}}_t$ is the **last validated** CEX snapshot (end of the previous block) and is held fixed throughout the `block_time` micro-steps; the live CEX path `ref.m` still diffuses intra-block, but does not change the arb target until the next step.
+- Let $m^{\text{ref}}_t$ be this validated snapshot seen by agents at step $t$ (`cex_ref_for_agents`) and let $f_t$ be the taker fee, $r_t = 1 - f_t$
   . The arbitrageur defines a **no‑arb band**
   $$
-    [P^{\min}_t, P^{\max}_t] = [m^{\text{ref}}_t r_t,\; m^{\text{ref}}_t / r_t].
+    [P^{\min}_t, P^{\max}_t]
+      = \Bigl[\frac{m^{\text{ref}}_t r_t}{1+\phi},\; \frac{m^{\text{ref}}_t (1+\phi)}{r_t}\Bigr],
   $$
+  where $\phi = \text{flash\_loan\_fee} \ge 0$.
   With current DEX price $P_t$:
   - If $P_t < P^{\min}_t$ (DEX **cheap**), an “up” arb buys token0 on the DEX and sells token0 on the CEX until $P_t$ is pushed back up to $P^{\min}_t$(or liquidity is exhausted).
   - If $P_t > P^{\max}_t$ (DEX **expensive**), a “down” arb sells token0 on the DEX and buys it back on the CEX until $P_t$ is pushed back down to $P^{\max}_t$.
   The target trade is computed via `swap_exact_to_target`, which integrates the Uniswap v3 price–liquidity curve span‑by‑span.
 - The arbitrageur is inserted into the mempool against the snapshot $m^{\text{ref}}_t$ and executed **first** when the mempool is replayed for that block.
 - Profit preview (on a cloned pool) is explicitly path‑based:
-  - **Cheap DEX (up arb)**: the preview returns a DEX input $d^{\text{DEX}}_t$ in token1 and an output $x^{\text{DEX}}_t$ in token0. Selling $x^{\text{DEX}}_t$ on the CEX at $m^{\text{ref}}_t$ yields 
-    $x^{\text{DEX}}_t m^{\text{ref}}_t$. Net token1 profit before funding is
+  - **Cheap DEX (up arb)**: the preview returns a DEX input $d^{\text{DEX}}_t$ in token1 and an output $x^{\text{DEX}}_t$ in token0. Selling $x^{\text{DEX}}_t$ on the CEX at $m^{\text{ref}}_t$ yields $x^{\text{DEX}}_t m^{\text{ref}}_t$. Net token1 profit before funding is
     $$
       \Pi^{\text{up}}_t = x^{\text{DEX}}_t m^{\text{ref}}_t - d^{\text{DEX}}_t.
     $$
@@ -149,9 +151,9 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   $$
   \Pi^{\text{net}}_t > 0
   $$
-  ; otherwise the intent is logged as an “unprofitable” skip.
-- PnL is measured in token1 by tracking token flows vs. the **end-of-step** CEX price *after* impact is applied for that block (i.e., at `settlement_m = ref.m`), not the snapshot price used to decide whether to trade.
-- As a consequence, the arbitrageur’s cumulative PnL series can exhibit **small downward blips** even though each individual arb is ex-ante profitable at the snapshot: the arb previews and filters trades using the frozen CEX mark (`arb_ref_m`), but realized PnL is later marked to the updated CEX price, so adverse CEX moves between `arb_ref_m` and `settlement_m` can make a given step’s realized arb PnL slightly negative.
+  otherwise the intent is logged as an “unprofitable” skip.
+- **CEX hedge + impact**: the hedge leg contributes to `Δa_cex` and is applied at end-of-step via `ref.apply_impact_only(Δa_cex)`. For “down” arbs (borrow token0), the hedge buyback is scaled by `(1 + flash_loan_fee)` to repay principal + flash fee in token0 units; for “up” arbs, the hedge is simply selling the DEX token0 output on the CEX.
+- Arbitrageur PnL is measured in token1 using the **same validated snapshot price** used for the decision and unwind (i.e., the CEX mark in the arb intent). With the `\Pi^{\text{net}}_t > 0` filter, executed arbs have strictly positive net PnL at that snapshot (up to numerical tolerances), while the CEX impact of the hedge leg still updates `ref.m` for subsequent steps.
 
 ### Smart Router
 - Implemented via `maybe_enqueue_smart_router_intent` and smart-router branches in `execute_mempool_orders`.
@@ -245,42 +247,42 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   - Uniswap v3 ticks are log-spaced, so a “symmetric” range in ticks is not symmetric in price. `passive_width_pct` defines the passive LP band as a symmetric ±% around the agent reference price (after snapping to tick spacing), which makes the left/right tick distances generally *asymmetric* but the *price* band symmetric.
 - **Decision process** (per LP):
   - Each LP carries an internal review clock with inter-review times drawn from a geometric distribution with mean `tau`. In any block an LP is either *not due* (clock has not fired yet) or *due* (clock hits zero); only due LPs are allowed to act.
-  - LP activity knobs are specified as **target counts per block** across the population: `narrow_mints_per_block`, `passive_mints_per_block`, and `passive_burns_per_block`. The simulator draws Poisson counts per block for these targets and assigns the resulting intents to eligible LPs (review clock due, not in cooldown), allowing multiple intents per LP in a single block while enforcing per-LP budget and per-block deployment caps.
+  - LP activity knobs are specified as **target counts per block** across the population: `narrow_mints_per_block`, `passive_mints_per_block`, and `passive_burns_per_block`. The simulator draws Poisson counts per block for these targets and assigns the resulting intents to eligible LPs (review clock due, not in cooldown); multiple intents can be assigned to the same LP in a single block.
   - After a burn, an LP enters a cooldown for several steps during which it cannot mint again.
   - Narrow LPs track how many consecutive steps their position has been out-of-range (`out_steps`). Once this reaches `k_out_threshold`, they enqueue a recenter intent that targets a symmetric band around the agent’s reference price **using the current EWMA-driven width signal** (the same `w_ticks` rule used for new narrow mints), rather than reusing the original position width.
   - For **active narrow LPs only** (`is_passive=False`), TP/SL logic is **per-position**: for each open `Position`, it computes PnL in token1 terms as `IL_y + fees_value_y` via `Position.PnL_y(agent_S_ref, ref.m)` and burns that specific position if its PnL exceeds `theta_TP · hodl0_value_y` or falls below `-theta_SL · hodl0_value_y`. Here `hodl0_value_y` is fixed for that position at the time it is minted (including after any recenter), so each recenter creates a new position with its own TP/SL baseline. Passive LPs do **not** use TP/SL; they exit positions only via the probabilistic burn rule.
 - **Scheduling and execution**:
   - All LP actions (burn, recenter, mint) are added to the mempool as intents (`lp_burn`, `lp_recenter`, `lp_mint`) and executed alongside trader orders when the mempool is replayed.
-- **Budgets & bootstrap**:
-  - Each strategic LP carries a liquidity budget `L_budget` and tracked live deployment `L_live`; new mints are clipped by both a per-step cap (fraction of `L_budget`) and remaining budget.
-  - `bootstrap_initial_binomial_hill_sharded` distributes `initial_total_L` across a set of seed LPs (`is_seed=True`) so early burns are staggered and the book has a smooth “hill” shape; these seed LPs are treated as background liquidity and are not counted in `N_LP` or in the passive/active LP cohorts.
-- **How mint size is chosen (per step + remaining budget)**:
-  - At startup `L_SCALE = initial_total_L / N_LP` and each strategic LP is given `L_budget = 2 · L_SCALE` and `L_live = 0` (reused if missing).
-  - Whenever an LP mints (passive or active), draw `X ~ LogNormal(mint_mu, mint_sigma)` and set a *desired* liquidity `want = X · L_SCALE`.
-  - Apply two caps before minting:
-    - Per-step cap: `cap_step = 0.25 · L_budget` so no single step can deploy more than 25% of that LP’s budget.
-    - Remaining budget: `cap_left = max(0, L_budget - L_live)` so total live liquidity never exceeds the budget.
-  - The actual mint size is `L_new = min(want, cap_step, cap_left)` . After mint, `L_live` increases by `L_new`; burns and re-centers decrease `L_live` by the burned liquidity, freeing budget for future mints.
+- **Cash inventory & bootstrap**:
+  - Each non-JIT LP maintains a **cash wallet in token1 only**, `wallet_y`, plus a set of open positions. (Strategic LPs keep `wallet_x = 0` by construction.)
+  - At startup, the simulator computes the total token1 value of the initial binomial-hill liquidity at the initial price and assigns each strategic LP an equal share as `wallet_y`. Seed/background LPs start with their binomial-hill positions deployed and `wallet_y = 0`.
+- **How mint size is chosen (cash-budgeted)**:
+  - Each mint attempt draws a utilization factor `eta` with
+    $$
+      Z \sim \log\mathcal{N}(\mu_{\mathrm{mint}}, \sigma_{\mathrm{mint}}),\qquad
+      \eta = \min(1, Z).
+    $$
+  - Given a proposed tick range and the reference sqrt-price `agent_S_ref`, the simulator computes deposit coefficients $(a_0, a_1)$ so that minting liquidity $L$ requires $(\Delta x_0, \Delta x_1) = (a_0 L, a_1 L)$ at the reference state. With cash `wallet_y` and reference CEX price `m_ref`, the maximum feasible liquidity is
+    $$
+      L^{\max} = \frac{\texttt{wallet\_y}}{a_0\,m_{\text{ref}} + a_1},
+    $$
+    and the executed liquidity is
+    $$
+      L_{\text{new}} = \eta \, L^{\max}.
+    $$
+  - Minting debits `wallet_y` by the required token1 value `a_0 L_new · m_ref + a_1 L_new` and records a corresponding token0 purchase on the CEX (which impacts the reference market at end-of-block). Burning credits `wallet_y` by the position’s current underlying token amounts plus accrued fees, with any token0 immediately converted into token1 on the CEX (also impacting the reference market).
 - **Width rule for narrow LPs (mathematical form)**:
-  - Let $P_t$ and $m_t$ be the DEX and CEX prices at the start of step $t$, and $f_t$ the taker fee. Define the **fee band in log space**
+  - Let $m_t$ be the CEX price at the start of step $t$. Define the absolute log-return
     $$
-      \ell^{\text{fee}}_t = \log\Bigl(\frac{1}{1 - f_t}\Bigr)
-    $$
-    and the absolute log basis
-    $$
-      g_t = \bigl|\log P_t - \log m_t\bigr|.
-    $$
-    The **excess basis** (beyond the fee band) is
-    $$
-      B_t = \max(0,\; g_t - \ell^{\text{fee}}_t).
+      v_t = \bigl|\log m_t - \log m_{t-1}\bigr|.
     $$
   - An EWMA with half‑life `basis_half_life` smooths this:
     $$
-      D_t = \text{EWMA}(B_t),
+      D_t = \text{EWMA}(v_t),
     $$
-    and the corresponding “basis in ticks” is
+    and the corresponding “volatility in ticks” is
     $$
-      \text{basis\_ticks}_t = \frac{D_t}{\log(1.0001)}.
+      \text{vol\_ticks}_t = \frac{D_t}{\log(1.0001)}.
     $$
   - **Time scale: EWMA vs. Heston variance**:
     - Heston variance mean reversion with speed 
@@ -318,7 +320,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   - The raw width in ticks is then
     $$
       w^{\text{raw}}_t
-        = w_{\min} + \text{slope\_s} \cdot \text{basis\_ticks}_t
+        = w_{\min} + \text{slope\_s} \cdot \text{vol\_ticks}_t
           + \text{noise\_ticks}_t,
     $$
     where `w_min_ticks = w_min`, `w_max_ticks = w_max` are configuration bounds.

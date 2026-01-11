@@ -108,25 +108,34 @@ These quantities are written for total/active/passive cohorts and plotted in the
 
 #### C. Wealth Conservation in LP Operations
 
-To ensure the $V_T^{LP}$ term (LP Wealth) is tracked correctly across rebalancing events, the simulation enforces strict wealth conservation during `burn` and `mint` operations in the mempool execution path:
+To ensure the $V_T^{LP}$ term (LP Wealth) is tracked correctly across rebalancing events, the simulation enforces strict wealth conservation during `burn` and `mint` operations in the mempool execution path.
 
-1.  **Burning:** When a position is burned, its **full value** (Principal + Uncollected Fees) is credited to the LP's wallet.
+In the current implementation, LPs are **cash-budgeted**: strategic LP wallets are held in token1 only (`wallet_y`). Any token0 obtained from burning is immediately converted into token1 on the CEX.
+
+1.  **Burning:** When a position is burned, its **underlying token amounts** (principal) plus its **accrued fees** are returned, and any token0 is converted to token1 at the reference price used for mempool execution:
     ```python
-    # run.py: burn_any
-    realized_value = pos.position_value_y_now(pool.S, ref.m) + pos.fees_value_y(ref.m)
-    lp.wallet_y += realized_value
-    ```
-    This converts the position's mark-to-market value into cash without any loss or gain (other than the PnL already accrued).
+    # run.py: burn_any (simplified)
+    amt0, amt1 = pos.current_amounts(pool.S)
+    amt0_total = amt0 + pos.fees0
+    amt1_total = amt1 + pos.fees1
 
-2.  **Minting:** When a new position is minted (via `lp_mint` or `lp_recenter` intents in the mempool), the cost of the liquidity (in token1 terms) is debited from the LP's wallet at the agents’ CEX reference price:
+    lp.wallet_y += amt1_total + amt0_total * m_ref
+    delta_a_cex_this += -amt0_total  # sell token0 on CEX (impact applied end-of-block)
+    ```
+
+2.  **Minting:** When a new position is minted (via `lp_mint` or `lp_recenter` intents), the LP’s cash budget determines the maximum feasible liquidity in the chosen range, and the token0 purchase needed for the deposit is modeled as a CEX trade:
     ```python
-    # run.py: execute_mempool_orders (lp_mint / lp_recenter)
-    cost_y = amt0 * cex_ref_for_agents + amt1
-    lp.wallet_y = getattr(lp, "wallet_y", 0.0) - cost_y
-    ```
-    This converts cash into a position of equal initial value.
+    # run.py: _execute_cash_budgeted_mint (simplified)
+    a0, a1 = minted_amounts_at_S(1.0, sa, sb, agent_S_ref)
+    L_max = wallet_y / (a0 * m_ref + a1)
+    L_new = eta * L_max
 
-All mint/recenter operations route through the mempool accounting and use the explicit wallet debits above, preserving wealth conservation.
+    amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
+    lp.wallet_y -= amt0 * m_ref + amt1
+    delta_a_cex_this += +amt0  # buy token0 on CEX (impact applied end-of-block)
+    ```
+
+All mint/recenter operations route through the mempool accounting and use the explicit cash debits above, preserving wealth conservation.
 
 By ensuring that `Wealth = Wallet + Open_Positions` is invariant during rebalancing in mempool execution, the simulation guarantees that changes in the hedged LP PnL series (`lp_pnl_*`) reflect only genuine economic performance (Fees - LVR) and not accounting artifacts.
 

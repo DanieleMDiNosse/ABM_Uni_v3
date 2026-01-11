@@ -58,29 +58,21 @@ section.
   in noisy‑sine mode it is `"S"`; in Heston mode it is `"H"` (kept for
   backwards compatibility but not used for logic).
 
-- `band_lo_pre[t]`, `band_hi_pre[t]`  
-  No‑arb band at the **start** of step `t`, based on the validated snapshot
-  (`agent_S_ref`, `cex_ref_for_agents`) and the fee in force at that point.
-  If the current taker fee is 
+- `band_lo[t]`, `band_hi[t]`  
+  No‑arb band at the **start** of step `t`, based on the validated CEX snapshot
+  price (end of the previous block) and the fee in force at that point.
+  If the current taker fee is
   $$
   f_t
   $$
-   and 
+  and
   $$
   r_t = 1 - f_t
   $$
-  , then
+  , and the flash-loan fee parameter is $\phi_{\text{flash}} = \text{flash\_loan\_fee} \ge 0$, then
   $$
-    \text{band\_lo\_pre}[t] = m_t\,r_t,\qquad
-    \text{band\_hi\_pre}[t] = \frac{m_t}{r_t}.
-  $$
-
-- `band_lo_post[t]`, `band_hi_post[t]`  
-  No‑arb band at the **end** of step `t`, using the post‑impact CEX price
-  `ref.m` and the same fee `f_t`:
-  $$
-    \text{band\_lo\_post}[t] = m_t^{\text{post}} r_t,\qquad
-    \text{band\_hi\_post}[t] = \frac{m_t^{\text{post}}}{r_t}.
+    \text{band\_lo}[t] = \frac{m_t\,r_t}{1+\phi_{\text{flash}}},\qquad
+    \text{band\_hi}[t] = \frac{m_t(1+\phi_{\text{flash}})}{r_t}.
   $$
 
 ---
@@ -212,10 +204,12 @@ perspective (positive = profit).
 
 - `arb_pnl_steps[t]`, `arb_pnl_cum[t]`  
   Arbitrageur PnL per step and cumulative, using the same flow‑based formula
-  above and settled at `settlement_m = ref.m` after impact and diffusion. Note
-  that while each arb trade is ex‑ante filtered to be profitable at the
-  **snapshot** CEX price, realized `arb_pnl_steps[t]` can be slightly negative
-  in a given step due to adverse CEX moves between the snapshot and settlement.
+  above and settled at the **validated snapshot** CEX price used for the
+  arbitrageur’s decision and unwind (the `arb_ref_m` in the arb intent). Flash
+  loan funding costs are included in the recorded flows. With the strict
+  profitability filter (`\Pi^{\text{net}}_t > 0` at the snapshot), executed arbs
+  have positive `arb_pnl_steps[t]` up to numerical tolerances, while the CEX
+  impact of the hedge leg still updates `ref.m` for subsequent steps.
 
 - `trader_pnl_steps[t]`, `trader_pnl_cum[t]`  
   Aggregated trader PnL (smart + noise) per step and cumulative:

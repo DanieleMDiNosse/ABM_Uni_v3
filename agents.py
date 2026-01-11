@@ -120,7 +120,8 @@ class LPAgent:
     can_act: bool = False         # per-segment mask (set by the micro-scheduler)
     L_budget: float = 0.0
     L_live: float = 0.0
-    wallet_y: float = 0.0
+    wallet_x: float = 0.0  # token0 inventory
+    wallet_y: float = 0.0  # token1 inventory
     rebalancer: RebalancerState = field(default_factory=RebalancerState)
     fees0_earned: float = 0.0
     fees1_earned: float = 0.0
@@ -128,9 +129,15 @@ class LPAgent:
 
 def lp_token0_exposure(lp: LPAgent, S: float) -> float:
     """
-    Aggregate token0 exposure for an LP at sqrt-price S, **excluding** uncollected fees.
+    Aggregate token0 exposure for an LP at sqrt-price S.
+
+    Notes
+    -----
+    - Includes token0 held in the LP wallet (`wallet_x`) plus token0 held as principal
+      in open positions.
+    - Excludes uncollected token0 fees (which are tracked separately as `pos.fees0`).
     """
-    total = 0.0
+    total = float(getattr(lp, "wallet_x", 0.0))
     for pos in lp.positions:
         # Inline call to Numba function to avoid method dispatch overhead
         amt0, _ = _current_amounts_impl(pos.L, pos.sa, pos.sb, S)
@@ -199,8 +206,9 @@ def lp_wealth_y(lp: LPAgent, S: float, m: float) -> float:
     """
     Total LP wealth (token1) = wallet holdings + mark-to-market open value.
     """
-    wallet = getattr(lp, "wallet_y", 0.0)
-    return wallet + lp_total_position_value_y(lp, S, m)
+    wallet_x = float(getattr(lp, "wallet_x", 0.0))
+    wallet_y = float(getattr(lp, "wallet_y", 0.0))
+    return wallet_x * m + wallet_y + lp_total_position_value_y(lp, S, m)
 
 
 # =============================================================================

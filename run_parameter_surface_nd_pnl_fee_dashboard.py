@@ -5,6 +5,42 @@ Precompute an N-parameter grid and cache results to CSV.
 This script is intentionally "cache-only": it runs the expensive simulations and writes a
 scenario-scoped CSV that can be resumed/incrementally extended.
 
+Stored results (written under `abm_results/grid_search/dashboard_nd/`):
+  - `data/grid_<config_stem>_<fingerprint>.csv`: one row per grid point with:
+      - Sweep coordinates:
+          - `i__<param>`: index of the swept value for `<param>` (0..len(values)-1)
+          - `v__<param>`: actual swept value used for `<param>` (cast to int for `INT_PARAMS`)
+      - PnL summaries (horizon-normalized, aggregated across runs/seeds):
+          - First, for each run/seed and each PnL time series `x_t`, we compute the per-step rate:
+              `rate = mean(diff(x_{t0:}))`, where `t0 = skip_step`.
+            (Equivalently: `(x_T - x_{t0}) / (T - t0)` when the series length is constant.)
+          - Then we aggregate these per-run rates across `--runs-per-point` seeds:
+              - `pnl_rate_p10_<metric>`, `pnl_rate_p50_<metric>`, `pnl_rate_p90_<metric>`: 10/50/90%
+                quantiles of the per-run rates for that grid point and metric.
+              - `pnl_rate_p_loss_<metric>`: fraction of runs with negative per-step rate.
+      - Fee summaries (aggregated across time and runs):
+          - `fee_mean`, `fee_median`: mean/median of the concatenated `fee_series` across all runs,
+            after dropping the first `skip_step` observations in each run.
+          - `fee_hist_0..fee_hist_<fee_hist_bins-1>`: histogram counts of `fee_series` values using the
+            bin edges stored in the meta JSON (also aggregated across time and runs).
+      - Smart-router routing share summaries (aggregated across time windows and runs):
+          - We use the per-window series reported by the simulation:
+              `smart_router_dex_share_series[w] = dex / (cex + dex)` computed every `n_block_SR_ratio` steps.
+          - `smart_router_dex_share_mean`, `smart_router_dex_share_median`: mean/median of the concatenated
+            `smart_router_dex_share_series` across all runs, after dropping observations whose associated
+            window end-step is `< skip_step`.
+          - `smart_router_dex_share_hist_0..smart_router_dex_share_hist_<fee_hist_bins-1>`: histogram counts
+            of the concatenated `smart_router_dex_share_series` values using fixed edges in [0, 1] (stored in meta).
+      - Provenance:
+          - `runs_per_point`: number of runs used for this row
+          - `seed_base`: base seed for the grid point (each run uses `seed_base + run_index`)
+    Failed points are still appended, but with NaNs/zeros in the summary columns; error details
+    are recorded separately in `errors_*.csv` (see below).
+  - `data/meta_<config_stem>_<fingerprint>.json`: reproducibility metadata (sweeps, param order,
+    metrics, seed mode, fee histogram bin edges).
+  - `data/errors_<config_stem>_<fingerprint>.csv`: per-failure diagnostics (error type/message and
+    the corresponding `i__*` / `v__*` sweep coordinates).
+
 To build the interactive HTML dashboard (PnL surface + fee histogram) from the cached CSV, use:
   `build_parameter_surface_nd_pnl_fee_dashboard.py`
 
@@ -48,9 +84,13 @@ simulate = run_module.simulate
 
 BASE_CONFIG_PATH = Path("abm_results/scenarios/test.yml")
 
-RUNS_PER_POINT_DEFAULT = 20
+RUNS_PER_POINT_DEFAULT = 5
 SEED_BASE_DEFAULT = 1
 FEE_HIST_BINS_DEFAULT = 60
+
+# PnL aggregation strategy for the cache (kept in the fingerprint/meta for reproducibility).
+PNL_SUMMARY_KIND = "step_rate_mean_diff"
+PNL_RATE_QUANTILES: Tuple[Tuple[str, float], ...] = (("p10", 0.10), ("p50", 0.50), ("p90", 0.90))
 
 
 def linspace_int(start: int, stop: int, steps: int) -> List[int]:
@@ -79,14 +119,28 @@ def linspace_int(start: int, stop: int, steps: int) -> List[int]:
 # Provide discrete values for each parameter you want to sweep. The full grid is
 # the cartesian product of all values.
 DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
-    "passive_lp_share": np.linspace(0.0, 1.0, 5).tolist(),
-    "narrow_mints_per_block": linspace_int(0, 10, 5),
-    "passive_mints_per_block": linspace_int(0, 10, 5),
-    "noise_trades_per_block": linspace_int(0, 10, 5),
-    "passive_burns_per_block": linspace_int(0, 6, 3),
-    "k_sigma": np.linspace(0.01, 15.0, 5).tolist(),
-    "p_jit": np.linspace(0.0, 1.0, 5).tolist(),
+    "passive_lp_share": np.linspace(0.0, 1.0, 3).tolist(),
+    "narrow_mints_per_block": linspace_int(0, 5, 5),
+    "passive_mints_per_block": linspace_int(0, 5, 5),
+    "noise_trades_per_block": linspace_int(0, 5, 5),
+    "passive_burns_per_block": linspace_int(0, 5, 5),
+    "k_sigma": np.linspace(0.01, 10.0, 5).tolist(),
+    "theta_T": [0.95, 0.98, 0.99999],
+    "p_jit": np.linspace(0.0, 1.0, 3).tolist(),
 }
+
+# DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
+#     "passive_lp_share": [0.0, 1.0],
+#     "narrow_mints_per_block": [0, 5],
+#     "passive_mints_per_block": [0, 5],
+#     "noise_trades_per_block": [0, 5],
+#     "passive_burns_per_block": [0, 5],
+#     "k_sigma": [0.01, 10.0],
+#     "theta_T": [0.95, 0.9999],
+#     "p_jit": [0.0, 1.0],
+
+# }
+
 
 # Parameters treated as integers for UI display + casting.
 INT_PARAMS: set[str] = {
@@ -121,6 +175,8 @@ def _canon_fingerprint_payload(
     seed_base: int,
     common_seeds: bool,
     fee_hist_bins: int,
+    smart_router_dex_share_hist_bins: int,
+    pnl_summary: str,
 ) -> str:
     payload = {
         "sweeps": {k: list(v) for k, v in sorted(sweeps.items())},
@@ -128,6 +184,8 @@ def _canon_fingerprint_payload(
         "seed_base": int(seed_base),
         "common_seeds": bool(common_seeds),
         "fee_hist_bins": int(fee_hist_bins),
+        "smart_router_dex_share_hist_bins": int(smart_router_dex_share_hist_bins),
+        "pnl_summary": str(pnl_summary),
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.md5(raw).hexdigest()[:12]
@@ -162,6 +220,7 @@ def _existing_status(
         return set(), set()
     required = {f"i__{name}" for name in param_order}
     required |= {"fee_mean", "fee_median"}
+    required |= {f"pnl_rate_p50_{metric_key}" for metric_key, _ in PNL_METRICS}
     if not required.issubset(set(dataframe.columns)):
         return set(), set()
 
@@ -174,7 +233,10 @@ def _existing_status(
     for _, row in dataframe.iterrows():
         try:
             indices = tuple(int(row[f"i__{name}"]) for name in param_order)
-            if np.isfinite(row["fee_mean"]) and np.isfinite(row["fee_median"]):
+            is_ok = bool(np.isfinite(row["fee_mean"]) and np.isfinite(row["fee_median"]))
+            for metric_key, _ in PNL_METRICS:
+                is_ok = is_ok and bool(np.isfinite(row[f"pnl_rate_p50_{metric_key}"]))
+            if is_ok:
                 ok_keys.add(indices)
             else:
                 failed_keys.add(indices)
@@ -190,6 +252,7 @@ def _evaluate_grid_point(
     param_order: Sequence[str],
     sweep_values: Mapping[str, Sequence[float | int]],
     fee_bins: np.ndarray,
+    smart_router_dex_share_bins: np.ndarray,
     runs_per_point: int,
     common_seeds: bool,
     global_seed_base: int,
@@ -209,9 +272,11 @@ def _evaluate_grid_point(
 
     skip_step = max(0, int(params.get("skip_step", 0)))
 
-    pnl_samples_by_key: Dict[str, List[float]] = {key: [] for key, _ in PNL_METRICS}
+    pnl_run_rates_by_key: Dict[str, List[float]] = {key: [] for key, _ in PNL_METRICS}
     fee_values: List[float] = []
     fee_hist = np.zeros(int(fee_bins.size - 1), dtype=np.int64)
+    sr_dex_share_values: List[float] = []
+    sr_dex_share_hist = np.zeros(int(smart_router_dex_share_bins.size - 1), dtype=np.int64)
 
     ok = True
     error_type: str = ""
@@ -239,15 +304,57 @@ def _evaluate_grid_point(
 
             for metric_key, _ in PNL_METRICS:
                 series = _slice_series(output.get(metric_key, []), skip_step)
-                if series.size == 0:
-                    raise ValueError(f"Series '{metric_key}' empty after applying skip_step={skip_step}.")
-                pnl_samples_by_key[metric_key].append(float(series[-1]))
+                if series.size < 2:
+                    raise ValueError(
+                        f"Series '{metric_key}' too short after applying skip_step={skip_step} (len={series.size})."
+                    )
+                # Horizon-normalized per-run summary:
+                #   rate = mean(ΔPnL_t) over the post-burn-in window.
+                rate = float(np.mean(np.diff(series)))
+                if not np.isfinite(rate):
+                    raise ValueError(
+                        f"Non-finite per-step rate for '{metric_key}' (run_index={run_index}, seed={seed_value})."
+                    )
+                pnl_run_rates_by_key[metric_key].append(rate)
 
             fee_series = _slice_series(output.get("fee_series", []), skip_step)
             if fee_series.size == 0:
                 raise ValueError("fee_series empty after applying skip_step.")
             fee_values.extend([float(v) for v in fee_series.tolist()])
             fee_hist += np.histogram(fee_series, bins=fee_bins)[0].astype(np.int64)
+
+            # Smart-router DEX share time series is defined over coarse windows (n_block_SR_ratio).
+            # We aggregate its empirical distribution over time windows and runs, matching the fee histogram approach.
+            sr_steps_raw = output.get("smart_router_dex_share_steps", [])
+            sr_series_raw = output.get("smart_router_dex_share_series", [])
+            try:
+                sr_steps = [int(v) for v in sr_steps_raw]
+            except Exception:
+                sr_steps = []
+            try:
+                sr_series = [float(v) for v in sr_series_raw]
+            except Exception:
+                sr_series = []
+
+            sr_vals_run: List[float] = []
+            if sr_steps and len(sr_steps) == len(sr_series):
+                for step, ratio in zip(sr_steps, sr_series):
+                    if int(step) < int(skip_step):
+                        continue
+                    if not np.isfinite(ratio):
+                        continue
+                    sr_vals_run.append(float(ratio))
+            else:
+                # Fallback: if step alignment is unavailable, keep all finite ratios.
+                for ratio in sr_series:
+                    if not np.isfinite(ratio):
+                        continue
+                    sr_vals_run.append(float(ratio))
+
+            if sr_vals_run:
+                sr_arr_run = np.asarray(sr_vals_run, dtype=float)
+                sr_dex_share_values.extend([float(v) for v in sr_arr_run.tolist()])
+                sr_dex_share_hist += np.histogram(sr_arr_run, bins=smart_router_dex_share_bins)[0].astype(np.int64)
     except Exception as exc:
         ok = False
         error_type = type(exc).__name__
@@ -258,16 +365,36 @@ def _evaluate_grid_point(
         fee_mean = float(np.mean(fee_arr)) if fee_arr.size else np.nan
         fee_median = float(np.median(fee_arr)) if fee_arr.size else np.nan
 
-        medians: Dict[str, float] = {}
+        sr_arr = np.asarray(sr_dex_share_values, dtype=float)
+        sr_mean = float(np.mean(sr_arr)) if sr_arr.size else np.nan
+        sr_median = float(np.median(sr_arr)) if sr_arr.size else np.nan
+
+        pnl_summaries: Dict[str, float] = {}
         for metric_key, _ in PNL_METRICS:
-            samples = np.asarray(pnl_samples_by_key[metric_key], dtype=float)
-            medians[f"median_final_{metric_key}"] = float(np.median(samples)) if samples.size else np.nan
+            rates = np.asarray(pnl_run_rates_by_key[metric_key], dtype=float)
+            if rates.size:
+                for q_name, q in PNL_RATE_QUANTILES:
+                    pnl_summaries[f"pnl_rate_{q_name}_{metric_key}"] = float(np.quantile(rates, q))
+                pnl_summaries[f"pnl_rate_p_loss_{metric_key}"] = float(np.mean(rates < 0.0))
+            else:
+                for q_name, _ in PNL_RATE_QUANTILES:
+                    pnl_summaries[f"pnl_rate_{q_name}_{metric_key}"] = np.nan
+                pnl_summaries[f"pnl_rate_p_loss_{metric_key}"] = np.nan
         fee_hist_out = fee_hist.tolist()
+        sr_dex_share_hist_out = sr_dex_share_hist.tolist()
     else:
         fee_mean = np.nan
         fee_median = np.nan
-        medians = {f"median_final_{metric_key}": np.nan for metric_key, _ in PNL_METRICS}
+        sr_mean = np.nan
+        sr_median = np.nan
+        pnl_summaries = {
+            f"pnl_rate_{q_name}_{metric_key}": np.nan
+            for metric_key, _ in PNL_METRICS
+            for q_name, _ in PNL_RATE_QUANTILES
+        }
+        pnl_summaries |= {f"pnl_rate_p_loss_{metric_key}": np.nan for metric_key, _ in PNL_METRICS}
         fee_hist_out = [0 for _ in range(int(fee_bins.size - 1))]
+        sr_dex_share_hist_out = [0 for _ in range(int(smart_router_dex_share_bins.size - 1))]
 
     return {
         "grid_index": int(point.index),
@@ -278,10 +405,13 @@ def _evaluate_grid_point(
         "error_message": error_message,
         "error_run_index": error_run_index,
         "error_seed": error_seed,
-        **medians,
+        **pnl_summaries,
         "fee_mean": fee_mean,
         "fee_median": fee_median,
         "fee_hist": fee_hist_out,
+        "smart_router_dex_share_mean": sr_mean,
+        "smart_router_dex_share_median": sr_median,
+        "smart_router_dex_share_hist": sr_dex_share_hist_out,
     }
 
 
@@ -299,9 +429,13 @@ def _result_to_row(
         "seed_base": int(result["seed_base"]),
         "fee_mean": float(result["fee_mean"]),
         "fee_median": float(result["fee_median"]),
+        "smart_router_dex_share_mean": float(result["smart_router_dex_share_mean"]),
+        "smart_router_dex_share_median": float(result["smart_router_dex_share_median"]),
     }
     for metric_key, _ in PNL_METRICS:
-        row[f"median_final_{metric_key}"] = float(result[f"median_final_{metric_key}"])
+        for q_name, _ in PNL_RATE_QUANTILES:
+            row[f"pnl_rate_{q_name}_{metric_key}"] = float(result[f"pnl_rate_{q_name}_{metric_key}"])
+        row[f"pnl_rate_p_loss_{metric_key}"] = float(result[f"pnl_rate_p_loss_{metric_key}"])
 
     for name, idx in zip(param_order, indices):
         row[f"i__{name}"] = int(idx)
@@ -316,6 +450,12 @@ def _result_to_row(
         raise ValueError("Internal error: fee_hist has unexpected shape.")
     for b in range(int(fee_hist_bins)):
         row[f"fee_hist_{b}"] = int(hist[b])
+
+    sr_hist = result["smart_router_dex_share_hist"]
+    if not isinstance(sr_hist, list) or len(sr_hist) != int(fee_hist_bins):
+        raise ValueError("Internal error: smart_router_dex_share_hist has unexpected shape.")
+    for b in range(int(fee_hist_bins)):
+        row[f"smart_router_dex_share_hist_{b}"] = int(sr_hist[b])
     return row
 
 
@@ -370,6 +510,7 @@ def main() -> None:
     if not (np.isfinite(f_min) and np.isfinite(f_max) and f_max > f_min):
         raise SystemExit(f"Invalid fee bounds from config: f_min={f_min}, f_max={f_max}")
     fee_bin_edges = np.linspace(f_min, f_max, fee_hist_bins + 1, dtype=float)
+    smart_router_dex_share_bin_edges = np.linspace(0.0, 1.0, fee_hist_bins + 1, dtype=float)
 
     fingerprint = _canon_fingerprint_payload(
         sweeps=sweeps,
@@ -377,6 +518,8 @@ def main() -> None:
         seed_base=int(args.seed_base),
         common_seeds=bool(args.common_seeds),
         fee_hist_bins=fee_hist_bins,
+        smart_router_dex_share_hist_bins=fee_hist_bins,
+        pnl_summary=PNL_SUMMARY_KIND,
     )
 
     # --- outputs -------------------------------------------------------------
@@ -403,6 +546,7 @@ def main() -> None:
         print(f"  runs_per_point: {runs_per_point}")
         print(f"  seed_mode: {'common' if args.common_seeds else 'per_point'} (seed_base={args.seed_base})")
         print(f"  fee histogram bins: {fee_hist_bins} (edges from f_min={f_min} to f_max={f_max})")
+        print(f"  smart_router_dex_share histogram bins: {fee_hist_bins} (fixed edges in [0, 1])")
         if slice_total != total_points:
             print(f"  index slice: [{index_start}, {index_stop}) => {slice_total} points")
         print("  swept parameters:")
@@ -445,11 +589,21 @@ def main() -> None:
         "sweeps": {k: list(v) for k, v in sweeps.items()},
         "int_params": sorted(INT_PARAMS),
         "metrics": [{"key": k, "label": label} for k, label in PNL_METRICS],
+        "pnl_summary": {
+            "kind": PNL_SUMMARY_KIND,
+            "within_run": "mean(diff(series[skip_step:]))",
+            "across_runs": {
+                "quantiles": [{"name": name, "q": q} for name, q in PNL_RATE_QUANTILES],
+                "p_loss": "mean(rate < 0)",
+            },
+        },
         "runs_per_point": int(runs_per_point),
         "seed_base": int(args.seed_base),
         "common_seeds": bool(args.common_seeds),
         "fee_hist_bins": int(fee_hist_bins),
         "fee_bin_edges": fee_bin_edges.tolist(),
+        "smart_router_dex_share_hist_bins": int(fee_hist_bins),
+        "smart_router_dex_share_bin_edges": smart_router_dex_share_bin_edges.tolist(),
     }
     meta_global.write_text(json.dumps(meta_payload, indent=2, sort_keys=True), encoding="utf-8")
     print(f"[dashboard_nd] meta (global):  {meta_global}")
@@ -491,6 +645,7 @@ def main() -> None:
                     param_order=param_order,
                     sweep_values=sweeps,
                     fee_bins=fee_bin_edges,
+                    smart_router_dex_share_bins=smart_router_dex_share_bin_edges,
                     runs_per_point=runs_per_point,
                     common_seeds=bool(args.common_seeds),
                     global_seed_base=int(args.seed_base),

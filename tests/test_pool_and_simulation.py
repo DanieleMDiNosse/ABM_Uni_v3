@@ -325,3 +325,84 @@ def test_simulate_heston_mode_runs_and_emits_sigma_series(tmp_path):
     cex_series = out["CEX_price"]
     assert len(sigma_series) == len(cex_series)
     assert all(s >= 0.0 for s in sigma_series)
+
+
+def test_no_arb_band_includes_flash_loan_fee(tmp_path):
+    """
+    The reported no-arb band should widen when flash-loan funding costs are enabled.
+    """
+    f0 = 0.003
+    phi = 0.10
+    out = simulate(**_base_simulate_kwargs(
+        tmp_path,
+        T=1,
+        seed=1,
+        block_time=2,
+        smart_trades_per_block=0.0,
+        noise_trades_per_block=0.0,
+        cex_sigma=0.0,
+        fee_mode="static",
+        f0=f0,
+        flash_loan_fee=phi,
+    ))
+    m0 = out["CEX_price"][0]
+    r = 1.0 - f0
+    assert out["band_lo"][0] == pytest.approx(m0 * r / (1.0 + phi))
+    assert out["band_hi"][0] == pytest.approx(m0 * (1.0 + phi) / r)
+
+
+def test_arb_pnl_settles_on_snapshot_not_end_of_step(tmp_path, monkeypatch):
+    """
+    Arbitrageur PnL should be computed at the validated snapshot CEX price used for
+    the arb decision/unwind, not at the end-of-step CEX price after intra-block diffusion.
+    """
+    import random
+    import utils
+    import numpy as np
+
+    # Make noise arrivals deterministic: exactly one intent per micro-step.
+    monkeypatch.setattr(np.random, "poisson", lambda _lam: 1)
+    # Force all noise trades to push DEX price in one direction.
+    monkeypatch.setattr(random, "choice", lambda seq: "X_to_Y")
+
+    sim_kwargs = _base_simulate_kwargs(
+        tmp_path / "base",
+        T=2,
+        seed=7,
+        block_time=2,
+        smart_trades_per_block=0.0,
+        noise_trades_per_block=2.0,
+        cex_sigma=0.0,
+        slippage_tolerance=1.0,  # never reject on slippage
+        trader_mean=5.5,         # deterministic trades (sigma=0 below)
+        trader_sigma=0.0,
+        fee_mode="static",
+        flash_loan_fee=0.0,
+    )
+
+    # Run A: no intra-block diffusion at all.
+    monkeypatch.setattr(utils.ReferenceMarket, "diffuse_only", lambda self: self.m)
+    out_a = simulate(**sim_kwargs)
+
+    # Run B: keep step-0 diffusion identical, then apply a large jump during step 1.
+    block_time = int(sim_kwargs["block_time"])
+
+    def diffuse_step1_jump(self) -> float:
+        calls = int(getattr(self, "_test_diffuse_calls", 0)) + 1
+        setattr(self, "_test_diffuse_calls", calls)
+        if calls <= block_time:
+            return self.m
+        self.m *= 1.5
+        return self.m
+
+    monkeypatch.setattr(utils.ReferenceMarket, "diffuse_only", diffuse_step1_jump)
+    out_b = simulate(**dict(sim_kwargs, results_root=tmp_path / "alt"))
+
+    # Sanity: we really changed the end-of-step CEX price in step 1.
+    assert out_a["CEX_price"][1] != pytest.approx(out_b["CEX_price"][1])
+    # Ensure an arb actually executed in step 1 (otherwise this test is vacuous).
+    assert out_a["arb_exec_count"][1] == 1
+    assert abs(out_a["arb_pnl_steps"][1]) > 1e-12
+    # Core assertion: arb PnL is invariant to intra-block CEX diffusion when
+    # it is computed at the validated snapshot price.
+    assert out_a["arb_pnl_steps"][1] == pytest.approx(out_b["arb_pnl_steps"][1], rel=1e-12, abs=1e-12)

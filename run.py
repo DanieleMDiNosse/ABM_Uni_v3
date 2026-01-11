@@ -228,6 +228,7 @@ def simulate(
     # === Output and visualization ===
     visualize: bool = True,
     skip_step: int = 100,
+    n_block_SR_ratio: int = 100,
     results_root: Optional[str | Path] = None,
     verbose: bool = True,
 ) -> Dict[str, Any]:
@@ -251,6 +252,13 @@ def simulate(
     if block_time <= 1:
         raise ValueError("block_time must be > 1 for mempool execution mode.")
 
+    try:
+        n_block_SR_ratio = int(n_block_SR_ratio)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"n_block_SR_ratio must be a positive integer: got {n_block_SR_ratio!r}") from exc
+    if n_block_SR_ratio <= 0:
+        raise ValueError(f"n_block_SR_ratio must be a positive integer: got {n_block_SR_ratio}")
+
     if passive_width_pct is not None:
         try:
             passive_width_pct = float(passive_width_pct)
@@ -259,6 +267,14 @@ def simulate(
         if passive_width_pct > 100.0:
             print(f"passive_width_pct was set to {passive_width_pct}. Clamping it to 100%")
             passive_width_pct = 100.0
+
+    try:
+        flash_loan_fee = float(flash_loan_fee)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"flash_loan_fee must be a non-negative number: got {flash_loan_fee!r}") from exc
+    if flash_loan_fee < 0.0:
+        raise ValueError(f"flash_loan_fee must be >= 0.0: got {flash_loan_fee}")
+    flash_loan_mult = 1.0 + flash_loan_fee
 
     initial_params = dict(locals())
 
@@ -369,56 +385,6 @@ def simulate(
             f"start={regime_state}, p_LL={cex_sigma_p_LL}, p_HH={cex_sigma_p_HH}"
         )
         sigma_for_ref = cex_sigma_low if regime_state == "L" else cex_sigma_high
-    # elif noisy_sine_mode:
-    #     try:
-    #         cex_sigma_val = float(cex_sigma)
-    #         cex_sigma_sine_amp_val = float(cex_sigma_sine_amp)
-    #         cex_sigma_sine_noise_val = float(cex_sigma_sine_noise)
-    #         cex_sigma_sine_period_val = int(cex_sigma_sine_period)
-    #     except Exception as exc:
-    #         raise ValueError("noisy_sine mode requires numeric cex_sigma, cex_sigma_sine_amp, cex_sigma_sine_noise, and cex_sigma_sine_period.") from exc
-    #     if cex_sigma_val <= 0:
-    #         raise ValueError("cex_sigma must be set and positive when cex_sigma_mode='noisy_sine'.")
-    #     if cex_sigma_sine_amp_val <= 0:
-    #         raise ValueError("cex_sigma_sine_amp must be set and positive when cex_sigma_mode='noisy_sine'.")
-    #     if cex_sigma_sine_period_val <= 0:
-    #         raise ValueError("cex_sigma_sine_period must be set and positive when cex_sigma_mode='noisy_sine'.")
-    #     if cex_sigma_sine_noise_val < 0:
-    #         raise ValueError("cex_sigma_sine_noise must be set and non-negative when cex_sigma_mode='noisy_sine'.")
-    #     sigma_center = max(1e-12, cex_sigma_val)
-    #     amp_for_log = cex_sigma_sine_amp_val
-    #     sigma_annualized_center = sigma_center * math.sqrt(seconds_per_year)
-    #     sigma_high_annualized = (sigma_center + amp_for_log) * math.sqrt(seconds_per_year)
-    #     sigma_low_annualized = max(0.0, (sigma_center - amp_for_log)) * math.sqrt(seconds_per_year)
-    #     _vprint(
-    #         f"\n[CONFIG] Noisy-sine cex_sigma: "
-    #         f"center={sigma_center} ({sigma_annualized_center:.2%} annualized), "
-    #         f"amp={amp_for_log} ([{sigma_low_annualized:.2%},{sigma_high_annualized:.2%}] annualized), period={cex_sigma_sine_period} steps, "
-    #         f"noise_std={cex_sigma_sine_noise}, floor={cex_sigma_floor}"
-    #     )
-    #     sigma_for_ref = sigma_center
-    # elif heston_mode:
-    #     # Determine initial per-step sigma from explicit v0 or cex_sigma.
-    #     if cex_heston_v0 is not None:
-    #         v0 = float(cex_heston_v0)
-    #         if v0 <= 0.0:
-    #             raise ValueError(
-    #                 "cex_heston_v0 must be positive when cex_sigma_mode='heston'."
-    #             )
-    #         sigma_for_ref = math.sqrt(v0)
-    #     else:
-    #         sigma_for_ref = float(cex_sigma)
-    #         if sigma_for_ref <= 0.0:
-    #             raise ValueError(
-    #                 "cex_sigma must be positive when cex_sigma_mode='heston' and cex_heston_v0 is not provided."
-    #             )
-    #     sigma_annualized = sigma_for_ref * math.sqrt(seconds_per_year)
-    #     _vprint(
-    #         f"\n[CONFIG] Heston cex_sigma_mode: "
-    #         f"sigma0={sigma_for_ref} ({sigma_annualized:.2%} annualized), "
-    #         f"kappa={cex_heston_kappa}, theta={cex_heston_theta}, "
-    #         f"sigma_v={cex_heston_sigma_v}, rho={cex_heston_rho}, v0={cex_heston_v0}"
-    #     )
     else:
         sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
         _vprint(f"\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
@@ -505,12 +471,6 @@ def simulate(
         lp.can_act = False
         lp.k_out_threshold = random.randint(k_out_min, k_out_max)
 
-    # Distribute initial_total_L across LPs (each gets ~equal share)
-    L_SCALE = initial_total_L / max(1, N_LP)
-    for lp in LPs:
-        lp.L_budget = 2.0 * L_SCALE   # each LP can deploy up to ~2× their fair share
-        lp.L_live = 0.0               # tracked across mints/burns
-
     bootstrap_initial_binomial_hill_sharded(
         pool, ref, LPs,
         N=initial_binom_N,
@@ -523,12 +483,39 @@ def simulate(
         seed_is_passive=True,
     )
 
-    # ensure budgets exist for every LP, including the just-appended seed
+    # -------------------------------------------------------------------------
+    # LP initial cash inventories (LPs budget in token1 only)
+    # -------------------------------------------------------------------------
+    # Initialize each strategic (non-seed, non-JIT) LP wallet as an equal share of
+    # the *value* of the initial binomial-hill liquidity at the initial price.
+    #
+    # Strategic LPs hold cash in token1 only. When minting, they convert an
+    # appropriate amount into token0 on the CEX (impacting the CEX price) and then
+    # deposit the resulting (token0, token1) amounts into the AMM.
+    #
+    # Note: seed LPs start with their liquidity already deployed as positions, so
+    # they begin with wallet_y=0 and can only mint again after earning cash back
+    # via burns.
+    seed_total_x = 0.0
+    seed_total_y = 0.0
     for lp in LPs:
-        if lp.L_budget <= 0.0:
-            lp.L_budget = 2.0 * L_SCALE
-        if lp.L_live < 0.0:
-            lp.L_live = 0.0
+        if not bool(getattr(lp, "is_seed", False)):
+            continue
+        for pos in getattr(lp, "positions", []):
+            seed_total_x += float(pos.amt0_init)
+            seed_total_y += float(pos.amt1_init)
+
+    denom_strategic = max(1, int(N_LP))
+    initial_seed_value_y = seed_total_x * float(m0) + seed_total_y
+    per_lp_wallet_y = initial_seed_value_y / denom_strategic
+    for lp in LPs:
+        if bool(getattr(lp, "is_seed", False)) or bool(getattr(lp, "is_jiter", False)):
+            continue
+        lp.wallet_x = 0.0
+        lp.wallet_y = float(per_lp_wallet_y)
+
+    # ensure k_out_threshold exists for every LP (including seeds)
+    for lp in LPs:
         if not hasattr(lp, "k_out_threshold"):
             lp.k_out_threshold = random.randint(k_out_min, k_out_max)
 
@@ -547,6 +534,7 @@ def simulate(
         jiter_agent.can_act = False
         jiter_agent.L_budget = float("inf")
         jiter_agent.L_live = 0.0
+        jiter_agent.wallet_x = 0.0
         jiter_agent.wallet_y = 0.0
         LPs.append(jiter_agent)
 
@@ -648,8 +636,9 @@ def simulate(
     # ------------------ Recorders ------------------
     P_series, M_series = [], []
     X_active_end, Y_active_end = [], []
-    band_lo_pre, band_hi_pre = [], []
-    band_lo_post, band_hi_post = [], []
+    # No-arb band constructed from the validated snapshot CEX price at the beginning
+    # of the block (equal to the end of the previous block).
+    band_lo_target, band_hi_target = [], []
     L_end, L_pre_step = [], []
     L_pre_trader, L_pre_arb_eff = [], []
     trader_y_series, arb_y_series = [], []
@@ -677,8 +666,8 @@ def simulate(
     delta_a_cex_series = []
     cex_sigma_series: List[float] = []
     cex_regime_series: List[str] = []
-    # --- Block-start target band (arb_ref_m) ---
-    band_lo_target, band_hi_target = [], []
+    # --- Block-start no-arb band (validated snapshot CEX price) ---
+    # (Stored as band_lo_target / band_hi_target for backward naming in internals.)
     # --- Micro-time traces (mempool micro-steps) ---
     micro_steps, M_micro, P_micro = [], [], []
     micro_valid_steps, micro_valid_prices = [], []
@@ -719,6 +708,8 @@ def simulate(
     noise_exec_count = []
     sr_y_series = []
     noise_y_series = []
+    sr_cex_exec_count = []
+    sr_dex_exec_count = []
 
     pid_str = str(os.getpid())
     LOG_BUFFER_LIMIT = 10_000
@@ -782,10 +773,7 @@ def simulate(
         M_series = _NullList()
         X_active_end = _NullList()
         Y_active_end = _NullList()
-        band_lo_pre = _NullList()
-        band_hi_pre = _NullList()
-        band_lo_post = _NullList()
-        band_hi_post = _NullList()
+        # (Only keep the snapshot-based no-arb band; pre/post variants removed.)
         L_end = _NullList()
         L_pre_step = _NullList()
         L_pre_trader = _NullList()
@@ -851,6 +839,9 @@ def simulate(
         noise_exec_count = _NullList()
         sr_y_series = _NullList()
         noise_y_series = _NullList()
+        # Keep smart-router exec counts even in light_mode for downstream DEX-share aggregation.
+        sr_cex_exec_count = []
+        sr_dex_exec_count = []
         lp_wallet_series = _NullList()
         lp_wallet_active_series = _NullList()
         lp_wallet_passive_series = _NullList()
@@ -861,8 +852,12 @@ def simulate(
         fee_basis_ticks_series = _NullList()
         fee_imb_series = _NullList()
         fee_signal_series = _NullList()
-    # --- EWMA(B_t) state for LP width rule ---
-    ewma_B = EWMA(half_life_steps=basis_half_life)
+    # --- EWMA volatility signal for active LP width rule ---
+    # Paper spec: width depends on an EWMA of a volatility-related signal. We use
+    # EWMA(|log-return of the CEX mid|) with half-life `basis_half_life` (config name kept
+    # for backward compatibility with existing scenario files).
+    ewma_width = EWMA(half_life_steps=basis_half_life)
+    prev_m_for_width = ref.m
 
     # --- Dynamic fee controller state (new) ---
     pool.f = float(f0)  # initial fee overrides builder default
@@ -1018,12 +1013,19 @@ def simulate(
                 # Collect for batched rebalancing instead of immediate rebalance
                 _pending_rebalance_ids.add(owner_id)
 
-    def burn_any(lp: LPAgent, idx: int) -> None:
+    def burn_any(lp: LPAgent, idx: int, *, m_ref: float) -> None:
+        nonlocal delta_a_cex_this
         pos = lp.positions.pop(idx)
-        # Realize full value into LP wallet at burn time (principal + fees)
-        # Previously this was just PnL, which caused wealth destruction/discontinuity.
-        realized_value = pos.position_value_y_now(pool.S, ref.m) + pos.fees_value_y(ref.m)
-        lp.wallet_y = getattr(lp, 'wallet_y', 0.0) + float(realized_value)
+        # Cash-budgeted LP accounting: burning returns underlying tokens + fees,
+        # then the LP immediately converts any token0 into token1 on the CEX.
+        amt0, amt1 = pos.current_amounts(pool.S)
+        amt0_total = float(amt0) + float(pos.fees0)
+        amt1_total = float(amt1) + float(pos.fees1)
+        lp.wallet_x = 0.0
+        lp.wallet_y = float(getattr(lp, "wallet_y", 0.0)) + amt1_total + amt0_total * float(m_ref)
+        # Selling token0 on the CEX contributes negative Δa (token0 units) to the
+        # reference-market impact update applied at end-of-block.
+        delta_a_cex_this += -amt0_total
         _unregister_position(pos)
         pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
         _assert_active_liquidity_state_fast("lp_burn")
@@ -1039,7 +1041,6 @@ def simulate(
         )
 
         lp.cooldown = np.random.randint(3, 9)  # 3–8 steps of "hands off"
-        lp.L_live = max(0.0, getattr(lp, "L_live", 0.0) - pos.L)
         _rebalance_lp_to_target(lp, ref.m, pool.S)
 
 
@@ -1051,6 +1052,146 @@ def simulate(
         x = pool.L_active * max(0.0, 1.0 / S_eff - 1.0 / sb)
         y = pool.L_active * max(0.0, S_eff - sa)
         return x, y
+
+    # -------------------------------------------------------------------------
+    # Cash-budgeted LP mint helper (LP wallet in token1 only)
+    # -------------------------------------------------------------------------
+    def _draw_wallet_utilization_factor() -> float:
+        """
+        Draw η in (0, 1] controlling wallet utilization for a mint attempt.
+
+        Paper spec: Z ~ LogNormal(mint_mu, mint_sigma), η = min(1, Z).
+        """
+        z = float(np.random.lognormal(mint_mu, mint_sigma))
+        if not math.isfinite(z) or z <= 0.0:
+            return 0.0
+        return min(1.0, z)
+
+    def _max_feasible_liquidity_from_cash(
+        *,
+        cash_y: float,
+        sa: float,
+        sb: float,
+        S_ref: float,
+        m_ref: float,
+    ) -> float:
+        """
+        Compute L^max for a proposed range [sa, sb) given a cash-only budget in token1.
+
+        Uses deposit coefficients implied by Uniswap v3 mint math at the chosen
+        reference state (S_ref; sa, sb):
+
+            (Δx0, Δx1) = (a0 L, a1 L),
+
+        so the required token1 value to mint liquidity L is:
+
+            cost_y(L) = Δx0(L) * m_ref + Δx1(L) = (a0 * m_ref + a1) * L.
+        """
+        a0, a1 = minted_amounts_at_S(1.0, sa, sb, S_ref)
+        denom = float(a0) * float(m_ref) + float(a1)
+        if denom <= 0.0:
+            return 0.0
+        L_max = float(cash_y) / denom
+        if not math.isfinite(L_max) or L_max <= 0.0:
+            return 0.0
+        return float(L_max)
+
+    def _execute_cash_budgeted_mint(
+        *,
+        lp: LPAgent,
+        lower: int,
+        upper: int,
+        eta: float,
+        S_ref: float,
+        m_ref: float,
+        log_prefix: str,
+        is_jiter: bool,
+    ) -> Optional[Position]:
+        """
+        Execute a cash-budgeted mint for a (possibly pre-chosen) range.
+
+        The LP holds token1 cash only. At mint time, they conceptually purchase the
+        required token0 amount on the CEX at price m_ref (impacting the CEX through
+        `delta_a_cex_this`), and then deposit the (token0, token1) amounts into the AMM.
+
+        Returns the created Position on success; otherwise returns None.
+        """
+        nonlocal delta_a_cex_this
+        if upper <= lower:
+            return None
+
+        eta_f = float(eta)
+        if not math.isfinite(eta_f) or eta_f <= 0.0:
+            return None
+        eta_f = min(1.0, eta_f)
+
+        sa, sb = pool.s_lower(lower), pool.s_lower(upper)
+
+        cash_y = float(getattr(lp, "wallet_y", 0.0))
+        if not is_jiter:
+            cash_y = max(0.0, cash_y)
+
+        L_max = _max_feasible_liquidity_from_cash(
+            cash_y=cash_y,
+            sa=sa,
+            sb=sb,
+            S_ref=S_ref,
+            m_ref=m_ref,
+        )
+        if L_max <= 0.0:
+            return None
+
+        L_new = eta_f * L_max
+        if L_new <= 0.0:
+            return None
+
+        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, S_ref)
+        amt0 = float(amt0)
+        amt1 = float(amt1)
+        if not (math.isfinite(amt0) and math.isfinite(amt1)):
+            return None
+
+        cost_y = amt0 * float(m_ref) + amt1
+
+        # Enforce feasibility for non-JIT LPs (allow JIT to go negative as "flash-funded").
+        eps = 1e-12
+        if not is_jiter:
+            if cost_y > cash_y + eps:
+                return None
+        lp.wallet_x = 0.0
+        lp.wallet_y = float(getattr(lp, "wallet_y", 0.0)) - cost_y
+        # Buying token0 on the CEX contributes positive Δa (token0 units) to the
+        # reference-market impact update applied at end-of-block.
+        delta_a_cex_this += +amt0
+
+        pos = Position(
+            owner=lp.id,
+            lower=lower,
+            upper=upper,
+            L=L_new,
+            sa=sa,
+            sb=sb,
+            amt0_init=amt0,
+            amt1_init=amt1,
+            hodl0_value_y=amt0 * float(m_ref) + amt1,
+        )
+        pool.add_liquidity_range(lower, upper, L_new)
+        lp.positions.append(pos)
+        _register_position(pos)
+        _assert_active_liquidity_state_fast(f"{log_prefix}_mempool")
+
+        mint_steps.append(t)
+        mint_sizes.append(L_new)
+        mint_widths.append(upper - lower)
+        mint_is_passive.append(bool(getattr(lp, "is_passive", False)))
+        mint_is_jiter.append(bool(is_jiter))
+
+        buffer_log(
+            f"[t={t:03d}] {log_prefix} L={L_new:.4f} [{lower},{upper}) | "
+            f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+        )
+        _rebalance_lp_to_target(lp, ref.m, pool.S)
+        return pos
 
     # ----- Arbitrage internals (unchanged) -----
     def fast_span_up(to_S: float, target_S: float) -> Tuple[float, float, float]:
@@ -1141,7 +1282,8 @@ def simulate(
         """
         P = pool.price
         r = pool.r
-        lo, hi = arb_ref_m * r, arb_ref_m / r
+        lo = (arb_ref_m * r) / flash_loan_mult
+        hi = (arb_ref_m * flash_loan_mult) / max(r, 1e-18)
         if P < lo * (1 - 1e-9):
             # up: returns (dy_in, dx_out, 0.0, direction, L_first)
             dy_in, dx_out, Lff = swap_exact_to_target(lo, "up", fee_cb=allocate_fees)
@@ -1238,7 +1380,8 @@ def simulate(
         pool_sim = _clone_pool_for_preview()
         P = pool_sim.price
         r = pool_sim.r
-        lo, hi = arb_ref_m * r, arb_ref_m / r
+        lo = (arb_ref_m * r) / flash_loan_mult
+        hi = (arb_ref_m * flash_loan_mult) / max(r, 1e-18)
         if P < lo * (1 - 1e-9):
             dy_in, dx_out, Lff = _preview_swap_exact_to_target(pool_sim, lo, "up")
             return dy_in, dx_out, 0.0, ("up" if dy_in > 0 else None), Lff
@@ -1303,10 +1446,6 @@ def simulate(
             fee_next = None
         r = pool.r
 
-        # Pre-step band window
-        band_lo_pre.append(ref.m * r)
-        band_hi_pre.append(ref.m / r)
-
         # Start-of-step rebalance benchmark update (predictable integrand)
         _rebalance_all(ref.m, pool.S)
 
@@ -1315,16 +1454,18 @@ def simulate(
         P_before = pool.price
 
         # ---------------------------------------------------------------------
-        # LP width rule: EWMA of fee-adjusted absolute basis B_t + binomial noise
+        # Active LP width rule: EWMA of CEX volatility + binomial noise
         # ---------------------------------------------------------------------
-        # B_t = max(0, |ln P - ln m| - ln(1/(1-f)))
-        fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f))
-        log_gap = abs(math.log(max(pool.price, 1e-18)) - math.log(max(ref.m, 1e-18)))
-        B_t = max(0.0, log_gap - fee_band_ln)
-        D_t = ewma_B.update(B_t)  # smoothed actionable dislocation
-
-        # Deterministic width component from EWMA basis (in ticks)
-        basis_in_ticks = D_t / TICK_LN
+        # Use an EWMA of absolute CEX log-returns as the volatility signal.
+        try:
+            log_m_now = math.log(max(ref.m, 1e-18))
+            log_m_prev = math.log(max(prev_m_for_width, 1e-18))
+            vol_obs = abs(log_m_now - log_m_prev)
+        except ValueError:
+            vol_obs = 0.0
+        prev_m_for_width = ref.m
+        vol_hat = ewma_width.update(vol_obs)
+        vol_in_ticks = vol_hat / TICK_LN
 
         # --- Mean-zero binomial noise term (in ticks) ---
         # draw K ~ Bin(n, p), center by n p, and scale by tick_spacing to live on the grid
@@ -1333,8 +1474,8 @@ def simulate(
             K = np.random.binomial(binom_n, binom_p)
             noise_ticks = (K - binom_n * binom_p) * pool.tick_spacing  # non-negative noise per spec
 
-        # Map to width in ticks: w = clip(w_min + slope * basis_in_ticks + noise_ticks, w_min, w_max)
-        w_unclipped = w_min_ticks + slope_s * basis_in_ticks + noise_ticks
+        # Map to width in ticks: w = clip(w_min + slope * vol_in_ticks + noise_ticks, w_min, w_max)
+        w_unclipped = w_min_ticks + slope_s * vol_in_ticks + noise_ticks
         step_width_ticks = pool.tick_spacing  # total width snaps to tick_spacing
         w_ticks = int(round(w_unclipped / step_width_ticks)) * step_width_ticks
         # Enforce minimum based on w_min_ticks (rounded up to spacing multiple), not just one band
@@ -1358,6 +1499,8 @@ def simulate(
         sr_acc = TraderStepAccumulator()
         noise_acc = TraderStepAccumulator()
         arb_acc = TraderStepAccumulator()
+        sr_cex_execs_this = 0
+        sr_dex_execs_this = 0
         delta_a_cex_this = 0.0
         L_pre_trader_this = np.nan
         L_pre_arb_eff_this = np.nan
@@ -1378,6 +1521,7 @@ def simulate(
             """
             nonlocal trader_y_this, sr_acc, _trader_execs, delta_a_cex_this
             nonlocal total_smart_swaps_executed, smart_swaps_x_to_y, smart_swaps_y_to_x
+            nonlocal sr_cex_execs_this
             side = random.choice(["X_to_Y", "Y_to_X"])
             if side == "X_to_Y":
                 notional_y = _draw_trader_notional()
@@ -1406,6 +1550,7 @@ def simulate(
                     _trader_execs += executed
                     total_smart_swaps_executed += executed
                     smart_swaps_x_to_y += executed
+                    sr_cex_execs_this += executed
                     # Sell token0 on CEX => negative Δa_cex
                     delta_a_cex_this += -dx
                     buffer_log(
@@ -1445,6 +1590,7 @@ def simulate(
                     _trader_execs += executed
                     total_smart_swaps_executed += executed
                     smart_swaps_y_to_x += executed
+                    sr_cex_execs_this += executed
                     # Buy token0 on CEX => positive Δa_cex
                     delta_a_cex_this += dx_cex
                     buffer_log(
@@ -1560,8 +1706,13 @@ def simulate(
                 nonlocal executed_smart_swaps, executed_noise_swaps, executed_lp_events
                 nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
                 nonlocal jit_open_positions, jit_swap_executed
+                nonlocal sr_dex_execs_this
                 P_pre_exec = pool.price
                 tick_before_exec = pool.tick
+                # Execution-time CEX price used for **settlement / cash conversion** in LP
+                # mint/burn accounting. Agents still choose ranges off the validated
+                # snapshot (`agent_S_ref`, `cex_ref_for_agents`).
+                m_exec = float(ref.m)
                 typ = o.get('type')
                 def _record_micro(price_before_local: float) -> None:
                     nonlocal micro_counter
@@ -1650,12 +1801,13 @@ def simulate(
                         L=L_target,
                         sa=sa,
                         sb=sb,
-                        amt0_init=amt0,
-                        amt1_init=amt1,
-                        hodl0_value_y=amt0 * cex_ref_for_agents + amt1,
+                        amt0_init=float(amt0),
+                        amt1_init=float(amt1),
+                        hodl0_value_y=float(amt0) * cex_ref_for_agents + float(amt1),
                     )
-                    cost_y = amt0 * cex_ref_for_agents + amt1
-                    jiter_agent.wallet_y = getattr(jiter_agent, "wallet_y", 0.0) - cost_y
+                    # Treat JIT as flash-funded: allow token wallets to go negative.
+                    jiter_agent.wallet_x = float(getattr(jiter_agent, "wallet_x", 0.0)) - float(amt0)
+                    jiter_agent.wallet_y = float(getattr(jiter_agent, "wallet_y", 0.0)) - float(amt1)
                     pool.add_liquidity_range(lower, upper, L_target)
                     jiter_agent.positions.append(pos)
                     _register_position(pos)
@@ -1685,8 +1837,9 @@ def simulate(
                         jiter_agent.positions.remove(pos)
                     except ValueError:
                         pass
-                    realized_value = pos.position_value_y_now(pool.S, ref.m) + pos.fees_value_y(ref.m)
-                    jiter_agent.wallet_y = getattr(jiter_agent, "wallet_y", 0.0) + float(realized_value)
+                    amt0, amt1 = pos.current_amounts(pool.S)
+                    jiter_agent.wallet_x = float(getattr(jiter_agent, "wallet_x", 0.0)) + float(amt0) + float(pos.fees0)
+                    jiter_agent.wallet_y = float(getattr(jiter_agent, "wallet_y", 0.0)) + float(amt1) + float(pos.fees1)
                     _unregister_position(pos)
                     pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
                     _assert_active_liquidity_state_fast("jit_burn")
@@ -1717,28 +1870,25 @@ def simulate(
                                 idx = i; break
                         if idx is None:
                             return
-                        burn_any(lp, idx)
+                        burn_any(lp, idx, m_ref=m_exec)
                         executed_lp_events += 1
                         return
                     if typ == 'lp_mint':
-                        lower = int(o.get('lower')); upper = int(o.get('upper')); L_new = float(o.get('L', 0.0))
-                        if upper <= lower or L_new <= 0.0:
+                        lower = int(o.get("lower"))
+                        upper = int(o.get("upper"))
+                        eta = float(o.get("eta", 1.0))
+                        created = _execute_cash_budgeted_mint(
+                            lp=lp,
+                            lower=lower,
+                            upper=upper,
+                            eta=eta,
+                            S_ref=agent_S_ref,
+                            m_ref=m_exec,
+                            log_prefix=f"LP{lp.id} MINT",
+                            is_jiter=False,
+                        )
+                        if created is None:
                             return
-                        sa, sb = pool.s_lower(lower), pool.s_lower(upper)
-                        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
-                        pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
-                                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
-                        # Debit wallet for mint cost
-                        cost_y = amt0 * cex_ref_for_agents + amt1
-                        lp.wallet_y = getattr(lp, 'wallet_y', 0.0) - cost_y
-                        pool.add_liquidity_range(lower, upper, L_new)
-                        lp.positions.append(pos)
-                        _register_position(pos)
-                        _assert_active_liquidity_state_fast("lp_mint_mempool")
-                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive)); mint_is_jiter.append(False)
-                        buffer_log(f"[t={t:03d}] LP{lp.id} MINT L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
-                        lp.L_live = getattr(lp, 'L_live', 0.0) + L_new
-                        _rebalance_lp_to_target(lp, ref.m, pool.S)
                         executed_lp_events += 1
                         return
                     if typ == 'lp_recenter':
@@ -1746,26 +1896,24 @@ def simulate(
                         for i, pos in enumerate(lp.positions):
                             if pos.lower == o.get('old_lower') and pos.upper == o.get('old_upper') and abs(pos.L - float(o.get('old_L', 0.0))) < 1e-12:
                                 idx = i; break
-                        if idx is not None:
-                            burn_any(lp, idx)
-                        lower = int(o.get('new_lower')); upper = int(o.get('new_upper')); L_new = float(o.get('new_L', 0.0))
-                        if upper <= lower or L_new <= 0.0:
+                        if idx is None:
                             return
-                        sa, sb = pool.s_lower(lower), pool.s_lower(upper)
-                        amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
-                        pos = Position(owner=lp.id, lower=lower, upper=upper, L=L_new, sa=sa, sb=sb,
-                                        amt0_init=amt0, amt1_init=amt1, hodl0_value_y=amt0 * cex_ref_for_agents + amt1)
-                        # Debit wallet for mint cost
-                        cost_y = amt0 * cex_ref_for_agents + amt1
-                        lp.wallet_y = getattr(lp, 'wallet_y', 0.0) - cost_y
-                        pool.add_liquidity_range(lower, upper, L_new)
-                        lp.positions.append(pos)
-                        _register_position(pos)
-                        _assert_active_liquidity_state_fast("lp_recenter_mempool")
-                        mint_steps.append(t); mint_sizes.append(L_new); mint_widths.append(upper - lower); mint_is_passive.append(bool(lp.is_passive)); mint_is_jiter.append(False)
-                        buffer_log(f"[t={t:03d}] LP{lp.id} RECENTER L={L_new:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n")
-                        lp.L_live = getattr(lp, "L_live", 0.0) + L_new
-                        _rebalance_lp_to_target(lp, ref.m, pool.S)
+                        burn_any(lp, idx, m_ref=m_exec)
+                        lower = int(o.get("new_lower"))
+                        upper = int(o.get("new_upper"))
+                        eta = float(o.get("eta", 1.0))
+                        created = _execute_cash_budgeted_mint(
+                            lp=lp,
+                            lower=lower,
+                            upper=upper,
+                            eta=eta,
+                            S_ref=agent_S_ref,
+                            m_ref=m_exec,
+                            log_prefix=f"LP{lp.id} RECENTER",
+                            is_jiter=False,
+                        )
+                        if created is None:
+                            return
                         executed_lp_events += 1
                         return
 
@@ -1777,12 +1925,12 @@ def simulate(
                     expected_profit = 0.0
                     expected_flash_fee = 0.0
                     if prev_dir == "up":
-                        expected_flash_fee = flash_loan_fee * prev_in
-                        expected_profit = prev_x_out * arb_ref - prev_in - expected_flash_fee
+                        expected_flash_fee = (flash_loan_mult - 1.0) * prev_in
+                        expected_profit = prev_x_out * arb_ref - flash_loan_mult * prev_in
                     elif prev_dir == "down":
                         notional_y = prev_in * arb_ref
-                        expected_flash_fee = flash_loan_fee * notional_y
-                        expected_profit = prev_y_out - notional_y - expected_flash_fee
+                        expected_flash_fee = (flash_loan_mult - 1.0) * notional_y
+                        expected_profit = prev_y_out - flash_loan_mult * notional_y
                     if prev_dir is None or expected_profit <= 0.0:
                         arb_skip_steps.append(t)
                         buffer_log(
@@ -1805,17 +1953,17 @@ def simulate(
                             delta_a_cex_this += -x_out_from_dex
                             arb_y_this = +in_used
                             dex_notional_y_this += abs(in_used)
-                            arb_acc.record_swap(dy_in=in_used, dx_out=x_out_from_dex)
+                            arb_acc.record_swap(dy_in=flash_loan_mult * in_used, dx_out=x_out_from_dex)
                             buffer_log(
                                 f"[t={t:03d}] arb swap up dy_in={in_used:.6f} dx_out={x_out_from_dex:.6f} "
                                 f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
                             )
                         else:
                             # DEX expensive: sell token0 on DEX, buy on CEX
-                            delta_a_cex_this += +in_used
+                            delta_a_cex_this += flash_loan_mult * in_used
                             arb_y_this = -pool.price * in_used
                             dex_notional_y_this += abs(price_before * in_used)
-                            arb_acc.record_swap(dx_in=in_used, dy_out=y_out_from_dex)
+                            arb_acc.record_swap(dx_in=flash_loan_mult * in_used, dy_out=y_out_from_dex)
                             buffer_log(
                                 f"[t={t:03d}] arb swap down dx_in={in_used:.6f} dy_out={y_out_from_dex:.6f} "
                                 f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
@@ -1869,6 +2017,7 @@ def simulate(
                         total_smart_swaps_executed += executed
                         smart_swaps_x_to_y += int(used_dx_pre > 0)
                         executed_smart_swaps += executed
+                        sr_dex_execs_this += executed
                         buffer_log(
                             f"[t={t:03d}] smart swap X_to_Y EXEC dx={used_dx_pre:.6f} dy_out={dy_out_real:.6f} "
                             f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
@@ -1933,6 +2082,7 @@ def simulate(
                         total_smart_swaps_executed += executed
                         smart_swaps_y_to_x += int(used_dy_pre > 0)
                         executed_smart_swaps += executed
+                        sr_dex_execs_this += executed
                         buffer_log(
                             f"[t={t:03d}] smart swap Y_to_X EXEC dy={used_dy_pre:.6f} dx_out={dx_out_real:.6f} "
                             f"| price {P_pre_exec:.4f}->{pool.price:.4f} | tick {tick_before_exec}->{pool.tick}\n"
@@ -2008,7 +2158,7 @@ def simulate(
         # and enqueue trader intents, then replay the mempool (arb first) with
         # LP intents included.
         # =====================================================================
-        arb_ref_m_start = ref.m  # block-start CEX snapshot (diagnostic only; arb targets end-of-block)
+        arb_ref_m_start = ref.m  # block-start CEX price (equals this block's validated snapshot for agents)
         # prepare micro-time arrays (event-time logging)
         buffer_log(f"[t={t:03d}] BLOCK start m={arb_ref_m_start:.4f} due_lp={len(due)}\n")
         micro_steps.append(micro_counter)
@@ -2034,24 +2184,13 @@ def simulate(
         # --- Arbitrage intent (executes first in mempool) ---
         arb_ref_m = cex_ref_for_agents  # snapshot from end of previous block
         target_band_m = cex_ref_for_agents
-        band_lo_target.append(target_band_m * r)
-        band_hi_target.append(target_band_m / r)
+        band_lo_target.append(target_band_m * r / flash_loan_mult)
+        band_hi_target.append(target_band_m * flash_loan_mult / max(r, 1e-18))
         mempool_orders.append({'type': 'arb', 'arb_ref_m': arb_ref_m})
 
         # --- Include LP intents in the mempool (shuffled with traders) ---
         # Allow due LPs to act this block
         _enable(due)
-        # Track planned deployments within this block so multiple mint intents for the
-        # same LP cannot exceed its per-block cap or budget (since L_live updates on execution).
-        planned_L_live: Dict[int, float] = {}
-        planned_L_step_used: Dict[int, float] = defaultdict(float)
-        for lp_idx in due:
-            lp = LPs[lp_idx]
-            if getattr(lp, "is_jiter", False):
-                continue
-            if not lp.can_act:
-                continue
-            planned_L_live[lp.id] = float(getattr(lp, "L_live", 0.0))
 
         # Burns (TP/SL + passive Poisson targets)
         if passive_burns_per_block > 0.0:
@@ -2117,29 +2256,15 @@ def simulate(
                 lower_real = math.log((2.0 * S_now / pool.base_s) / denom, pool.g)
                 lower = pool._snap(int(round(lower_real)))
                 upper = lower + nb * sps
+                eta = _draw_wallet_utilization_factor()
                 mempool_orders.append({'type':'lp_recenter','lp_id': lp.id,
                                        'old_lower': pos.lower,'old_upper': pos.upper,'old_L': pos.L,
-                                       'new_lower': lower,'new_upper': upper,'new_L': pos.L})
+                                       'new_lower': lower,'new_upper': upper,'eta': eta})
 
         def _enqueue_lp_mint(lp: LPAgent, is_passive_mint: bool) -> None:
             if getattr(lp, "cooldown", 0) > 0:
                 return
-            X = np.random.lognormal(mint_mu, mint_sigma)
-            try:
-                _L_SCALE = L_SCALE
-            except NameError:
-                _L_SCALE = initial_total_L / max(1, N_LP)
-            want = float(X) * float(_L_SCALE)
-            if want <= 0.0:
-                return
-            L_budget = float(getattr(lp, "L_budget", want))
-            L_live_planned = float(planned_L_live.get(lp.id, getattr(lp, "L_live", 0.0)))
-            cap_left = max(0.0, L_budget - L_live_planned)
-            cap_step_total = 0.25 * L_budget
-            cap_step_left = max(0.0, cap_step_total - float(planned_L_step_used.get(lp.id, 0.0)))
-            L_new = max(0.0, min(want, cap_step_left, cap_left))
-            if L_new <= 0.0:
-                return
+            eta = _draw_wallet_utilization_factor()
 
             S_now = agent_S_ref
             n_bands: Optional[int] = None
@@ -2165,11 +2290,9 @@ def simulate(
                 if upper <= lower:
                     upper = lower + pool.tick_spacing
 
-            planned_L_live[lp.id] = L_live_planned + L_new
-            planned_L_step_used[lp.id] = float(planned_L_step_used.get(lp.id, 0.0)) + L_new
-            mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'L': L_new})
+            mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'eta': eta})
 
-        # New mints (Poisson targets; respect due/cooldown/budget)
+        # New mints (Poisson targets; respect due/cooldown)
         if narrow_mints_per_block > 0.0:
             narrow_candidates = []
             for lp_idx in due:
@@ -2224,7 +2347,7 @@ def simulate(
         sr_acc.settle(settlement_m)
         noise_acc.settle(settlement_m)
         trader_pnl_this = sr_acc.pnl + noise_acc.pnl
-        arb_acc.settle(settlement_m)
+        arb_acc.settle(arb_ref_m)
         arb_pnl_this = arb_acc.pnl
 
         _assert_active_liquidity_state_full("end_of_step")
@@ -2245,8 +2368,6 @@ def simulate(
         _den = max(1e-12, (_val_x + _val_y))
         fee_imb_series.append((_val_y - _val_x) / _den)
 
-        band_lo_post.append(ref.m * r)
-        band_hi_post.append(ref.m / r)
         L_end.append(pool.L_active)
         # ---- PnL bookkeeping ----
         trader_pnl_steps.append(trader_pnl_this)
@@ -2284,7 +2405,10 @@ def simulate(
             # cohort-level PnL and wealth statistics.
             if getattr(lp, "is_jiter", False):
                 _ensure_rebalancer_initialized(lp, ref.m, pool.S)
-                jiter_wallet_now = getattr(lp, "wallet_y", 0.0)
+                jiter_wallet_now = (
+                    float(getattr(lp, "wallet_x", 0.0)) * float(ref.m)
+                    + float(getattr(lp, "wallet_y", 0.0))
+                )
                 jiter_fee_value_now = lp_total_fee_earned_value_y(lp, ref.m)
                 jiter_position_value_now = lp_total_position_value_y(lp, pool.S, ref.m)
                 jiter_wealth_now = lp_wealth_y(lp, pool.S, ref.m)
@@ -2296,8 +2420,11 @@ def simulate(
             if getattr(lp, "is_seed", False):
                 continue
 
-            wallet_y = getattr(lp, "wallet_y", 0.0)
-            lp_wallet_total += wallet_y
+            wallet_value_y = (
+                float(getattr(lp, "wallet_x", 0.0)) * float(ref.m)
+                + float(getattr(lp, "wallet_y", 0.0))
+            )
+            lp_wallet_total += wallet_value_y
             rb = lp.rebalancer
             _ensure_rebalancer_initialized(lp, ref.m, pool.S)
             wealth_now = lp_wealth_y(lp, pool.S, ref.m)
@@ -2323,7 +2450,7 @@ def simulate(
                 lp_rebal_passive += rb.cumulative_R
                 lp_rebal_value_passive += rebal_value_now
                 lp_fee_value_passive += fee_value_now
-                lp_wallet_passive += wallet_y
+                lp_wallet_passive += wallet_value_y
                 lp_wealth_passive += wealth_now
             elif lp.is_active_narrow:
                 lp_total_active += hedged_pnl
@@ -2331,7 +2458,7 @@ def simulate(
                 lp_rebal_active += rb.cumulative_R
                 lp_rebal_value_active += rebal_value_now
                 lp_fee_value_active += fee_value_now
-                lp_wallet_active += wallet_y
+                lp_wallet_active += wallet_value_y
                 lp_wealth_active += wealth_now
         lp_lvr_total = lp_fee_value_total - lp_total
         lp_lvr_active = lp_fee_value_active - lp_total_active
@@ -2465,6 +2592,8 @@ def simulate(
         noise_pnl_steps.append(noise_acc.pnl)
         sr_exec_count.append(sr_acc.execs)
         noise_exec_count.append(noise_acc.execs)
+        sr_cex_exec_count.append(sr_cex_execs_this)
+        sr_dex_exec_count.append(sr_dex_execs_this)
         L_pre_arb_eff.append(L_pre_arb_eff_this)
 
         price_moved = abs(P_after - P_before) > EPS_PRICE_CHANGE
@@ -2491,6 +2620,37 @@ def simulate(
         validated_tick = pool.tick
         validated_cex = ref.m
 
+    # Smart-router DEX share, computed every n_block_SR_ratio blocks:
+    # ratio = DEX / (CEX + DEX), where counts are executed trades routed to each venue.
+    sr_dex_share_steps: List[int] = []
+    sr_dex_share_series: List[float] = []
+    sr_cex_count_by_window: List[int] = []
+    sr_dex_count_by_window: List[int] = []
+
+    total_sr_cex_execs = int(sum(sr_cex_exec_count))
+    total_sr_dex_execs = int(sum(sr_dex_exec_count))
+    total_sr_execs = total_sr_cex_execs + total_sr_dex_execs
+    sr_dex_share_overall = (
+        float(total_sr_dex_execs / total_sr_execs) if total_sr_execs > 0 else float("nan")
+    )
+
+    for w_start in range(0, len(sr_cex_exec_count), n_block_SR_ratio):
+        w_end = min(w_start + n_block_SR_ratio, len(sr_cex_exec_count))
+        w_cex = int(sum(sr_cex_exec_count[w_start:w_end]))
+        w_dex = int(sum(sr_dex_exec_count[w_start:w_end]))
+        w_total = w_cex + w_dex
+        ratio = float(w_dex / w_total) if w_total > 0 else float("nan")
+        sr_dex_share_steps.append(w_end - 1)
+        sr_dex_share_series.append(ratio)
+        sr_cex_count_by_window.append(w_cex)
+        sr_dex_count_by_window.append(w_dex)
+
+    sr_dex_share_arr = np.asarray(sr_dex_share_series, dtype=float)
+    if sr_dex_share_arr.size > 0 and np.isfinite(sr_dex_share_arr).any():
+        sr_dex_share_mean = float(np.nanmean(sr_dex_share_arr))
+    else:
+        sr_dex_share_mean = float("nan")
+
     if not light_mode:
         summary_lines = [
             "# Run summary",
@@ -2500,6 +2660,11 @@ def simulate(
             f"noise_trader_swaps_rejected_slippage = {total_noise_swaps_skipped}",
             f"total_smart_router_swaps = {total_smart_swaps_executed}",
             f"smart_router_swaps_rejected_slippage = {total_smart_swaps_skipped}",
+            f"smart_router_swaps_cex_routed = {total_sr_cex_execs}",
+            f"smart_router_swaps_dex_routed = {total_sr_dex_execs}",
+            f"smart_router_dex_share_overall = {sr_dex_share_overall:.6f}",
+            f"smart_router_dex_share_mean = {sr_dex_share_mean:.6f}",
+            f"n_block_SR_ratio = {n_block_SR_ratio}",
             f"smart_router_swaps_X_to_Y (price down) = {smart_swaps_x_to_y}",
             f"smart_router_swaps_Y_to_X (price up) = {smart_swaps_y_to_x}",
             f"noise_trader_swaps_X_to_Y (price down) = {noise_swaps_x_to_y}",
@@ -2540,10 +2705,8 @@ def simulate(
     M_series = np.array(M_series)
     X_active_end = np.array(X_active_end)
     Y_active_end = np.array(Y_active_end)
-    band_lo_pre = np.array(band_lo_pre)
-    band_hi_pre = np.array(band_hi_pre)
-    band_lo_post = np.array(band_lo_post)
-    band_hi_post = np.array(band_hi_post)
+    band_lo_target = np.array(band_lo_target)
+    band_hi_target = np.array(band_hi_target)
     L_end = np.array(L_end)
     L_pre_step = np.array(L_pre_step)
     L_pre_trader = np.array(L_pre_trader)
@@ -2651,8 +2814,8 @@ def simulate(
     M_series_v = M_series[s0:]
     X_active_end_v = X_active_end[s0:]
     Y_active_end_v = Y_active_end[s0:]
-    band_lo_post_v = band_lo_post[s0:]
-    band_hi_post_v = band_hi_post[s0:]
+    band_lo_target_v = band_lo_target[s0:]
+    band_hi_target_v = band_hi_target[s0:]
     L_end_v = L_end[s0:]
     L_pre_step_v = L_pre_step[s0:]
     L_pre_trader_v = L_pre_trader[s0:]
@@ -2726,34 +2889,32 @@ def simulate(
                 "simulate",
             )
 
-        band_lo_target_v = np.array(band_lo_target)[s0:]
-        band_hi_target_v = np.array(band_hi_target)[s0:]
         steps_list = steps_v.tolist()
 
         # ----- 1) Price panel -----
         fig1 = go.Figure()
         fig1.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=band_lo_post_v,
-                mode="lines",
-                line=dict(width=0),
-                showlegend=False,
-                hoverinfo="skip",
-            )
+                go.Scatter(
+                    x=steps_list,
+                    y=band_lo_target_v,
+                    mode="lines",
+                    line=dict(width=0),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
         )
         fig1.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=band_hi_post_v,
-                mode="lines",
-                fill="tonexty",
-                fillcolor="rgba(180,180,180,0.35)",
-                line=dict(width=0),
-                name="No-arb fee band",
-                hoverinfo="skip",
+                go.Scatter(
+                    x=steps_list,
+                    y=band_hi_target_v,
+                    mode="lines",
+                    fill="tonexty",
+                    fillcolor="rgba(180,180,180,0.35)",
+                    line=dict(width=0),
+                    name="No-arb fee band (snapshot)",
+                    hoverinfo="skip",
+                )
             )
-        )
         fig1.add_trace(
             go.Scatter(
                 x=steps_list,
@@ -2770,24 +2931,6 @@ def simulate(
                 mode="lines",
                 name="CEX price mₜ",
                 line=dict(width=1.6, dash="dash"),
-            )
-        )
-        fig1.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=band_lo_target_v,
-                mode="lines",
-                name="Target band lo",
-                line=dict(width=1, dash="dot"),
-            )
-        )
-        fig1.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=band_hi_target_v,
-                mode="lines",
-                name="Target band hi",
-                line=dict(width=1, dash="dot"),
             )
         )
         fig1.update_layout(
@@ -2861,6 +3004,28 @@ def simulate(
             yaxis_title="Notional (token1, signed)",
         )
         _save_plotly("2_notional", fig2)
+
+        # ----- 2a) Smart-router DEX share (per n blocks) -----
+        sr_share_steps_arr = np.asarray(sr_dex_share_steps, dtype=int)
+        sr_share_vals_arr = np.asarray(sr_dex_share_series, dtype=float)
+        sr_share_mask = sr_share_steps_arr >= s0
+        fig2a = go.Figure()
+        fig2a.add_trace(
+            go.Scatter(
+                x=sr_share_steps_arr[sr_share_mask].tolist(),
+                y=sr_share_vals_arr[sr_share_mask].tolist(),
+                mode="lines+markers",
+                name="DEX share",
+            )
+        )
+        fig2a.update_layout(
+            template="plotly_white",
+            title=f"Smart-router DEX Share (DEX/(CEX+DEX)) — every {n_block_SR_ratio} blocks",
+            xaxis_title="Step (window end)",
+            yaxis_title="DEX share",
+            yaxis=dict(range=[0.0, 1.0]),
+        )
+        _save_plotly("2a_smart_router_dex_share", fig2a)
 
         # ----- 2b) Agent activity (cumulative +/-1) -----
         fig2b = go.Figure()
@@ -3425,10 +3590,8 @@ def simulate(
         "CEX_price": M_series,
         "cex_sigma_series": cex_sigma_series.tolist(),
         "cex_regime_series": cex_regime_series.tolist(),
-        "band_lo_pre": band_lo_pre,
-        "band_hi_pre": band_hi_pre,
-        "band_lo_post": band_lo_post,
-        "band_hi_post": band_hi_post,
+        "band_lo": band_lo_target,
+        "band_hi": band_hi_target,
         "L_active_end": L_end,
         "L_pre_step": L_pre_step,
         "L_pre_trader": L_pre_trader,
@@ -3461,6 +3624,12 @@ def simulate(
         "smart_router_notional_y": sr_y_series,
         "noise_trader_notional_y": noise_y_series,
         "smart_router_exec_count": sr_exec_count,
+        "smart_router_cex_exec_count": sr_cex_exec_count,
+        "smart_router_dex_exec_count": sr_dex_exec_count,
+        "smart_router_dex_share_steps": sr_dex_share_steps,
+        "smart_router_dex_share_series": sr_dex_share_series,
+        "smart_router_dex_share_overall": sr_dex_share_overall,
+        "smart_router_dex_share_mean": sr_dex_share_mean,
         "noise_trader_exec_count": noise_exec_count,
         "lp_pnl_total": lp_pnl_total_series.tolist(),
         "lp_pnl_active": lp_pnl_active_series.tolist(),
