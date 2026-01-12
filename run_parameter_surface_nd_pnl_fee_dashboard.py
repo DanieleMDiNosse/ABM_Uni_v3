@@ -531,6 +531,7 @@ def main() -> None:
     csv_global = global_root / "data" / f"grid_{tag}.csv"
     meta_global = global_root / "data" / f"meta_{tag}.json"
     errors_global = global_root / "data" / f"errors_{tag}.csv"
+    verbose_progress = global_root / "logs" / f"progress_{tag}.txt"
 
     # --- dry run -------------------------------------------------------------
     grid_sizes = {k: len(v) for k, v in sweeps.items()}
@@ -618,6 +619,16 @@ def main() -> None:
     run_in_slice = 0
     failed_in_slice = 0
     pending_error_rows: List[Dict[str, Any]] = []
+    processed_in_slice = 0
+
+    def _maybe_append_progress() -> None:
+        if slice_total <= 0 or processed_in_slice <= 0:
+            return
+        if processed_in_slice % 5000 != 0:
+            return
+        verbose_progress.parent.mkdir(parents=True, exist_ok=True)
+        with verbose_progress.open("a", encoding="utf-8") as handle:
+            handle.write(f"{processed_in_slice}/{slice_total}\n")
 
     if slice_total > 0:
         max_pending = max(1, int(args.max_workers) * 4)
@@ -634,6 +645,8 @@ def main() -> None:
                     cached_in_slice += 1
                     if progress_overall is not None:
                         progress_overall.update(1)
+                    processed_in_slice += 1
+                    _maybe_append_progress()
                     continue
 
                 seed_base_point = int(args.seed_base + int(idx) * runs_per_point)
@@ -691,6 +704,8 @@ def main() -> None:
                         pending_rows.append(row)
                         if progress_overall is not None:
                             progress_overall.update(1)
+                        processed_in_slice += 1
+                        _maybe_append_progress()
                         if len(pending_rows) >= 25:
                             _append_rows_csv(csv_global, pending_rows)
                             pending_rows.clear()
@@ -736,6 +751,8 @@ def main() -> None:
                     pending_rows.append(row)
                     if progress_overall is not None:
                         progress_overall.update(1)
+                    processed_in_slice += 1
+                    _maybe_append_progress()
                     if len(pending_rows) >= 25:
                         _append_rows_csv(csv_global, pending_rows)
                         pending_rows.clear()
