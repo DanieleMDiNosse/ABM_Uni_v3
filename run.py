@@ -536,6 +536,7 @@ def simulate(
         jiter_agent.L_live = 0.0
         jiter_agent.wallet_x = 0.0
         jiter_agent.wallet_y = 0.0
+        jiter_agent.flash_fees_paid_y = 0.0  # type: ignore[attr-defined]
         LPs.append(jiter_agent)
 
     lp_lookup: Dict[int, LPAgent] = {lp.id: lp for lp in LPs}
@@ -698,6 +699,7 @@ def simulate(
     jiter_fee_value_series: List[float] = []
     jiter_position_value_series: List[float] = []
     jiter_pnl_series: List[float] = []
+    jiter_flash_fee_paid_series: List[float] = []
     trader_exec_count = []
     arb_exec_count = []
 
@@ -833,6 +835,7 @@ def simulate(
         jiter_fee_value_series = _NullList()
         jiter_position_value_series = _NullList()
         jiter_pnl_series = _NullList()
+        jiter_flash_fee_paid_series = _NullList()
         trader_exec_count = _NullList()
         arb_exec_count = _NullList()
         sr_exec_count = _NullList()
@@ -1652,7 +1655,7 @@ def simulate(
                 })
 
         def plan_jiter_targets() -> None:
-            """Select top-N swaps by input amount and mark them for JIT mint/burn."""
+            """Select the single largest swap intent and mark it for JIT mint/burn."""
             nonlocal jit_targets, jit_swap_executed
             if not jiter_enabled or jiter_agent is None:
                 return
@@ -1674,7 +1677,9 @@ def simulate(
                 ),
                 reverse=True,
             )
-            targets = sorted_swaps[:N_jit]
+            # New simplified JIT: always target the single largest swap (N_jit is kept
+            # as an enable/disable knob but does not increase target count).
+            targets = sorted_swaps[:1]
             for o in targets:
                 target_id = id(o)
                 o["jit_target"] = target_id
@@ -1794,6 +1799,49 @@ def simulate(
                         return
 
                     amt0, amt1 = minted_amounts_at_S(L_target, sa, sb, S_now)
+                    # Flash-loan cost (valued at the mint-time CEX snapshot).
+                    # We model Jiter as borrowing the principal required for the mint
+                    # and paying a proportional fee on the token1 value of that principal.
+                    flash_fee_y = 0.0
+                    if flash_loan_fee > 0.0:
+                        borrowed_value_y = float(amt0) * float(m_exec) + float(amt1)
+                        if borrowed_value_y > 0.0:
+                            flash_fee_y = borrowed_value_y * float(flash_loan_fee)
+
+                    # --- Profitability filter -------------------------------------------------
+                    # Skip the JIT if the *expected* fee capture (in token1 value) does not
+                    # cover the flash-loan fee. This is intentionally conservative: it ignores
+                    # LVR, so if it fails this test the realized hedged PnL net of flash fees
+                    # is guaranteed to be <= 0 up to numerical noise.
+                    fee_rate = float(getattr(pool, "f", 0.0))
+                    fee_total_value_y = 0.0
+                    if fee_rate > 0.0:
+                        if side == "Y_to_X":
+                            fee_total_value_y = amount_in * fee_rate
+                        else:  # X_to_Y: fees are paid in token0; value at the snapshot CEX price.
+                            fee_total_value_y = amount_in * fee_rate * float(m_exec)
+                    L_total_tick = L_existing_band + L_target
+                    fee_share = float(L_target / max(1e-12, L_total_tick))
+                    expected_fee_capture_y = fee_share * fee_total_value_y
+                    expected_profit_y = expected_fee_capture_y - flash_fee_y
+                    if expected_profit_y <= 0.0:
+                        # Remove the marker so the swap doesn't register as a JIT success.
+                        try:
+                            tgt_id = int(tgt)
+                        except (TypeError, ValueError):
+                            tgt_id = None
+                        if tgt_id is not None:
+                            jit_targets.pop(tgt_id, None)
+                            jit_swap_executed.pop(tgt_id, None)
+                        buffer_log(
+                            f"[t={t:03d}] JIT SKIP (expected_profit<=0) "
+                            f"expected_fee={expected_fee_capture_y:.6g} flash_fee={flash_fee_y:.6g} "
+                            f"share={fee_share:.3f} notional_in={amount_in:.6g} side={side}\n"
+                        )
+                        return
+                    # --------------------------------------------------------------------------
+
+                    jiter_agent.flash_fees_paid_y = float(getattr(jiter_agent, "flash_fees_paid_y", 0.0)) + flash_fee_y  # type: ignore[attr-defined]
                     pos = Position(
                         owner=jiter_agent.id,
                         lower=lower,
@@ -1807,7 +1855,7 @@ def simulate(
                     )
                     # Treat JIT as flash-funded: allow token wallets to go negative.
                     jiter_agent.wallet_x = float(getattr(jiter_agent, "wallet_x", 0.0)) - float(amt0)
-                    jiter_agent.wallet_y = float(getattr(jiter_agent, "wallet_y", 0.0)) - float(amt1)
+                    jiter_agent.wallet_y = float(getattr(jiter_agent, "wallet_y", 0.0)) - float(amt1) - flash_fee_y
                     pool.add_liquidity_range(lower, upper, L_target)
                     jiter_agent.positions.append(pos)
                     _register_position(pos)
@@ -1821,7 +1869,8 @@ def simulate(
                     mint_is_passive.append(False)
                     mint_is_jiter.append(True)
                     buffer_log(
-                        f"[t={t:03d}] JIT MINT L={L_target:.4f} [{lower},{upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+                        f"[t={t:03d}] JIT MINT L={L_target:.4f} [{lower},{upper}) | "
+                        f"L_active={pool.L_active:.4f} | tick={pool.tick} | flash_fee_y={flash_fee_y:.6g}\n"
                     )
                     executed_lp_events += 1
                     return
@@ -2400,6 +2449,7 @@ def simulate(
         jiter_position_value_now = 0.0
         jiter_wealth_now = 0.0
         jiter_pnl_now = 0.0
+        jiter_flash_fee_paid_now = 0.0
         for lp in LPs:
             # Seed/background LPs provide liquidity but are excluded from
             # cohort-level PnL and wealth statistics.
@@ -2412,6 +2462,7 @@ def simulate(
                 jiter_fee_value_now = lp_total_fee_earned_value_y(lp, ref.m)
                 jiter_position_value_now = lp_total_position_value_y(lp, pool.S, ref.m)
                 jiter_wealth_now = lp_wealth_y(lp, pool.S, ref.m)
+                jiter_flash_fee_paid_now = float(getattr(lp, "flash_fees_paid_y", 0.0))
                 rb = lp.rebalancer
                 jiter_rebal_value_now = rb.initial_rebal_value_y + rb.cumulative_R
                 # Hedged PnL = V^LP - V^reb (matches LP cohort sign convention)
@@ -2494,6 +2545,7 @@ def simulate(
         jiter_position_value_series.append(jiter_position_value_now)
         jiter_wealth_series.append(jiter_wealth_now)
         jiter_pnl_series.append(jiter_pnl_now)
+        jiter_flash_fee_paid_series.append(jiter_flash_fee_paid_now)
 
         # ================== Dynamic fee controller  ==================
         # By default, signals are based on END-OF-STEP state and the new
@@ -2503,7 +2555,7 @@ def simulate(
         try:
             log_m_now = math.log(max(ref.m, 1e-18))
             log_m_prev = math.log(max(prev_m_for_vol, 1e-18))
-            vol_obs = abs(log_m_now - log_m_prev)
+            vol_obs = (log_m_now - log_m_prev)**2
         except ValueError:
             _vprint("[fee_mode] ValueError in log computation for volatility observation")
             vol_obs = 0.0
@@ -2757,6 +2809,7 @@ def simulate(
     jiter_fee_value_series = np.array(jiter_fee_value_series)
     jiter_position_value_series = np.array(jiter_position_value_series)
     jiter_pnl_series = np.array(jiter_pnl_series)
+    jiter_flash_fee_paid_series = np.array(jiter_flash_fee_paid_series)
     fee_sigma_series = np.array(fee_sigma_series)
     fee_basis_ticks_series = np.array(fee_basis_ticks_series)
     fee_imb_series = np.array(fee_imb_series)
@@ -3380,13 +3433,13 @@ def simulate(
             col=1,
         )
         fig6.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=jiter_pnl_series_v,
-                mode="lines",
-                name="Jiter hedged (fees - LVR)",
-                line=dict(width=2, color="#d62728"),
-            ),
+                go.Scatter(
+                    x=steps_list,
+                    y=jiter_pnl_series_v,
+                    mode="lines",
+                    name="Jiter hedged net (fees - LVR - flash)",
+                    line=dict(width=2, color="#d62728"),
+                ),
             row=1,
             col=1,
         )
@@ -3675,6 +3728,7 @@ def simulate(
         "jiter_fee_value_series": jiter_fee_value_series.tolist(),
         "jiter_position_value_series": jiter_position_value_series.tolist(),
         "jiter_pnl_series": jiter_pnl_series.tolist(),
+        "jiter_flash_fee_paid_series": jiter_flash_fee_paid_series.tolist(),
         "jiter_activity_cum": jiter_activity_cum.tolist(),
         "arb_exec_count": arb_exec_count,
         "smart_router_activity_cum": smart_activity_cum.tolist(),

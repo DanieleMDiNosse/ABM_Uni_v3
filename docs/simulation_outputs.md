@@ -367,12 +367,19 @@ When Jiter is enabled (`p_jit > 0`, `N_jit > 0`, `liquidity_perc_jit > 0`), thes
 - `jiter_fee_value_series[t]`  
   Mark-to-market value (token1) of Jiter’s cumulative fees earned (realized + uncollected).
 
+- `jiter_flash_fee_paid_series[t]`  
+  Cumulative flash-loan fees paid by Jiter (token1 units), valued at the mint-time CEX snapshot for each JIT mint.
+
 - `jiter_pnl_series[t]`  
-  Jiter “hedged” series reported with the opposite sign convention to LP hedged PnL:
+  Jiter “hedged” PnL net of flash-loan fees, using the same sign convention as LP hedged PnL:
   $$
-    \text{jiter\_pnl\_series}[t] = V^{\text{reb}}_t - V^{\text{LP}}_t = \text{LVR}_t - F_t.
+    \text{jiter\_pnl\_series}[t] = V^{\text{LP}}_t - V^{\text{reb}}_t.
   $$
-  (This matches the default plot label “Jiter hedged (LVR - fees)”.)
+  In the implementation, flash-loan fees are debited from Jiter’s wallet, so this series corresponds to
+  $$
+    (\text{fees} - \text{LVR}) - \text{flash\_fees\_paid}.
+  $$
+  (This matches the default plot label “Jiter hedged net (fees - LVR - flash)”.)
 
 Seed LPs (`is_seed=True`) created by `bootstrap_initial_binomial_hill_sharded`
 are **excluded** from all strategic LP cohorts.
