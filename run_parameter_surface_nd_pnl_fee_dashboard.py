@@ -126,20 +126,20 @@ DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
     "passive_burns_per_block": linspace_int(0, 5, 5),
     "k_sigma": np.linspace(0.01, 10.0, 5).tolist(),
     "theta_T": [0.95, 0.98, 0.99999],
-    "p_jit": np.linspace(0.0, 1.0, 3).tolist(),
+    # "p_jit": np.linspace(0.0, 1.0, 3).tolist(),
 }
 
-# DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
-#     "passive_lp_share": [0.0, 1.0],
-#     "narrow_mints_per_block": [0, 5],
-#     "passive_mints_per_block": [0, 5],
-#     "noise_trades_per_block": [0, 5],
-#     "passive_burns_per_block": [0, 5],
-#     "k_sigma": [0.01, 10.0],
-#     "theta_T": [0.95, 0.9999],
-#     "p_jit": [0.0, 1.0],
+DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
+    "passive_lp_share": [0.7, 0.5],
+    "narrow_mints_per_block": [0, 5],
+    "passive_mints_per_block": [0, 5],
+    "noise_trades_per_block": [0, 5],
+    "passive_burns_per_block": [0, 5],
+    "k_sigma": [0.0, 5.0],
+    "theta_T": [0.95, 0.9999],
+    "p_jit": [0.0, 1.0],
 
-# }
+}
 
 
 # Parameters treated as integers for UI display + casting.

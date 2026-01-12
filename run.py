@@ -2691,6 +2691,12 @@ def simulate(
             "smart_router_pnl_cum": np.cumsum(sr_pnl_steps_arr).tolist(),
             "noise_trader_pnl_cum": np.cumsum(noise_pnl_steps_arr).tolist(),
             "arb_pnl_cum": np.cumsum(arb_pnl_steps_arr).tolist(),
+            # Keep smart-router routing metrics in light_mode so downstream dashboards can
+            # build the DEX-share distribution without running the full visualization stack.
+            "smart_router_dex_share_steps": list(sr_dex_share_steps),
+            "smart_router_dex_share_series": list(sr_dex_share_series),
+            "smart_router_dex_share_overall": float(sr_dex_share_overall),
+            "smart_router_dex_share_mean": float(sr_dex_share_mean),
             "lp_pnl_active": list(lp_pnl_active_series),
             "lp_pnl_passive": list(lp_pnl_passive_series),
             "lp_unhedged_active": list(lp_unhedged_active_series),
