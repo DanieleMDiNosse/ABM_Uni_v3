@@ -134,14 +134,15 @@ def lp_token0_exposure(lp: LPAgent, S: float) -> float:
     Notes
     -----
     - Includes token0 held in the LP wallet (`wallet_x`) plus token0 held as principal
-      in open positions.
-    - Excludes uncollected token0 fees (which are tracked separately as `pos.fees0`).
+      in open positions, plus uncollected token0 fees.
+    - Fees are included because the LP is economically exposed to token0 price movements
+      on accumulated fees until they are collected/burned and converted to token1.
     """
     total = float(getattr(lp, "wallet_x", 0.0))
     for pos in lp.positions:
         # Inline call to Numba function to avoid method dispatch overhead
         amt0, _ = _current_amounts_impl(pos.L, pos.sa, pos.sb, S)
-        total += amt0
+        total += amt0 + pos.fees0  # Include uncollected fees0 in hedge target
     return total
 
 

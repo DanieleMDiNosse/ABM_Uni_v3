@@ -1,5 +1,5 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: static
+fee_mode: volatility
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
@@ -54,13 +54,13 @@ simulate:
   # Standard deviation of log-normal order size distribution for traders
   trader_sigma: 1.5
   # Threshold multiplier for CEX-vs-DEX price comparison (best execution)
-  theta_T: 0.9999
+  theta_T: 0.9999999
   # Maximum relative slippage tolerated by traders
   slippage_tolerance: 0.01
 
   ##### ARBITRAGEURS #####
   # Percentage fee on arbitrage notional for flash loan usage (e.g., 0.0005 = 5 bps)
-  flash_loan_fee: 0.0005
+  flash_loan_fee: 0.0001
 
 
   ##### LIQUIDITY PROVIDERS #####
@@ -105,7 +105,7 @@ simulate:
 
   ##### JIT LP (Jiter) #####
   # Bernoulli arrival probability per block (Jiter runs only when block_time > 1)
-  p_jit: 0.5
+  p_jit: 0
   # Target up to top-N swaps by input size per arriving block
   N_jit: 1
   # Target share of active liquidity to temporarily add in a narrow band (0-1)
@@ -124,22 +124,22 @@ simulate:
 
   ##### FEE CONTROLLER #####
   # Baseline fee level applied when controller is static or as floor for dynamics
-  f0: 0.0005
+  f0: 0.0001
   # Minimum fee cap enforced by the controller
-  f_min: 0.0001
+  f_min: 0.00001
   # Maximum fee cap enforced by the controller
   f_max: 0.05
   # Half-life (n blocks) of the EWMA used for fee controller signals
   fee_half_life: 2
   # Multiplier converting EWMA volatility into a fee adjustment (volatility mode)
-  k_sigma: 3
+  k_sigma: 500.0
   # Multiplier converting EWMA basis (ticks) into a fee adjustment (toxicity mode)
   k_basis: 0.01
   # Feedback gain for EWMA(dLVR - dFees) / notional (lvr_fee_ewma mode)
   k_lvr: 0.1
-  # Minimum absolute fee change (in bps) required before committing an update. A value of 0.001 corresponds to 0.00001 = 0.001% of the previous fee
+  # Minimum absolute fee change (in bps) required before committing an update. A value of 0.0005 corresponds to 0.000005 = 0.0005% of the previous fee
   fee_step_bps_min: 0.0005
   # Maximum fee change (in bps) allowed per update step
-  fee_step_bps_max: 200.0
+  fee_step_bps_max: 100.0
   # Cooldown (steps) between consecutive fee updates
   fee_cooldown: 0

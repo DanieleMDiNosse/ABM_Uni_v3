@@ -94,6 +94,8 @@ class TraderStepAccumulator:
     dx_out: float = 0.0
     dy_in: float = 0.0
     dy_out: float = 0.0
+    # Track realized PnL from CEX trades separately (already settled at execution)
+    realized_pnl_cex: float = 0.0
 
     def record_swap(
         self,
@@ -103,18 +105,28 @@ class TraderStepAccumulator:
         dy_in: float = 0.0,
         dy_out: float = 0.0,
     ) -> None:
-        """Track token flows for later PnL settlement."""
+        """Track token flows for later PnL settlement (DEX trades only)."""
         self.dx_in += dx_in
         self.dx_out += dx_out
         self.dy_in += dy_in
         self.dy_out += dy_out
 
+    def record_cex_trade_pnl(self, pnl: float) -> None:
+        """
+        Record realized PnL from a CEX trade that is already settled at execution price.
+        CEX trades are fair exchanges at the current CEX price, so PnL is typically 0.
+        This bypasses the settle() revaluation.
+        """
+        self.realized_pnl_cex += pnl
+
     def settle(self, m_settle: float) -> None:
         """
-        Value accumulated flows versus the provided CEX price.
+        Value accumulated DEX flows versus the provided CEX price.
         Positive result means net token1 profit.
+        Final PnL includes both DEX settlement and already-realized CEX PnL.
         """
-        self.pnl = (self.dy_out - self.dy_in) + (self.dx_out - self.dx_in) * m_settle
+        dex_pnl = (self.dy_out - self.dy_in) + (self.dx_out - self.dx_in) * m_settle
+        self.pnl = dex_pnl + self.realized_pnl_cex
 
 class _NullList(list):
     """
@@ -340,6 +352,8 @@ def simulate(
             missing.append("cex_heston_sigma_v")
         if cex_heston_rho is None:
             missing.append("cex_heston_rho")
+        if cex_heston_v0 is None:
+            missing.append("cex_heston_v0")
         if missing:
             raise ValueError(
                 "cex_sigma_mode='heston' requires parameters: " + ", ".join(missing)
@@ -954,16 +968,34 @@ def simulate(
 
     def _flush_pending_rebalance() -> None:
         """Rebalance all LPs touched during a swap, then clear the set."""
+        nonlocal _pending_rebalance_ids
         if _pending_rebalance_ids:
-            _rebalance_by_ids(_pending_rebalance_ids, ref.m, pool.S)
-            _pending_rebalance_ids.clear()
+            # Take a snapshot to avoid modification during iteration
+            ids_to_rebalance = set(_pending_rebalance_ids)
+            _pending_rebalance_ids = set()  # Clear before processing to avoid race conditions
+            _rebalance_by_ids(ids_to_rebalance, ref.m, pool.S)
 
     def allocate_fees(token: str, fee_amt: float, tick_snapshot: int, L_snapshot: float) -> None:
-        if fee_amt <= 0:
-            return
+        """Allocate fees to positions and mark LPs for rebalancing.
+        
+        Note: This function is called by the pool swap methods. Even if fee_amt is zero,
+        we still need to track touched positions for rebalancing to keep hedged PnL / LVR
+        bookkeeping correct.
+        """
         bucket = positions_by_tick.get(tick_snapshot)
         if not bucket:
             return
+        
+        # Always track touched LP IDs for rebalancing, even if no fees to distribute.
+        # This ensures rebalancer exposure is updated when price moves, regardless of fee level.
+        for pos in bucket:
+            if pos.L > 0.0:
+                _pending_rebalance_ids.add(pos.owner)
+        
+        # If no fees to distribute, we're done (but LPs are still marked for rebalancing)
+        if fee_amt <= 0:
+            return
+        
         total_L = 0.0
         for pos in bucket:
             L_pos = pos.L
@@ -993,8 +1025,7 @@ def simulate(
                 lp = lp_lookup.get(owner_id)
                 if lp is not None:
                     lp.fees0_earned = getattr(lp, "fees0_earned", 0.0) + fee
-                # Collect for batched rebalancing instead of immediate rebalance
-                _pending_rebalance_ids.add(owner_id)
+                # Note: LP is already marked for rebalancing at the start of allocate_fees
         else:
             for pos in bucket:
                 L_pos = pos.L
@@ -1013,8 +1044,7 @@ def simulate(
                 lp = lp_lookup.get(owner_id)
                 if lp is not None:
                     lp.fees1_earned = getattr(lp, "fees1_earned", 0.0) + fee
-                # Collect for batched rebalancing instead of immediate rebalance
-                _pending_rebalance_ids.add(owner_id)
+                # Note: LP is already marked for rebalancing at the start of allocate_fees
 
     def burn_any(lp: LPAgent, idx: int, *, m_ref: float) -> None:
         nonlocal delta_a_cex_this
@@ -1026,9 +1056,11 @@ def simulate(
         amt1_total = float(amt1) + float(pos.fees1)
         lp.wallet_x = 0.0
         lp.wallet_y = float(getattr(lp, "wallet_y", 0.0)) + amt1_total + amt0_total * float(m_ref)
-        # Selling token0 on the CEX contributes negative Δa (token0 units) to the
-        # reference-market impact update applied at end-of-block.
-        delta_a_cex_this += -amt0_total
+        # Selling token0 on the CEX contributes negative Δa (immediate impact)
+        if abs(amt0_total) > 1e-18:
+            delta_a_cex_this += -amt0_total
+            ref.apply_impact_only(-amt0_total)
+            _broadcast_price_move(ref.m)
         _unregister_position(pos)
         pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
         _assert_active_liquidity_state_fast("lp_burn")
@@ -1040,7 +1072,7 @@ def simulate(
 
         buffer_log(
             f"[t={t:03d}] LP{lp.id} BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | "
-            f"L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+            f"L_active={pool.L_active:.4f} | tick={pool.tick} (impact applied)\n"
         )
 
         lp.cooldown = np.random.randint(3, 9)  # 3–8 steps of "hands off"
@@ -1163,9 +1195,11 @@ def simulate(
                 return None
         lp.wallet_x = 0.0
         lp.wallet_y = float(getattr(lp, "wallet_y", 0.0)) - cost_y
-        # Buying token0 on the CEX contributes positive Δa (token0 units) to the
-        # reference-market impact update applied at end-of-block.
-        delta_a_cex_this += +amt0
+        # Buying token0 on the CEX contributes positive Δa (immediate impact)
+        if abs(amt0) > 1e-18:
+            delta_a_cex_this += +amt0
+            ref.apply_impact_only(+amt0)
+            _broadcast_price_move(ref.m)
 
         pos = Position(
             owner=lp.id,
@@ -1509,7 +1543,19 @@ def simulate(
         L_pre_arb_eff_this = np.nan
         dir_arb_this: Optional[str] = None
 
-        
+        def _apply_cex_impact_now(delta_a: float) -> None:
+            """
+            Apply permanent CEX impact immediately when CEX is touched.
+            Updates delta_a_cex_this for series recording, applies impact to ref.m,
+            and broadcasts the price move so rebalancer benchmark sees the jump.
+            """
+            nonlocal delta_a_cex_this
+            if abs(delta_a) < 1e-18:
+                return
+            delta_a_cex_this += delta_a
+            ref.apply_impact_only(delta_a)
+            _broadcast_price_move(ref.m)
+
         # --- Mempool structures ---
         mempool_orders = []
         jit_targets: Dict[int, Dict[str, Any]] = {}
@@ -1541,24 +1587,27 @@ def simulate(
                 cex_value_y = dx * m_now
                 if initial_quote < theta_T * cex_value_y:
                     # DEX too uncompetitive: execute against CEX
+                    # CEX trade is a fair exchange at m_now, so realized PnL = 0
                     dy_cex = cex_value_y
                     trader_steps.append(t); trader_dirs.append("down")
                     smart_activity_steps.append(t); smart_activity_signs.append(+1)
                     delta_y = -dy_cex
                     sr_acc.notional_y += delta_y
                     trader_y_this += delta_y
-                    sr_acc.record_swap(dx_in=dx, dy_out=dy_cex)
+                    # Record CEX trade PnL directly (fair exchange => PnL = 0)
+                    # Don't use record_swap as that would be revalued at settlement
+                    sr_acc.record_cex_trade_pnl(0.0)
                     executed = int(dx > 0.0)
                     sr_acc.execs += executed
                     _trader_execs += executed
                     total_smart_swaps_executed += executed
                     smart_swaps_x_to_y += executed
                     sr_cex_execs_this += executed
-                    # Sell token0 on CEX => negative Δa_cex
-                    delta_a_cex_this += -dx
+                    # Sell token0 on CEX => negative Δa_cex (immediate impact)
+                    _apply_cex_impact_now(-dx)
                     buffer_log(
                         f"[t={t:03d}] smart CEX swap X_to_Y EXEC dx={dx:.6f} dy_out={dy_cex:.6f} "
-                        f"@ m={m_now:.4f}\n"
+                        f"@ m={m_now:.4f} (impact applied)\n"
                     )
                     return
                 baseline_quote = _baseline_quote_x_to_y(dx)
@@ -1583,22 +1632,25 @@ def simulate(
                 dx_cex = dy / max(m_now, 1e-18)
                 if initial_quote < theta_T * dx_cex:
                     # DEX too uncompetitive: execute against CEX
+                    # CEX trade is a fair exchange at m_now, so realized PnL = 0
                     trader_steps.append(t); trader_dirs.append("up")
                     smart_activity_steps.append(t); smart_activity_signs.append(-1)
                     sr_acc.notional_y += dy
                     trader_y_this += dy
-                    sr_acc.record_swap(dy_in=dy, dx_out=dx_cex)
+                    # Record CEX trade PnL directly (fair exchange => PnL = 0)
+                    # Don't use record_swap as that would be revalued at settlement
+                    sr_acc.record_cex_trade_pnl(0.0)
                     executed = int(dy > 0.0)
                     sr_acc.execs += executed
                     _trader_execs += executed
                     total_smart_swaps_executed += executed
                     smart_swaps_y_to_x += executed
                     sr_cex_execs_this += executed
-                    # Buy token0 on CEX => positive Δa_cex
-                    delta_a_cex_this += dx_cex
+                    # Buy token0 on CEX => positive Δa_cex (immediate impact)
+                    _apply_cex_impact_now(dx_cex)
                     buffer_log(
                         f"[t={t:03d}] smart CEX swap Y_to_X EXEC dy={dy:.6f} dx_out={dx_cex:.6f} "
-                        f"@ m={m_now:.4f}\n"
+                        f"@ m={m_now:.4f} (impact applied)\n"
                     )
                     return
                 baseline_quote = _baseline_quote_y_to_x(dy)
@@ -1799,7 +1851,9 @@ def simulate(
                         return
 
                     amt0, amt1 = minted_amounts_at_S(L_target, sa, sb, S_now)
-                    # Flash-loan cost (valued at the mint-time CEX snapshot).
+                    
+                    # Calculate flash-loan cost BEFORE profitability check
+                    # (valued at the mint-time CEX snapshot).
                     # We model Jiter as borrowing the principal required for the mint
                     # and paying a proportional fee on the token1 value of that principal.
                     flash_fee_y = 0.0
@@ -1826,6 +1880,7 @@ def simulate(
                     expected_profit_y = expected_fee_capture_y - flash_fee_y
                     if expected_profit_y <= 0.0:
                         # Remove the marker so the swap doesn't register as a JIT success.
+                        # NOTE: Do NOT apply flash_fee_y here since we're not executing the mint
                         try:
                             tgt_id = int(tgt)
                         except (TypeError, ValueError):
@@ -1841,6 +1896,7 @@ def simulate(
                         return
                     # --------------------------------------------------------------------------
 
+                    # Only apply flash fee AFTER confirming the mint will proceed
                     jiter_agent.flash_fees_paid_y = float(getattr(jiter_agent, "flash_fees_paid_y", 0.0)) + flash_fee_y  # type: ignore[attr-defined]
                     pos = Position(
                         owner=jiter_agent.id,
@@ -1863,6 +1919,10 @@ def simulate(
                     jiter_agent.L_live = getattr(jiter_agent, "L_live", 0.0) + L_target
                     jit_open_positions[int(tgt)] = pos
                     _rebalance_lp_to_target(jiter_agent, ref.m, pool.S)
+                    # Flaw 2 fix: Flash fee is a real cost that must be reflected in rebalancer
+                    # for hedged PnL calculation. The fee was already deducted from wallet_y above,
+                    # but the rebalancer also needs to account for this cash outflow.
+                    jiter_agent.rebalancer.cash_y -= flash_fee_y
                     mint_steps.append(t)
                     mint_sizes.append(L_target)
                     mint_widths.append(upper - lower)
@@ -1887,8 +1947,20 @@ def simulate(
                     except ValueError:
                         pass
                     amt0, amt1 = pos.current_amounts(pool.S)
-                    jiter_agent.wallet_x = float(getattr(jiter_agent, "wallet_x", 0.0)) + float(amt0) + float(pos.fees0)
-                    jiter_agent.wallet_y = float(getattr(jiter_agent, "wallet_y", 0.0)) + float(amt1) + float(pos.fees1)
+                    amt0_total = float(amt0) + float(pos.fees0)
+                    amt1_total = float(amt1) + float(pos.fees1)
+                    # Flaw 4 fix: Convert token0 to token1 at CEX execution price
+                    # and apply immediate CEX impact. This is consistent with how regular LPs
+                    # handle burns (via _rebalance_lp_to_target which sells token0 on CEX).
+                    # JIT gets proceeds in token1, wallet_x explicitly set to zero (flash loan fully repaid).
+                    m_exec_jit = ref.m  # Use current CEX price for conversion
+                    jiter_agent.wallet_x = 0.0  # Flash loan fully repaid (net mint borrow vs burn withdrawal)
+                    jiter_agent.wallet_y = float(getattr(jiter_agent, "wallet_y", 0.0)) + amt1_total + amt0_total * m_exec_jit
+                    # Apply immediate CEX impact: selling amt0_total on CEX
+                    if abs(amt0_total) > 1e-18:
+                        delta_a_cex_this += -amt0_total
+                        ref.apply_impact_only(-amt0_total)
+                        _broadcast_price_move(ref.m)
                     _unregister_position(pos)
                     pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
                     _assert_active_liquidity_state_fast("jit_burn")
@@ -1902,7 +1974,8 @@ def simulate(
                         jiter_activity_steps.append(t)
                         jiter_activity_signs.append(+1)
                     buffer_log(
-                        f"[t={t:03d}] JIT BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | L_active={pool.L_active:.4f} | tick={pool.tick}\n"
+                        f"[t={t:03d}] JIT BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | L_active={pool.L_active:.4f} | tick={pool.tick} | "
+                        f"amt0_sold={amt0_total:.6f} @ m={m_exec_jit:.4f}\n"
                     )
                     executed_lp_events += 1
                     return
@@ -1998,24 +2071,24 @@ def simulate(
                         arb_steps.append(t); arb_dirs.append(dir_arb)
 
                         if dir_arb == "up":
-                            # DEX cheap: buy token0 on DEX, sell on CEX
-                            delta_a_cex_this += -x_out_from_dex
+                            # DEX cheap: buy token0 on DEX, sell on CEX (immediate impact)
                             arb_y_this = +in_used
                             dex_notional_y_this += abs(in_used)
                             arb_acc.record_swap(dy_in=flash_loan_mult * in_used, dx_out=x_out_from_dex)
+                            _apply_cex_impact_now(-x_out_from_dex)
                             buffer_log(
                                 f"[t={t:03d}] arb swap up dy_in={in_used:.6f} dx_out={x_out_from_dex:.6f} "
-                                f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                                f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick} (impact applied)\n"
                             )
                         else:
-                            # DEX expensive: sell token0 on DEX, buy on CEX
-                            delta_a_cex_this += flash_loan_mult * in_used
+                            # DEX expensive: sell token0 on DEX, buy on CEX (immediate impact)
                             arb_y_this = -pool.price * in_used
                             dex_notional_y_this += abs(price_before * in_used)
                             arb_acc.record_swap(dx_in=flash_loan_mult * in_used, dy_out=y_out_from_dex)
+                            _apply_cex_impact_now(flash_loan_mult * in_used)
                             buffer_log(
                                 f"[t={t:03d}] arb swap down dx_in={in_used:.6f} dy_out={y_out_from_dex:.6f} "
-                                f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick}\n"
+                                f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick} (impact applied)\n"
                             )
                         _record_micro(price_before)
                         _arb_execs += int(in_used > 0)
@@ -2218,11 +2291,11 @@ def simulate(
             if smart_lambda_micro_step > 0.0:
                 n_smart = int(np.random.poisson(smart_lambda_micro_step))
                 for _ in range(n_smart):
-                    maybe_enqueue_smart_router_intent(cex_ref_for_agents)
+                    maybe_enqueue_smart_router_intent(ref.m)  # Use current CEX price for fair exchange
             if noise_lambda_micro_step > 0.0:
                 n_noise = int(np.random.poisson(noise_lambda_micro_step))
                 for _ in range(n_noise):
-                    maybe_enqueue_noise_trader_intent(cex_ref_for_agents)
+                    maybe_enqueue_noise_trader_intent(ref.m)  # Use current CEX price for fair exchange
             ref.diffuse_only()
             _broadcast_price_move(ref.m)
             micro_steps.append(micro_counter)
@@ -2385,12 +2458,13 @@ def simulate(
         # disable everyone for next step
         _enable([])
 
-        # Align rebalancing benchmark with end-of-block exposures before the CEX price move
+        # Align rebalancing benchmark with end-of-block exposures
+        # (CEX impact already applied immediately at each CEX touch)
         _rebalance_all(ref.m, pool.S)
 
-        # ---- CEX update  ----
-        ref.apply_impact_only(delta_a_cex_this)
-        _broadcast_price_move(ref.m)
+        # ---- CEX update (impact already applied; just record settlement price) ----
+        # Note: impact is now applied immediately when CEX is touched (arb, smart-router,
+        # LP/JIT conversions). No aggregated impact to apply here.
 
         settlement_m = ref.m
         sr_acc.settle(settlement_m)
@@ -2532,18 +2606,10 @@ def simulate(
         lp_lvr_total_series.append(lp_lvr_total)
         lp_lvr_active_series.append(lp_lvr_active)
         lp_lvr_passive_series.append(lp_lvr_passive)
-
-        # Wealth accounting (wallet + open PnL)
-        lp_wallet_series.append(lp_wallet_total)
-        lp_wallet_active_series.append(lp_wallet_active)
-        lp_wallet_passive_series.append(lp_wallet_passive)
-        lp_wealth_series.append(lp_wealth_total)
-        lp_wealth_active_series.append(lp_wealth_active)
-        lp_wealth_passive_series.append(lp_wealth_passive)
         jiter_wallet_series.append(jiter_wallet_now)
+        jiter_wealth_series.append(jiter_wealth_now)
         jiter_fee_value_series.append(jiter_fee_value_now)
         jiter_position_value_series.append(jiter_position_value_now)
-        jiter_wealth_series.append(jiter_wealth_now)
         jiter_pnl_series.append(jiter_pnl_now)
         jiter_flash_fee_paid_series.append(jiter_flash_fee_paid_now)
 
@@ -2555,6 +2621,7 @@ def simulate(
         try:
             log_m_now = math.log(max(ref.m, 1e-18))
             log_m_prev = math.log(max(prev_m_for_vol, 1e-18))
+            # vol_obs = abs(log_m_now - log_m_prev)
             vol_obs = (log_m_now - log_m_prev)**2
         except ValueError:
             _vprint("[fee_mode] ValueError in log computation for volatility observation")
@@ -2590,7 +2657,7 @@ def simulate(
         f_raw = pool.f
         stage_update = True
         if fee_mode == "volatility":
-            f_raw = k_sigma * sigma_signal * np.sqrt(block_time)
+            f_raw = k_sigma * sigma_signal
         elif fee_mode == "toxicity":
             f_raw = k_basis * basis_ticks
         elif fee_mode == "lvr_fee_ewma":
@@ -2616,10 +2683,10 @@ def simulate(
 
         # Clip and apply hysteresis (min/max step in bps, cooldown).
         if stage_update:
-            f_tgt = clamp(f_raw, f_min, f_max)
+            # f_tgt = clamp(f_raw, f_min, f_max)
             min_step = fee_step_bps_min / 1e4
             max_step = fee_step_bps_max / 1e4
-            delta_f = f_tgt - pool.f
+            delta_f = f_raw - pool.f
             if abs(delta_f) >= min_step:
                 step = math.copysign(min(abs(delta_f), max_step), delta_f)
                 f_new = clamp(pool.f + step, f_min, f_max)

@@ -229,7 +229,9 @@ class V3Pool:
                 dy_out += -dy
                 # Per-segment fee (token X) on *input* with fee-on-input model
                 _fee_seg = (dx_eff / self.r) - dx_eff
-                if fee_cb and _fee_seg > 0.0 and _L_snap > 0.0:
+                # Always call fee_cb to track touched positions for rebalancing,
+                # even if fee is zero. The callback handles fee=0 gracefully.
+                if fee_cb and _L_snap > 0.0:
                     fee_cb("x", _fee_seg, _tick_snap, _L_snap)
                 dx_eff = 0.0
             else:
@@ -242,7 +244,8 @@ class V3Pool:
                 dy_out += -dy
                 # Per-segment fee (token X)
                 _fee_seg = (dx_to / self.r) - dx_to
-                if fee_cb and _fee_seg > 0.0 and _L_snap > 0.0:
+                # Always call fee_cb to track touched positions for rebalancing
+                if fee_cb and _L_snap > 0.0:
                     fee_cb("x", _fee_seg, _tick_snap, _L_snap)
                 self._cross_down_once()
 
@@ -277,7 +280,8 @@ class V3Pool:
                 dx_out += dx
                 # Per-segment fee (token Y) on *input*
                 _fee_seg = (dy_eff / self.r) - dy_eff
-                if fee_cb and _fee_seg > 0.0 and _L_snap > 0.0:
+                # Always call fee_cb to track touched positions for rebalancing
+                if fee_cb and _L_snap > 0.0:
                     fee_cb("y", _fee_seg, _tick_snap, _L_snap)
                 dy_eff = 0.0
             else:
@@ -290,7 +294,8 @@ class V3Pool:
                 dx_out += dx
                 # Per-segment fee (token Y)
                 _fee_seg = (dy_to / self.r) - dy_to
-                if fee_cb and _fee_seg > 0.0 and _L_snap > 0.0:
+                # Always call fee_cb to track touched positions for rebalancing
+                if fee_cb and _L_snap > 0.0:
                     fee_cb("y", _fee_seg, _tick_snap, _L_snap)
                 self._cross_up_once()
 
