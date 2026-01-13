@@ -1,5 +1,5 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: volatility
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
@@ -46,15 +46,15 @@ simulate:
 
   ##### TRADERS #####
   # Expected number of smart-router trade intents per block
-  smart_trades_per_block: 1
+  smart_trades_per_block: 0.8
   # Expected number of noise trader intents per block
-  noise_trades_per_block: 1
+  noise_trades_per_block: 0.8
   # Mean of log-normal order size distribution for traders
   trader_mean: 2.5
   # Standard deviation of log-normal order size distribution for traders
   trader_sigma: 1.5
   # Threshold multiplier for CEX-vs-DEX price comparison (best execution)
-  theta_T: 0.9999999
+  theta_T: 1.0
   # Maximum relative slippage tolerated by traders
   slippage_tolerance: 0.01
 
@@ -69,11 +69,11 @@ simulate:
   # Fraction of LP agents designated as passive baseline providers
   passive_lp_share: 0.5
   # Expected number of narrow LP mints per block (total across narrow LPs)
-  narrow_mints_per_block: 1
+  narrow_mints_per_block: 0.5
   # Expected number of passive LP mints per block (total across passive LPs)
-  passive_mints_per_block: 1
+  passive_mints_per_block: 0.5
   # Expected number of passive LP burns per block (total across passive LPs)
-  passive_burns_per_block: 1
+  passive_burns_per_block: 0.5
   # Passive LP width as a total percentage (± width/2 around the reference price)
   passive_width_pct: 10.0
   # Legacy tick-based width fallback (set a value here only when omitting passive_width_pct)
@@ -132,7 +132,7 @@ simulate:
   # Half-life (n blocks) of the EWMA used for fee controller signals
   fee_half_life: 2
   # Multiplier converting EWMA volatility into a fee adjustment (volatility mode)
-  k_sigma: 500.0
+  k_sigma: 1
   # Multiplier converting EWMA basis (ticks) into a fee adjustment (toxicity mode)
   k_basis: 0.01
   # Feedback gain for EWMA(dLVR - dFees) / notional (lvr_fee_ewma mode)

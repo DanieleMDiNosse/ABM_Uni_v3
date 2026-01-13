@@ -197,7 +197,7 @@ def simulate(
     initial_total_L: float,
     
     # === Fee controller parameters ===
-    fee_mode: str,      # "static" | "volatility" | "toxicity" | "lvr_fee_ewma"
+    fee_mode: str,      # "static" | "volatility_cex" | "volatility_dex" | "toxicity" | "lvr_fee_ewma"
     f0: float,             # initial fee (and static fee level), e.g. 30 bps
     f_min: float,         # 5 bps
     f_max: float,           # 200 bps safety cap
@@ -245,7 +245,7 @@ def simulate(
     verbose: bool = True,
 ) -> Dict[str, Any]:
 
-    valid_fee_modes = {"static", "volatility", "toxicity", "lvr_fee_ewma"}
+    valid_fee_modes = {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
     if k_out_min <= 0 or k_out_max <= 0:
@@ -887,7 +887,8 @@ def simulate(
     ewma_basis_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # fee-adjusted log gap
     # EWMA of (dLVR - dFees) normalized by DEX notional (token1)
     ewma_lvr_gap_fee = EWMA(half_life_steps=fee_half_life, init=0.0)
-    prev_m_for_vol = ref.m
+    prev_cex_for_vol = ref.m   # for volatility_cex mode
+    prev_dex_for_vol = pool.price  # for volatility_dex mode
     prev_lp_fee_value_total = 0.0
     prev_lp_lvr_total = 0.0
 
@@ -907,6 +908,9 @@ def simulate(
         wealth_now = lp_wealth_y(lp, S_now, M_now)
         rb.initial_lp_value_y = wealth_now
         rb.initial_rebal_value_y = wealth_now  # V^{reb}_0 = V^{LP}_0
+        # Maintain a coherent benchmark balance sheet for debugging/diagnostics:
+        # V^{reb}_0 = x_0 * M_0 + cash_0.
+        rb.cash_y = rb.initial_rebal_value_y - rb.x_prev * M_now
         rb.last_wealth_y = wealth_now
         rb.last_cumulative_R = 0.0
         rb.hedged_pnl_cum = 0.0
@@ -1919,10 +1923,9 @@ def simulate(
                     jiter_agent.L_live = getattr(jiter_agent, "L_live", 0.0) + L_target
                     jit_open_positions[int(tgt)] = pos
                     _rebalance_lp_to_target(jiter_agent, ref.m, pool.S)
-                    # Flaw 2 fix: Flash fee is a real cost that must be reflected in rebalancer
-                    # for hedged PnL calculation. The fee was already deducted from wallet_y above,
-                    # but the rebalancer also needs to account for this cash outflow.
-                    jiter_agent.rebalancer.cash_y -= flash_fee_y
+                    # Flash fee is an external financing cost: it is already deducted from
+                    # Jiter wealth via wallet_y above, and should NOT be booked into the
+                    # rebalancing benchmark (otherwise it would cancel in hedged PnL).
                     mint_steps.append(t)
                     mint_sizes.append(L_target)
                     mint_widths.append(upper - lower)
@@ -2617,16 +2620,28 @@ def simulate(
         # By default, signals are based on END-OF-STEP state and the new
         # fee applies NEXT step.
 
-        # 1) Volatility of CEX (abs log-return)
+        # 1) Volatility signal (squared log-return)
+        # Compute for both CEX and DEX prices; use the appropriate one based on fee_mode
         try:
-            log_m_now = math.log(max(ref.m, 1e-18))
-            log_m_prev = math.log(max(prev_m_for_vol, 1e-18))
-            # vol_obs = abs(log_m_now - log_m_prev)
-            vol_obs = (log_m_now - log_m_prev)**2
+            # CEX volatility (for volatility_cex mode)
+            log_cex_now = math.log(max(ref.m, 1e-18))
+            log_cex_prev = math.log(max(prev_cex_for_vol, 1e-18))
+            vol_obs_cex = (log_cex_now - log_cex_prev)**2
+            # DEX volatility (for volatility_dex mode)
+            log_dex_now = math.log(max(pool.price, 1e-18))
+            log_dex_prev = math.log(max(prev_dex_for_vol, 1e-18))
+            vol_obs_dex = (log_dex_now - log_dex_prev)**2
         except ValueError:
             _vprint("[fee_mode] ValueError in log computation for volatility observation")
-            vol_obs = 0.0
-        prev_m_for_vol = ref.m
+            vol_obs_cex = 0.0
+            vol_obs_dex = 0.0
+        prev_cex_for_vol = ref.m
+        prev_dex_for_vol = pool.price
+        # Select which volatility observation to use based on fee_mode
+        if fee_mode == "volatility_dex":
+            vol_obs = vol_obs_dex
+        else:
+            vol_obs = vol_obs_cex  # default to CEX for volatility_cex and other modes
         sigma_hat_ewma = ewma_sigma_fee.update(vol_obs)
 
         # 2) Toxicity / basis (fee-adjusted log gap)
@@ -2656,8 +2671,8 @@ def simulate(
         # Select controller
         f_raw = pool.f
         stage_update = True
-        if fee_mode == "volatility":
-            f_raw = k_sigma * sigma_signal
+        if fee_mode in ("volatility_cex", "volatility_dex"):
+            f_raw = k_sigma * np.sqrt(sigma_signal)
         elif fee_mode == "toxicity":
             f_raw = k_basis * basis_ticks
         elif fee_mode == "lvr_fee_ewma":
@@ -2671,7 +2686,7 @@ def simulate(
             f_raw = pool.f  # "static": no change
 
         # Controller signal used for plotting (depends on fee_mode)
-        if fee_mode == "volatility":
+        if fee_mode in ("volatility_cex", "volatility_dex"):
             ctrl_sig = sigma_signal
         elif fee_mode == "toxicity":
             ctrl_sig = basis_ticks
@@ -3577,9 +3592,9 @@ def simulate(
             col=1,
             secondary_y=False,
         )
-        if fee_mode == "volatility":
+        if fee_mode in ("volatility_cex", "volatility_dex"):
             secondary_vals = fee_sigma_series_v
-            secondary_label = "σ̂ (abs log-return)"
+            secondary_label = "EWMA(σ^2)"
         elif fee_mode == "toxicity":
             secondary_vals = fee_basis_ticks_series_v
             secondary_label = "Basis (ticks)"

@@ -88,10 +88,15 @@ FEE_MODE_CONFIG = {
         "values": [None],  # constant fee
         "xlabel": "Static fee",
     },
-    "volatility": {
+    "volatility_cex": {
         "param_name": "k_sigma",
         "values": np.linspace(1e-2, 10.0, 5),
-        "xlabel": r"$k_{\sigma}$ (volatility)",
+        "xlabel": r"$k_{\sigma}$ (volatility CEX)",
+    },
+    "volatility_dex": {
+        "param_name": "k_sigma",
+        "values": np.linspace(1e-2, 10.0, 5),
+        "xlabel": r"$k_{\sigma}$ (volatility DEX)",
     },
     # "toxicity": {
     #     "param_name": "k_basis",

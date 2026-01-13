@@ -72,7 +72,7 @@ def _base_simulate_kwargs(tmp_path, **overrides: Any) -> Dict[str, Any]:
         initial_binom_N=50,
         initial_total_L=50_000.0,
         # Fee controller
-        fee_mode="volatility",
+        fee_mode="volatility_cex",
         f0=0.003,
         f_min=0.0001,
         f_max=0.01,
@@ -195,7 +195,7 @@ def test_simulate_outputs_consistent_lengths(tmp_path):
     assert len(out['noise_trader_exec_count']) == len(out['noise_trader_pnl_steps'])
     assert len(out['smart_router_pnl_steps']) == len(out['smart_router_pnl_cum'])
     assert len(out['noise_trader_pnl_steps']) == len(out['noise_trader_pnl_cum'])
-    assert out['fee_mode'] == 'volatility'
+    assert out['fee_mode'] == 'volatility_cex'
 
 
 def test_simulate_invalid_fee_mode(tmp_path):

@@ -7,7 +7,7 @@ Axes:
   y = Noise trades per block
   z = Median(final hedged passive LP PnL) across N runs
 
-We run the full grid for fee_mode="volatility" and k_sigma in a discrete list
+We run the full grid for fee_mode="volatility_cex" and k_sigma in a discrete list
 (default: np.linspace(1e-2, 10.0, 20)). Plotly frames + slider switch between
 surfaces. Seeds are held fixed across k_sigma for each (x, y) cell (common
 random numbers).
@@ -157,7 +157,7 @@ def _evaluate_grid_point(
     runs_per_point: int,
 ) -> Dict[str, Any]:
     params = dict(base_params)
-    params["fee_mode"] = "volatility"
+    params["fee_mode"] = "volatility_cex"
     params["k_sigma"] = float(point.k_sigma)
     params["noise_trades_per_block"] = float(point.cell.noise_trades_per_block)
     params["passive_width_ticks"] = int(point.cell.passive_width_ticks)
@@ -463,7 +463,7 @@ def build_figure(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="3D passive LP PnL and fee surfaces with k_sigma slider (fee_mode=volatility)."
+        description="3D passive LP PnL and fee surfaces with k_sigma slider (fee_mode=volatility_cex)."
     )
     parser.add_argument("--config", type=Path, default=BASE_CONFIG_PATH, help="Base YAML scenario config path.")
     parser.add_argument(
@@ -523,7 +523,7 @@ def main() -> None:
         print("Resolved grid:")
         print(f"  config: {args.config}")
         print(f"  scenario_label (from YAML): {scenario_label}")
-        print(f"  fee_mode override: volatility")
+        print(f"  fee_mode override: volatility_cex")
         print(f"  runs_per_point: {runs_per_point}")
         print(f"  k_sigma values: {k_sigma_values.tolist()}")
         print(f"  noise_trades_per_block: {noise_values}")
@@ -578,7 +578,7 @@ def main() -> None:
         points_to_run = [pt for pt in points if pt.key() not in existing_keys]
 
     print(
-        f"[surface_3d] config={args.config} | fee_mode=volatility | "
+        f"[surface_3d] config={args.config} | fee_mode=volatility_cex | "
         f"grid={len(points)} points ({len(points_to_run)} to run, {len(points) - len(points_to_run)} cached) | "
         f"workers={args.max_workers}"
     )

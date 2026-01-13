@@ -67,11 +67,11 @@ TAU = 5.0
 #   - traders: per block N ~ Poisson(trades_per_block)
 #   - LP targets: per block N ~ Poisson(target_per_block)
 BLOCK_TIME = 5
-SMART_TRADES_PER_BLOCK = 2.0
-NOISE_TRADES_PER_BLOCK = 4.0
-NARROW_MINTS_PER_BLOCK = 0.0
-PASSIVE_MINTS_PER_BLOCK = 5.0
-PASSIVE_BURNS_PER_BLOCK = 3.0
+SMART_TRADES_PER_BLOCK = 1
+NOISE_TRADES_PER_BLOCK = 1
+NARROW_MINTS_PER_BLOCK = 1
+PASSIVE_MINTS_PER_BLOCK = 1
+PASSIVE_BURNS_PER_BLOCK = 1
 
 # Generic sample size for Monte Carlo histograms
 N_SAMPLES = 500_000
