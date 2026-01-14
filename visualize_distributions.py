@@ -10,74 +10,139 @@ Outputs Plotly figures (HTML, and PNG if kaleido is installed) for:
 - Poisson arrival distributions:
   - traders: intents per block
   - LPs: target mint/burn counts per block
-- Heston-style reference market path (price, volatility, and return/volatility histograms).
+- Reference market path (price, volatility, and return/volatility histograms).
+
+By default this script mirrors the parameters in `abm_results/scenarios/test.yml`.
+You can point it at any run-style scenario YAML (the same config used by `run.py`)
+to visualize the implied distributions for that scenario.
 """
 
+import argparse
 import math
 import random
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from utils import ReferenceMarket, build_empty_pool
+from utils import ReferenceMarket, build_empty_pool, scenario_output_root
 
 
 # =============================================================================
 # Global hyperparameters (aligned with abm_results/scenarios/test.yml by default)
 # =============================================================================
 
-SEED = 7
+DEFAULT_CONFIG_PATH = Path("abm_results") / "scenarios" / "test.yml"
+PLOTLY_STATIC_WARNING_EMITTED = False
+_DEFAULT_GRID_STYLE = dict(showgrid=True, gridcolor="#e1e1e1", gridwidth=1)
 
-# Heston reference market
-N_STEPS = 10_000
-INITIAL_PRICE = 2_000.0
-DRIFT = 0.0  # per-step drift of log price
-IMPACT_KAPPA = 1e-3  # permanent impact scale (unused here)
-CEX_SIGMA = 0.00015  # per-step log-return volatility (used when HESTON_V0 is None)
-HESTON_KAPPA = 1.0
-HESTON_THETA = 1.0e-8
-HESTON_SIGMA_V = 0.001
-HESTON_RHO = -0.5
-HESTON_V0 = 2.25e-8
 
-# Initial liquidity binomial hill
-INITIAL_BINOM_N = 450
-INITIAL_TOTAL_L = 500_000.0
-MIN_L_PER_TICK = 1e-9
+@dataclass(frozen=True)
+class DistributionParams:
+    """
+    Parameters needed to reproduce distribution visualizations.
 
-# Width noise (binomial in ticks)
-BINOM_N = 70
-BINOM_P = 0.5
+    Parameters
+    ----------
+    seed : int
+        RNG seed used for both NumPy and Python's `random`.
+    n_steps : int
+        Number of reference-market steps to simulate.
+    initial_price : float
+        Starting reference price m_0 (token1 per token0).
+    cex_mu : float
+        Per-step drift of log price.
+    cex_sigma : float
+        Base per-step log-return volatility.
+    cex_sigma_mode : str
+        One of {"static", "regime", "noisy_sine", "heston"}.
+    cex_sigma_low, cex_sigma_high : float | None
+        Low/high sigma levels for regime switching and as fallback for noisy-sine.
+    cex_sigma_p_LL, cex_sigma_p_HH : float
+        Markov transition probabilities for regime switching.
+    cex_sigma_regime_init : str
+        Initial regime state, "L" or "H".
+    cex_sigma_sine_amp, cex_sigma_sine_period, cex_sigma_sine_noise, cex_sigma_sine_phase, cex_sigma_floor : float | int
+        Noisy-sine volatility parameters.
+    cex_heston_kappa, cex_heston_theta, cex_heston_sigma_v, cex_heston_rho, cex_heston_v0 : float | None
+        Heston stochastic volatility parameters (variance process).
+    initial_binom_N : int
+        Binomial hill depth used to seed initial liquidity.
+    initial_total_L : float
+        Total initial liquidity to distribute across ticks.
+    min_L_per_tick : float
+        Minimum per-tick liquidity to include in the histogram.
+    binom_n, binom_p : int, float
+        Binomial noise parameters for the LP width rule.
+    trader_mean, trader_sigma : float
+        Trader notional log-normal parameters (in log space).
+    mint_mu, mint_sigma : float
+        LP mint-scale log-normal parameters (in log space).
+    tau : float
+        Mean LP review interval in steps (geometric distribution).
+    block_time : int
+        Micro-steps per block (used for per-micro-step Poisson visualizations).
+    smart_trades_per_block, noise_trades_per_block : float
+        Expected trader intents per block (converted to per-micro-step intensities in run.py).
+    narrow_mints_per_block, passive_mints_per_block, passive_burns_per_block : float
+        Expected LP event targets per block.
+    n_samples : int
+        Monte Carlo sample size for histogram-based distributions.
 
-# Trader notional log-normal parameters (log space)
-TRADER_MEAN = 2.5
-TRADER_SIGMA = 1.5
+    Returns
+    -------
+    DistributionParams
+        Frozen dataclass instance with validated, simulation-aligned defaults.
 
-# LP mint size log-normal parameters (log space)
-MINT_MU = 2.5
-MINT_SIGMA = 1.5
+    Notes
+    -----
+    These parameters are intentionally a *subset* of `run.py`'s `simulate()` inputs:
+    only what is needed to visualize the stochastic primitives.
+    """
 
-# LP review clock (geometric) parameter: mean inter-review time ≈ tau
-TAU = 5.0
-
-# Arrival distributions (Poisson)
-#   - traders: per block N ~ Poisson(trades_per_block)
-#   - LP targets: per block N ~ Poisson(target_per_block)
-BLOCK_TIME = 5
-SMART_TRADES_PER_BLOCK = 1
-NOISE_TRADES_PER_BLOCK = 1
-NARROW_MINTS_PER_BLOCK = 1
-PASSIVE_MINTS_PER_BLOCK = 1
-PASSIVE_BURNS_PER_BLOCK = 1
-
-# Generic sample size for Monte Carlo histograms
-N_SAMPLES = 500_000
-
-# Output directory for figures
-RESULTS_DIR = Path(__file__).resolve().parent / "abm_results"
+    seed: int = 7
+    n_steps: int = 10_000
+    initial_price: float = 2_000.0
+    cex_mu: float = 0.0
+    cex_sigma: float = 0.00015
+    cex_sigma_mode: str = "heston"
+    cex_sigma_low: Optional[float] = 0.0001
+    cex_sigma_high: Optional[float] = 0.002
+    cex_sigma_p_LL: float = 0.999
+    cex_sigma_p_HH: float = 0.999
+    cex_sigma_regime_init: str = "L"
+    cex_sigma_sine_amp: Optional[float] = 0.0001
+    cex_sigma_sine_period: int = 10_000
+    cex_sigma_sine_noise: float = 5e-5
+    cex_sigma_sine_phase: float = 0.0
+    cex_sigma_floor: float = 0.0
+    cex_heston_kappa: Optional[float] = 1.0
+    cex_heston_theta: Optional[float] = 1.0e-8
+    cex_heston_sigma_v: Optional[float] = 0.001
+    cex_heston_rho: Optional[float] = -0.5
+    cex_heston_v0: Optional[float] = 2.25e-8
+    initial_binom_N: int = 450
+    initial_total_L: float = 500_000.0
+    min_L_per_tick: float = 1e-9
+    binom_n: int = 70
+    binom_p: float = 0.5
+    trader_mean: float = 2.5
+    trader_sigma: float = 1.5
+    mint_mu: float = -1.0
+    mint_sigma: float = 1.5
+    tau: float = 5.0
+    block_time: int = 5
+    smart_trades_per_block: float = 0.8
+    noise_trades_per_block: float = 0.8
+    narrow_mints_per_block: float = 0.5
+    passive_mints_per_block: float = 0.5
+    passive_burns_per_block: float = 0.5
+    n_samples: int = 500_000
 
 
 # =============================================================================
@@ -85,54 +150,271 @@ RESULTS_DIR = Path(__file__).resolve().parent / "abm_results"
 # =============================================================================
 
 
-def simulate_heston_path() -> Tuple[List[float], List[float]]:
+def save_plotly_figure(
+    fig: go.Figure,
+    png_path: Path,
+    html_path: Path,
+    source: str = "plot",
+    *,
+    width: int = 1400,
+    height: int = 900,
+    scale: float = 1.0,
+) -> None:
     """
-    Simulate a Heston-style reference market path.
+    Persist a Plotly figure as both HTML and PNG (if Kaleido is available).
 
     Parameters
     ----------
-    None.
+    fig : go.Figure
+        Plotly figure to write.
+    png_path : pathlib.Path
+        Target PNG output path.
+    html_path : pathlib.Path
+        Target HTML output path.
+    source : str
+        Label used in warning messages.
+    width, height : int
+        PNG export dimensions.
+    scale : float
+        PNG export scale multiplier.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    This mirrors `run.py`'s output convention: always write HTML; attempt PNG
+    export and emit a single warning if Kaleido is missing.
+    """
+    global PLOTLY_STATIC_WARNING_EMITTED
+    fig.update_xaxes(**_DEFAULT_GRID_STYLE)
+    fig.update_yaxes(**_DEFAULT_GRID_STYLE)
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    png_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(html_path), include_plotlyjs="cdn")
+    try:
+        fig.write_image(str(png_path), width=width, height=height, scale=scale)
+    except Exception as exc:  # pragma: no cover - depends on kaleido availability
+        if not PLOTLY_STATIC_WARNING_EMITTED:
+            print(f"[{source}] Warning: could not export Plotly PNGs ({exc})")
+            PLOTLY_STATIC_WARNING_EMITTED = True
+
+
+def _normalize_sigma_mode(mode: str) -> str:
+    mode_norm = (mode or "static").lower()
+    if mode_norm in {"regime", "regime_switch", "regime_switching"}:
+        return "regime"
+    return mode_norm
+
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    return int(value)
+
+
+def load_scenario_config(config_path: Path) -> Tuple[str, Dict[str, Any]]:
+    """
+    Load a run-style scenario YAML and return its label and `simulate` parameters.
+
+    Parameters
+    ----------
+    config_path : pathlib.Path
+        Path to a YAML scenario file containing a top-level `simulate` mapping.
+
+    Returns
+    -------
+    scenario_label : str
+        Scenario label used for filenames (prefers top-level `fee_mode`).
+    simulate_params : dict[str, Any]
+        Mapping of inputs passed to `run.py`'s `simulate()` function.
+
+    Notes
+    -----
+    This intentionally does *not* validate that all `simulate()` parameters are
+    present; this script only needs a subset for distribution visualization.
+    """
+    config_path = Path(config_path).expanduser().resolve()
+    if not config_path.exists():
+        raise FileNotFoundError(f"Missing configuration file: {config_path}")
+
+    with config_path.open("r", encoding="utf-8") as handle:
+        config_data = yaml.safe_load(handle)
+
+    if not isinstance(config_data, dict):
+        raise ValueError(f"Configuration root must be a mapping: {config_path}")
+
+    simulate_params = config_data.get("simulate")
+    if not isinstance(simulate_params, dict):
+        raise ValueError(f"'simulate' section missing in {config_path}")
+
+    # Match `utils.load_simulation_parameters` behavior: prefer top-level fee_mode.
+    fee_mode = config_data.get("fee_mode")
+    if fee_mode is not None:
+        simulate_fee_mode = simulate_params.get("fee_mode")
+        if simulate_fee_mode is not None and simulate_fee_mode != fee_mode:
+            raise ValueError("Conflicting 'fee_mode' between top-level and simulate() parameters.")
+        scenario_label = str(fee_mode)
+    else:
+        scenario_label = str(simulate_params.get("fee_mode", config_path.stem))
+
+    return scenario_label, dict(simulate_params)
+
+
+def build_distribution_params(
+    simulate_params: Dict[str, Any],
+    *,
+    n_steps: int,
+    n_samples: int,
+) -> DistributionParams:
+    """
+    Convert a `simulate()` parameter mapping into `DistributionParams`.
+
+    Parameters
+    ----------
+    simulate_params : dict[str, Any]
+        Run parameters (typically loaded from `abm_results/scenarios/*.yml`).
+    n_steps : int
+        Number of reference-market steps to simulate for the path plot.
+    n_samples : int
+        Monte Carlo sample size for histogram distributions.
+
+    Returns
+    -------
+    DistributionParams
+        Parsed parameters with conservative defaults for missing keys.
+
+    Notes
+    -----
+    `run.py` uses `build_empty_pool()` for `m0`; here we default to 2000.0 and
+    allow overriding via `initial_price` if ever added to configs.
+    """
+    seed = int(simulate_params.get("seed", DistributionParams.seed))
+    block_time = int(simulate_params.get("block_time", DistributionParams.block_time))
+    initial_price = float(simulate_params.get("initial_price", DistributionParams.initial_price))
+
+    cex_mu = float(simulate_params.get("cex_mu", DistributionParams.cex_mu))
+    cex_sigma = float(simulate_params.get("cex_sigma", DistributionParams.cex_sigma))
+    cex_sigma_mode = str(simulate_params.get("cex_sigma_mode", DistributionParams.cex_sigma_mode))
+
+    return DistributionParams(
+        seed=seed,
+        n_steps=max(1, int(n_steps)),
+        initial_price=initial_price,
+        cex_mu=cex_mu,
+        cex_sigma=cex_sigma,
+        cex_sigma_mode=_normalize_sigma_mode(cex_sigma_mode),
+        cex_sigma_low=_coerce_optional_float(simulate_params.get("cex_sigma_low", DistributionParams.cex_sigma_low)),
+        cex_sigma_high=_coerce_optional_float(simulate_params.get("cex_sigma_high", DistributionParams.cex_sigma_high)),
+        cex_sigma_p_LL=float(simulate_params.get("cex_sigma_p_LL", DistributionParams.cex_sigma_p_LL)),
+        cex_sigma_p_HH=float(simulate_params.get("cex_sigma_p_HH", DistributionParams.cex_sigma_p_HH)),
+        cex_sigma_regime_init=str(simulate_params.get("cex_sigma_regime_init", DistributionParams.cex_sigma_regime_init)),
+        cex_sigma_sine_amp=_coerce_optional_float(simulate_params.get("cex_sigma_sine_amp", DistributionParams.cex_sigma_sine_amp)),
+        cex_sigma_sine_period=int(simulate_params.get("cex_sigma_sine_period", DistributionParams.cex_sigma_sine_period)),
+        cex_sigma_sine_noise=float(simulate_params.get("cex_sigma_sine_noise", DistributionParams.cex_sigma_sine_noise)),
+        cex_sigma_sine_phase=float(simulate_params.get("cex_sigma_sine_phase", DistributionParams.cex_sigma_sine_phase)),
+        cex_sigma_floor=float(simulate_params.get("cex_sigma_floor", DistributionParams.cex_sigma_floor)),
+        cex_heston_kappa=_coerce_optional_float(simulate_params.get("cex_heston_kappa", DistributionParams.cex_heston_kappa)),
+        cex_heston_theta=_coerce_optional_float(simulate_params.get("cex_heston_theta", DistributionParams.cex_heston_theta)),
+        cex_heston_sigma_v=_coerce_optional_float(simulate_params.get("cex_heston_sigma_v", DistributionParams.cex_heston_sigma_v)),
+        cex_heston_rho=_coerce_optional_float(simulate_params.get("cex_heston_rho", DistributionParams.cex_heston_rho)),
+        cex_heston_v0=_coerce_optional_float(simulate_params.get("cex_heston_v0", DistributionParams.cex_heston_v0)),
+        initial_binom_N=int(simulate_params.get("initial_binom_N", DistributionParams.initial_binom_N)),
+        initial_total_L=float(simulate_params.get("initial_total_L", DistributionParams.initial_total_L)),
+        min_L_per_tick=float(simulate_params.get("min_L_per_tick", DistributionParams.min_L_per_tick)),
+        binom_n=int(simulate_params.get("binom_n", DistributionParams.binom_n)),
+        binom_p=float(simulate_params.get("binom_p", DistributionParams.binom_p)),
+        trader_mean=float(simulate_params.get("trader_mean", DistributionParams.trader_mean)),
+        trader_sigma=float(simulate_params.get("trader_sigma", DistributionParams.trader_sigma)),
+        mint_mu=float(simulate_params.get("mint_mu", DistributionParams.mint_mu)),
+        mint_sigma=float(simulate_params.get("mint_sigma", DistributionParams.mint_sigma)),
+        tau=float(simulate_params.get("tau", DistributionParams.tau)),
+        block_time=max(1, block_time),
+        smart_trades_per_block=float(simulate_params.get("smart_trades_per_block", DistributionParams.smart_trades_per_block)),
+        noise_trades_per_block=float(simulate_params.get("noise_trades_per_block", DistributionParams.noise_trades_per_block)),
+        narrow_mints_per_block=float(simulate_params.get("narrow_mints_per_block", DistributionParams.narrow_mints_per_block)),
+        passive_mints_per_block=float(simulate_params.get("passive_mints_per_block", DistributionParams.passive_mints_per_block)),
+        passive_burns_per_block=float(simulate_params.get("passive_burns_per_block", DistributionParams.passive_burns_per_block)),
+        n_samples=max(1, int(n_samples)),
+    )
+
+
+def simulate_reference_market_path(params: DistributionParams) -> Tuple[List[float], List[float]]:
+    """
+    Simulate a reference market path using the same volatility modes as `run.py`.
+
+    Parameters
+    ----------
+    params : DistributionParams
+        Scenario-aligned parameters (seed, mu, sigma_mode, and related settings).
 
     Returns
     -------
     prices : list[float]
-        Reference price series m_t (length N_STEPS + 1).
+        Reference price series m_t (length params.n_steps + 1).
     vols : list[float]
-        Volatility series sigma_t (sqrt variance, length N_STEPS + 1).
+        Volatility series sigma_t (per-step log-return volatility; in Heston mode,
+        this is sqrt(variance), length params.n_steps + 1).
 
     Notes
     -----
-    Uses global constants (SEED, N_STEPS, DRIFT, HESTON_*) to mirror run.py.
-    The initial volatility equals sqrt(HESTON_V0) when provided; otherwise it
-    uses CEX_SIGMA.
+    In the main simulator, `build_empty_pool()` pins the initial price to ~2000.
+    Here we default to the same starting value and focus on matching the
+    `ReferenceMarket` configuration and update rule.
 
     Examples
     --------
-    >>> prices, vols = simulate_heston_path()
+    >>> p = DistributionParams(seed=1, n_steps=3, cex_sigma_mode="static", cex_sigma=1e-4)
+    >>> prices, vols = simulate_reference_market_path(p)
     >>> len(prices) == len(vols)
     True
     """
-    np.random.seed(SEED)
-    random.seed(SEED)
+    np.random.seed(int(params.seed))
+    random.seed(int(params.seed))
 
-    sigma0 = math.sqrt(HESTON_V0) if HESTON_V0 is not None else float(CEX_SIGMA)
+    sigma_mode = _normalize_sigma_mode(params.cex_sigma_mode)
+    regime_state = "H" if str(params.cex_sigma_regime_init).upper().startswith("H") else "L"
+
+    sigma_for_ref = float(params.cex_sigma)
+    if sigma_mode == "regime":
+        if params.cex_sigma_low is None or params.cex_sigma_high is None:
+            raise ValueError("regime mode requires cex_sigma_low and cex_sigma_high.")
+        sigma_for_ref = float(params.cex_sigma_low if regime_state == "L" else params.cex_sigma_high)
+
     ref = ReferenceMarket(
-        m=INITIAL_PRICE,
-        mu=DRIFT,
-        sigma=sigma0,
-        kappa=IMPACT_KAPPA,
-        sigma_mode="heston",
-        heston_kappa=HESTON_KAPPA,
-        heston_theta=HESTON_THETA,
-        heston_sigma_v=HESTON_SIGMA_V,
-        heston_rho=HESTON_RHO,
-        heston_v0=HESTON_V0,
+        m=float(params.initial_price),
+        mu=float(params.cex_mu),
+        sigma=float(sigma_for_ref),
+        kappa=1e-3,
+        sigma_mode=sigma_mode,
+        sigma_low=params.cex_sigma_low,
+        sigma_high=params.cex_sigma_high,
+        p_LL=float(params.cex_sigma_p_LL),
+        p_HH=float(params.cex_sigma_p_HH),
+        regime_state=regime_state,
+        sigma_sine_amp=params.cex_sigma_sine_amp,
+        sigma_sine_period=int(params.cex_sigma_sine_period),
+        sigma_sine_noise=float(params.cex_sigma_sine_noise),
+        sigma_sine_phase=float(params.cex_sigma_sine_phase),
+        sigma_floor=float(params.cex_sigma_floor),
+        heston_kappa=params.cex_heston_kappa,
+        heston_theta=params.cex_heston_theta,
+        heston_sigma_v=params.cex_heston_sigma_v,
+        heston_rho=params.cex_heston_rho,
+        heston_v0=params.cex_heston_v0,
     )
 
     prices: List[float] = [ref.m]
-    vols: List[float] = [ref.sigma]  # sigma is sqrt of variance v_t
+    vols: List[float] = [ref.sigma]
 
-    for _ in range(N_STEPS):
+    for _ in range(int(params.n_steps)):
         ref.diffuse_only()
         prices.append(ref.m)
         vols.append(ref.sigma)
@@ -202,9 +484,9 @@ def _add_hist_with_mean(
 
 
 def sample_initial_liquidity(
-    N: int = INITIAL_BINOM_N,
-    L_total: float = INITIAL_TOTAL_L,
-    min_L_per_tick: float = MIN_L_PER_TICK,
+    N: int,
+    L_total: float,
+    min_L_per_tick: float,
 ) -> np.ndarray:
     """
     Build the initial binomial-hill liquidity levels per tick.
@@ -245,10 +527,10 @@ def sample_initial_liquidity(
 
 
 def sample_width_noise(
-    n: int = BINOM_N,
-    p: float = BINOM_P,
+    n: int,
+    p: float,
     tick_spacing: int = 1,
-    n_samples: int = N_SAMPLES,
+    n_samples: int = 500_000,
 ) -> np.ndarray:
     """
     Sample the binomial noise term used in the LP width rule.
@@ -287,9 +569,9 @@ def sample_width_noise(
 
 
 def sample_trader_notional(
-    mean_log: float = TRADER_MEAN,
-    sigma_log: float = TRADER_SIGMA,
-    n_samples: int = N_SAMPLES,
+    mean_log: float,
+    sigma_log: float,
+    n_samples: int = 500_000,
 ) -> np.ndarray:
     """
     Sample trader notionals following the log-normal model.
@@ -322,9 +604,9 @@ def sample_trader_notional(
 
 
 def sample_lp_mint_scale(
-    mean_log: float = MINT_MU,
-    sigma_log: float = MINT_SIGMA,
-    n_samples: int = N_SAMPLES,
+    mean_log: float,
+    sigma_log: float,
+    n_samples: int = 500_000,
 ) -> np.ndarray:
     """
     Sample LP mint-size scale factors prior to caps.
@@ -358,8 +640,8 @@ def sample_lp_mint_scale(
 
 
 def sample_review_intervals(
-    tau: float = TAU,
-    n_samples: int = N_SAMPLES,
+    tau: float,
+    n_samples: int = 500_000,
 ) -> np.ndarray:
     """
     Sample geometric inter-review intervals for LP review clocks.
@@ -390,7 +672,7 @@ def sample_review_intervals(
     return np.random.geometric(p, size=n_samples).astype(float)
 
 
-def sample_poisson_per_micro_step(per_block_rate: float, block_time: int, n_samples: int = N_SAMPLES) -> np.ndarray:
+def sample_poisson_per_micro_step(per_block_rate: float, block_time: int, n_samples: int) -> np.ndarray:
     """
     Sample Poisson arrivals per micro-step.
 
@@ -423,7 +705,7 @@ def sample_poisson_per_micro_step(per_block_rate: float, block_time: int, n_samp
     return np.random.poisson(lam, size=n_samples).astype(float)
 
 
-def sample_poisson_per_block(per_block_rate: float, n_samples: int = N_SAMPLES) -> np.ndarray:
+def sample_poisson_per_block(per_block_rate: float, n_samples: int) -> np.ndarray:
     """
     Sample Poisson arrivals per block.
 
@@ -458,9 +740,9 @@ def sample_poisson_per_block(per_block_rate: float, n_samples: int = N_SAMPLES) 
 # =============================================================================
 
 
-def plot_heston_paths(prices: List[float], vols: List[float]) -> go.Figure:
+def plot_reference_market_paths(prices: List[float], vols: List[float], *, sigma_mode: str) -> go.Figure:
     """
-    Build a Plotly panel with the Heston path and histograms.
+    Build a Plotly panel with the reference market path and histograms.
 
     Parameters
     ----------
@@ -468,6 +750,8 @@ def plot_heston_paths(prices: List[float], vols: List[float]) -> go.Figure:
         Reference price series m_t.
     vols : list[float]
         Volatility series sigma_t (sqrt variance).
+    sigma_mode : str
+        Volatility mode label (e.g., "static", "regime", "noisy_sine", "heston").
 
     Returns
     -------
@@ -480,7 +764,7 @@ def plot_heston_paths(prices: List[float], vols: List[float]) -> go.Figure:
 
     Examples
     --------
-    >>> fig = plot_heston_paths([1.0, 1.1], [0.1, 0.1])
+    >>> fig = plot_reference_market_paths([1.0, 1.1], [0.1, 0.1], sigma_mode="static")
     >>> isinstance(fig, go.Figure)
     True
     """
@@ -493,10 +777,10 @@ def plot_heston_paths(prices: List[float], vols: List[float]) -> go.Figure:
         rows=2,
         cols=2,
         subplot_titles=(
-            "Heston price path",
+            f"Reference price path (sigma_mode={sigma_mode})",
             "Empirical log-returns",
-            "Volatility path",
-            "Empirical volatility (σ_t)",
+            "Volatility path (σ_t)",
+            "Empirical volatility",
         ),
     )
 
@@ -543,13 +827,14 @@ def plot_heston_paths(prices: List[float], vols: List[float]) -> go.Figure:
     return fig
 
 
-def plot_distribution_suite() -> go.Figure:
+def plot_distribution_suite(params: DistributionParams) -> go.Figure:
     """
     Build a Plotly figure with core distribution histograms.
 
     Parameters
     ----------
-    None.
+    params : DistributionParams
+        Scenario-aligned distribution parameters.
 
     Returns
     -------
@@ -563,20 +848,38 @@ def plot_distribution_suite() -> go.Figure:
 
     Examples
     --------
-    >>> fig = plot_distribution_suite()
+    >>> fig = plot_distribution_suite(DistributionParams(n_steps=10, n_samples=1000))
     >>> isinstance(fig, go.Figure)
     True
     """
-    np.random.seed(SEED + 1)
+    # Offset the seed so each panel stays deterministic but independent.
+    np.random.seed(int(params.seed) + 1)
 
     pool, _ = build_empty_pool()
     tick_spacing = pool.tick_spacing
 
-    L_vals = sample_initial_liquidity()
-    width_noise = sample_width_noise(tick_spacing=tick_spacing)
-    trader_notionals = sample_trader_notional()
-    lp_scale = sample_lp_mint_scale()
-    review_intervals = sample_review_intervals()
+    L_vals = sample_initial_liquidity(
+        N=int(params.initial_binom_N),
+        L_total=float(params.initial_total_L),
+        min_L_per_tick=float(params.min_L_per_tick),
+    )
+    width_noise = sample_width_noise(
+        n=int(params.binom_n),
+        p=float(params.binom_p),
+        tick_spacing=tick_spacing,
+        n_samples=int(params.n_samples),
+    )
+    trader_notionals = sample_trader_notional(
+        mean_log=float(params.trader_mean),
+        sigma_log=float(params.trader_sigma),
+        n_samples=int(params.n_samples),
+    )
+    lp_scale = sample_lp_mint_scale(
+        mean_log=float(params.mint_mu),
+        sigma_log=float(params.mint_sigma),
+        n_samples=int(params.n_samples),
+    )
+    review_intervals = sample_review_intervals(tau=float(params.tau), n_samples=int(params.n_samples))
 
     fig = make_subplots(
         rows=2,
@@ -586,7 +889,7 @@ def plot_distribution_suite() -> go.Figure:
             f"LP width noise (Binomial, tick_spacing={tick_spacing})",
             "Trader notional distribution (log-normal)",
             "LP mint scale X (log-normal)",
-            f"LP review intervals (Geometric, mean≈{TAU:g})",
+            f"LP review intervals (Geometric, mean≈{float(params.tau):g})",
             "",
         ),
     )
@@ -653,13 +956,14 @@ def plot_distribution_suite() -> go.Figure:
     return fig
 
 
-def plot_arrival_distributions() -> go.Figure:
+def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
     """
     Build a Plotly figure with Poisson arrival distributions.
 
     Parameters
     ----------
-    None.
+    params : DistributionParams
+        Scenario-aligned distribution parameters.
 
     Returns
     -------
@@ -668,54 +972,65 @@ def plot_arrival_distributions() -> go.Figure:
 
     Notes
     -----
-    Trader arrivals are shown per block only.
+    `run.py` samples trader intents per micro-step with intensity
+    λ_micro = trades_per_block / block_time. The sum across a block remains
+    Poisson(trades_per_block), but the micro-step view is helpful for intuition.
 
     Examples
     --------
-    >>> fig = plot_arrival_distributions()
+    >>> fig = plot_arrival_distributions(DistributionParams(n_steps=10, n_samples=1000))
     >>> isinstance(fig, go.Figure)
     True
     """
-    np.random.seed(SEED + 2)
+    np.random.seed(int(params.seed) + 2)
 
-    smart_block = sample_poisson_per_block(SMART_TRADES_PER_BLOCK)
-    noise_block = sample_poisson_per_block(NOISE_TRADES_PER_BLOCK)
-    narrow_mints = sample_poisson_per_block(NARROW_MINTS_PER_BLOCK)
-    passive_mints = sample_poisson_per_block(PASSIVE_MINTS_PER_BLOCK)
-    passive_burns = sample_poisson_per_block(PASSIVE_BURNS_PER_BLOCK)
+    smart_micro = sample_poisson_per_micro_step(
+        float(params.smart_trades_per_block),
+        int(params.block_time),
+        int(params.n_samples),
+    )
+    noise_micro = sample_poisson_per_micro_step(
+        float(params.noise_trades_per_block),
+        int(params.block_time),
+        int(params.n_samples),
+    )
+    smart_block = sample_poisson_per_block(float(params.smart_trades_per_block), int(params.n_samples))
+    noise_block = sample_poisson_per_block(float(params.noise_trades_per_block), int(params.n_samples))
+    narrow_mints = sample_poisson_per_block(float(params.narrow_mints_per_block), int(params.n_samples))
+    passive_mints = sample_poisson_per_block(float(params.passive_mints_per_block), int(params.n_samples))
+    passive_burns = sample_poisson_per_block(float(params.passive_burns_per_block), int(params.n_samples))
 
     fig = make_subplots(
-        rows=2,
+        rows=3,
         cols=3,
         subplot_titles=(
-            f"Smart intents / block (λ={SMART_TRADES_PER_BLOCK})",
-            f"Noise intents / block (λ={NOISE_TRADES_PER_BLOCK})",
-            f"Narrow mint targets / block (λ={NARROW_MINTS_PER_BLOCK})",
-            f"Passive mint targets / block (λ={PASSIVE_MINTS_PER_BLOCK})",
-            f"Passive burn targets / block (λ={PASSIVE_BURNS_PER_BLOCK})",
+            f"Smart intents / micro-step (λ={float(params.smart_trades_per_block)/max(1,int(params.block_time)):.3g})",
+            f"Noise intents / micro-step (λ={float(params.noise_trades_per_block)/max(1,int(params.block_time)):.3g})",
+            "",
+            f"Smart intents / block (λ={float(params.smart_trades_per_block):g})",
+            f"Noise intents / block (λ={float(params.noise_trades_per_block):g})",
+            f"Narrow mint targets / block (λ={float(params.narrow_mints_per_block):g})",
+            f"Passive mint targets / block (λ={float(params.passive_mints_per_block):g})",
+            f"Passive burn targets / block (λ={float(params.passive_burns_per_block):g})",
             "",
         ),
     )
 
-    _add_hist_with_mean(fig, row=1, col=1, data=smart_block, x_label="Count", y_label="Probability", color="#2ca02c", log_y=True, histnorm="probability")
-    _add_hist_with_mean(fig, row=1, col=2, data=noise_block, x_label="Count", y_label="Probability", color="#d62728", log_y=True, histnorm="probability")
-    _add_hist_with_mean(fig, row=1, col=3, data=narrow_mints, x_label="Count", y_label="Probability", color="#9467bd", log_y=True, histnorm="probability")
-    _add_hist_with_mean(fig, row=2, col=1, data=passive_mints, x_label="Count", y_label="Probability", color="#8c564b", log_y=True, histnorm="probability")
-    _add_hist_with_mean(fig, row=2, col=2, data=passive_burns, x_label="Count", y_label="Probability", color="#e377c2", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=1, col=1, data=smart_micro, x_label="Count", y_label="Probability", color="#2ca02c", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=1, col=2, data=noise_micro, x_label="Count", y_label="Probability", color="#d62728", log_y=True, histnorm="probability")
 
-    fig.update_xaxes(visible=False, row=2, col=3, showgrid=True, gridcolor="lightgray", gridwidth=1)
-    fig.update_yaxes(visible=False, row=2, col=3, showgrid=True, gridcolor="lightgray", gridwidth=1)
-    fig.update_layout(template="plotly_white", height=750, width=1200, margin=dict(l=40, r=20, t=60, b=40))
+    _add_hist_with_mean(fig, row=2, col=1, data=smart_block, x_label="Count", y_label="Probability", color="#2ca02c", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=2, col=2, data=noise_block, x_label="Count", y_label="Probability", color="#d62728", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=2, col=3, data=narrow_mints, x_label="Count", y_label="Probability", color="#9467bd", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=3, col=1, data=passive_mints, x_label="Count", y_label="Probability", color="#8c564b", log_y=True, histnorm="probability")
+    _add_hist_with_mean(fig, row=3, col=2, data=passive_burns, x_label="Count", y_label="Probability", color="#e377c2", log_y=True, histnorm="probability")
+
+    fig.update_xaxes(visible=False, row=1, col=3)
+    fig.update_yaxes(visible=False, row=1, col=3)
+    fig.update_xaxes(visible=False, row=3, col=3)
+    fig.update_yaxes(visible=False, row=3, col=3)
+    fig.update_layout(template="plotly_white", height=980, width=1200, margin=dict(l=40, r=20, t=60, b=40))
     return fig
-
-
-def _write_plotly(fig: go.Figure, stem: str) -> None:
-    html_path = RESULTS_DIR / f"{stem}.html"
-    fig.write_html(html_path, include_plotlyjs="cdn")
-    try:
-        fig.write_image(RESULTS_DIR / f"{stem}.png", scale=2)
-    except Exception:
-        pass
 
 
 def main() -> None:
@@ -732,21 +1047,74 @@ def main() -> None:
 
     Notes
     -----
-    Writes HTML files to RESULTS_DIR and PNGs when Kaleido is available.
+    Writes to the same scenario output convention as `run.py`:
+    `abm_results/scenarios/<scenario_name>/{html,png}`.
 
     Examples
     --------
     >>> main()  # doctest: +SKIP
     """
-    prices, vols = simulate_heston_path()
-    fig_heston = plot_heston_paths(prices, vols)
-    fig_distributions = plot_distribution_suite()
-    fig_arrivals = plot_arrival_distributions()
+    parser = argparse.ArgumentParser(description="Visualize ABM distribution primitives from a scenario YAML.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=str(DEFAULT_CONFIG_PATH),
+        help=f"Path to a run-style scenario YAML (default: {DEFAULT_CONFIG_PATH}).",
+    )
+    parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=DistributionParams.n_steps,
+        help="Reference market steps to simulate (default: 10000).",
+    )
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=DistributionParams.n_samples,
+        help="Monte Carlo samples for histogram distributions (default: 500000).",
+    )
+    args = parser.parse_args()
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    _write_plotly(fig_heston, "heston_paths")
-    _write_plotly(fig_distributions, "distribution_suite")
-    _write_plotly(fig_arrivals, "arrival_distributions")
+    config_path = Path(args.config).expanduser().resolve()
+    scenario_label, simulate_params = load_scenario_config(config_path)
+    params = build_distribution_params(simulate_params, n_steps=int(args.n_steps), n_samples=int(args.n_samples))
+
+    scenario_root = scenario_output_root(config_path)
+    html_dir = scenario_root / "html"
+    png_dir = scenario_root / "png"
+
+    prices, vols = simulate_reference_market_path(params)
+    fig_market = plot_reference_market_paths(prices, vols, sigma_mode=params.cex_sigma_mode)
+    fig_distributions = plot_distribution_suite(params)
+    fig_arrivals = plot_arrival_distributions(params)
+
+    save_plotly_figure(
+        fig_market,
+        png_dir / f"distributions_reference_market_{scenario_label}.png",
+        html_dir / f"distributions_reference_market_{scenario_label}.html",
+        "reference_market",
+        width=1400,
+        height=800,
+        scale=1.0,
+    )
+    save_plotly_figure(
+        fig_distributions,
+        png_dir / f"distributions_core_{scenario_label}.png",
+        html_dir / f"distributions_core_{scenario_label}.html",
+        "distributions_core",
+        width=1600,
+        height=900,
+        scale=1.0,
+    )
+    save_plotly_figure(
+        fig_arrivals,
+        png_dir / f"distributions_arrivals_{scenario_label}.png",
+        html_dir / f"distributions_arrivals_{scenario_label}.html",
+        "distributions_arrivals",
+        width=1400,
+        height=1050,
+        scale=1.0,
+    )
 
 
 if __name__ == "__main__":
