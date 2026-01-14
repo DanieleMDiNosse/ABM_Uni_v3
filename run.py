@@ -1105,6 +1105,15 @@ def simulate(
         if not math.isfinite(z) or z <= 0.0:
             return 0.0
         return min(1.0, z)
+    
+    # def _draw_wallet_utilization_factor() -> float:
+    #     """
+    #     Draw η in (0, 1] controlling wallet utilization for a mint attempt.
+
+    #     Paper spec: Z ~ LogNormal(mint_mu, mint_sigma), η = min(1, Z).
+    #     """
+    #     z = float(np.random.lognormal(mint_mu, mint_sigma))
+    #     return z / (1.0 + z)
 
     def _max_feasible_liquidity_from_cash(
         *,
@@ -1550,6 +1559,7 @@ def simulate(
         def _apply_cex_impact_now(delta_a: float) -> None:
             """
             Apply permanent CEX impact immediately when CEX is touched.
+
             Updates delta_a_cex_this for series recording, applies impact to ref.m,
             and broadcasts the price move so rebalancer benchmark sees the jump.
             """
@@ -1636,7 +1646,7 @@ def simulate(
                 dx_cex = dy / max(m_now, 1e-18)
                 if initial_quote < theta_T * dx_cex:
                     # DEX too uncompetitive: execute against CEX
-                    # CEX trade is a fair exchange at m_now, so realized PnL = 0
+                    # CEX trade is a fair exchange at m_now, so PnL is typically 0.
                     trader_steps.append(t); trader_dirs.append("up")
                     smart_activity_steps.append(t); smart_activity_signs.append(-1)
                     sr_acc.notional_y += dy
@@ -3876,21 +3886,25 @@ if __name__ == "__main__":
     html_dir.mkdir(parents=True, exist_ok=True)
     total_steps = max(1, len(dex_prices))
     fee_mode_label = params.get("fee_mode", "unknown")
-    png_path = png_dir / f"{pid_str}_{fee_mode_label}_autocorr_steps{total_steps}.png"
-    html_path = html_dir / f"{pid_str}_{fee_mode_label}_autocorr_steps{total_steps}.html"
+    suffix = f"autocorr_steps{total_steps}"
+    png_path = png_dir / f"{pid_str}_{fee_mode_label}_{suffix}.png"
+    html_path = html_dir / f"{pid_str}_{fee_mode_label}_{suffix}.html"
     save_plotly_figure(autocorr_fig, png_path, html_path, "autocorr")
 
     # make liquidity GIF
-    # if params['liquidty_for_gif']:
-    #     make_liquidity_gif(
-    #     liq_history=out["liq_history"],
-    #     tick_history=out["tick_history"],
-    #     base_s=out["grid_base_s"],
-    #     g=out["grid_g"],
-    #     out_path=f"abm_results/liquidity_evolution_{scenario_label}_{params['cex_sigma']}_{params['T']}.gif",
-    #     fps=20,
-    #     dpi=120,
-    #     pad_frac=0.05,
-    #     downsample_every=10,
-    #     center_line=True,
-    #     )
+    if bool(params.get("liquidity_for_gif", params.get("liquidty_for_gif", False))):
+        make_liquidity_gif(
+            liq_history=out["liq_history"],
+            tick_history=out["tick_history"],
+            base_s=out["grid_base_s"],
+            g=out["grid_g"],
+            out_path=str(
+                scenario_root
+                / f"liquidity_evolution_{scenario_label}_{params.get('cex_sigma')}_{params.get('T')}.gif"
+            ),
+            fps=20,
+            dpi=120,
+            pad_frac=0.05,
+            downsample_every=10,
+            center_line=True,
+        )

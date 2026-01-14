@@ -1,5 +1,5 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: static
+fee_mode: volatility_dex
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
@@ -10,9 +10,9 @@ simulate:
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 10000
+  T: 7000
   # Number of initial steps to omit from visualizations and analytics
-  skip_step: 1000
+  skip_step: 2000
   # Compute smart-router DEX share (DEX/(CEX+DEX)) every n blocks
   n_block_SR_ratio: 100
   # Random seed used for reproducibility across RNGs
@@ -67,7 +67,7 @@ simulate:
   # Total number of LP agents instantiated in the simulation
   N_LP: 10
   # Fraction of LP agents designated as passive baseline providers
-  passive_lp_share: 0.5
+  passive_lp_share: 0.7
   # Expected number of narrow LP mints per block (total across narrow LPs)
   narrow_mints_per_block: 0.5
   # Expected number of passive LP mints per block (total across passive LPs)
@@ -75,7 +75,7 @@ simulate:
   # Expected number of passive LP burns per block (total across passive LPs)
   passive_burns_per_block: 0.5
   # Passive LP width as a total percentage (± width/2 around the reference price)
-  passive_width_pct: 10.0
+  passive_width_pct: 5.0
   # Legacy tick-based width fallback (set a value here only when omitting passive_width_pct)
   passive_width_ticks: null
   # Average cadence (in steps) between LP reviews of their positions. On average, 1/tau LPs are active per block
@@ -95,7 +95,7 @@ simulate:
   k_out_min: 10
   k_out_max: 20
   # Mean of log-normal draw scaling LP mint sizes
-  mint_mu: 2.5
+  mint_mu: -1.0
   # Standard deviation of log-normal draw scaling LP mint sizes
   mint_sigma: 1.5
   # Take-profit ratio (relative to initial HODL value) for LP burn decisions

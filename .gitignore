@@ -221,3 +221,6 @@ data/
 # GitHub Pages site assets/layouts (tracked under docs/)
 !docs/**/*.html
 !docs/**/*.png
+
+# .tex
+*.tex

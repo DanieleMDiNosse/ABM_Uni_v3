@@ -84,7 +84,7 @@ simulate = run_module.simulate
 
 BASE_CONFIG_PATH = Path("abm_results/scenarios/test.yml")
 
-RUNS_PER_POINT_DEFAULT = 5
+RUNS_PER_POINT_DEFAULT = 15
 SEED_BASE_DEFAULT = 1
 FEE_HIST_BINS_DEFAULT = 60
 
@@ -119,13 +119,15 @@ def linspace_int(start: int, stop: int, steps: int) -> List[int]:
 # Provide discrete values for each parameter you want to sweep. The full grid is
 # the cartesian product of all values.
 DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
-    "passive_lp_share": np.linspace(0.0, 1.0, 3).tolist(),
-    "narrow_mints_per_block": linspace_int(0, 4, 4),
-    "smart_trades_per_block": linspace_int(0, 4, 4),
-    "passive_mints_per_block": linspace_int(0, 4, 4),
-    "noise_trades_per_block": linspace_int(0, 4, 4),
-    "passive_burns_per_block": linspace_int(0, 4, 4),
-    "k_sigma": np.linspace(0.0, 1000.0, 10).tolist(),
+    # "passive_lp_share": np.linspace(0.0, 1.0, 3).tolist(),
+    "narrow_mints_per_block": linspace_int(0, 2, 5),
+    "smart_trades_per_block": linspace_int(0, 2, 5),
+    "passive_mints_per_block": linspace_int(0, 2, 5),
+    "noise_trades_per_block": linspace_int(0, 2, 5),
+    "passive_burns_per_block": linspace_int(0, 2, 5),
+    "k_sigma": np.linspace(0.0, 2, 5).tolist(),
+    "mint_mu": np.linspace(-1, -0.1, 5).tolist(),
+    "mint_sigma": np.linspace(1, 2, 5).tolist(),
     # "theta_T": [0.95, 0.98, 0.99999],
     # "p_jit": np.linspace(0.0, 1.0, 3).tolist(),
 }
@@ -144,12 +146,13 @@ DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
 
 
 # Parameters treated as integers for UI display + casting.
-INT_PARAMS: set[str] = {
-    "narrow_mints_per_block",
-    "passive_mints_per_block",
-    "noise_trades_per_block",
-    "passive_burns_per_block",
-}
+# INT_PARAMS: set[str] = {
+#     "narrow_mints_per_block",
+#     "passive_mints_per_block",
+#     "noise_trades_per_block",
+#     "passive_burns_per_block",
+# }
+INT_PARAMS: set[str] = {}
 # -----------------------------------------------------------------------------
 
 
@@ -270,6 +273,7 @@ def _evaluate_grid_point(
     params["visualize"] = False
     params["verbose"] = False
     params["light_mode"] = True
+    params["liquidity_for_gif"] = False
 
     skip_step = max(0, int(params.get("skip_step", 0)))
 
