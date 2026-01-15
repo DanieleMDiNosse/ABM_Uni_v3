@@ -1243,7 +1243,7 @@ def simulate(
         _rebalance_lp_to_target(lp, ref.m, pool.S)
         return pos
 
-    # ----- Arbitrage internals (unchanged) -----
+    # ----- Arbitrage internals  -----
     def fast_span_up(to_S: float, target_S: float) -> Tuple[float, float, float]:
         S0, L, r = pool.S, pool.L_active, pool.r
         S1 = min(to_S, target_S)

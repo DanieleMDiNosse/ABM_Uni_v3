@@ -11,7 +11,7 @@ The fee logic is primarily implemented in `run.py` within the `simulate` functio
 
 ## Exponentially Weighted Moving Average (EWMA)
 
-Several fee controllers smooth noisy per-step signals using an Exponentially Weighted Moving Average (EWMA). Given a per-step observation series $x_t$ (e.g., absolute log-returns or a basis signal), the EWMA state $v_t$ is updated recursively as:
+Several fee controllers smooth noisy per-step signals using an Exponentially Weighted Moving Average (EWMA). Given a per-step observation series $x_t$ (e.g., squared log-returns, a basis signal, or an LVR-gap signal), the EWMA state $v_t$ is updated recursively as:
 
 $$ v_t = \lambda v_{t-1} + (1-\lambda)x_t $$
 
@@ -28,12 +28,13 @@ $$ \lambda = \exp\left(-\frac{\ln 2}{\text{half\_life\_steps}}\right) \quad\Righ
 
 ## Fee Modes
 
-There are four supported fee modes:
+There are five supported fee modes:
 
 1.  **Static** (`static`)
-2.  **Volatility-based** (`volatility`)
-3.  **Toxicity-based** (`toxicity`)
-4.  **LVR-gap EWMA-based** (`lvr_fee_ewma`)
+2.  **Volatility-based (CEX)** (`volatility_cex`)
+3.  **Volatility-based (DEX)** (`volatility_dex`)
+4.  **Toxicity-based** (`toxicity`)
+5.  **LVR-gap EWMA-based** (`lvr_fee_ewma`)
 
 ### 1. Static Fee
 
@@ -43,30 +44,40 @@ $$ f_t = f_0 $$
 
 *   $f_0$: Initial fee level (parameter `f0`). In `static` mode this is the fixed fee; in the dynamic modes it is only the starting value at $t=0$.
 
-### 2. Volatility-based Fee
+### 2. Volatility-based Fee (CEX)
 
-This mode adjusts the fee based on the realized volatility of the CEX price. The idea is to increase fees during periods of high volatility to compensate LPs for increased LVR (Loss Versus Rebalancing).
+This mode adjusts the fee based on the realized volatility of the **CEX** price (`ref.m`). The idea is to increase fees during periods of high volatility to compensate LPs for increased LVR (Loss Versus Rebalancing).
 
 **Formula:**
 
-$$ f_{raw} = k_\sigma \cdot \hat{\sigma}_t \cdot \sqrt{\text{block\_time}} $$
+$$ f_{raw} = k_\sigma \cdot \hat{\sigma}_t $$
 
 Since this controller is *pure-signal* (no additive baseline), when $\hat{\sigma}_t$ is small the applied fee will typically be clamped to $f_{min}$ by the update mechanism below.
 
 **Components:**
 
 *   **Log-return observation:**
-    $$ vol\_obs_t = |\ln(m_t) - \ln(m_{t-1})| $$
+    $$ r_t = \ln(m_t) - \ln(m_{t-1}) $$
+    $$ vol\_obs_t = r_t^2 $$
     where $m_t$ is the CEX price at step $t$.
 
-*   **EWMA of absolute log-returns:**
-    $$ \hat{\sigma}_t = \text{EWMA}(vol\_obs_t) $$
-    The Exponentially Weighted Moving Average (EWMA) is updated at each step using a half-life parameter (`fee_half_life`). No squaring is applied; the controller works directly with the smoothed absolute log-return.
+*   **EWMA volatility estimate:**
+    $$ \hat{\sigma^2}_t = \text{EWMA}(vol\_obs_t) $$
+    $$ \hat{\sigma}_t = \sqrt{\hat{\sigma^2}_t} $$
+    The Exponentially Weighted Moving Average (EWMA) is updated at each step using a half-life parameter (`fee_half_life`). In the code, `fee_sigma_series` stores $\hat{\sigma^2}_t$ (see plotting label "EWMA(σ^2)").
 
 *   **Parameters:**
     *   $k_\sigma$: Scaling factor for volatility (parameter `k_sigma`).
 
-### 3. Toxicity-based Fee
+### 3. Volatility-based Fee (DEX)
+
+Same controller as above, but with the volatility observation computed from the **DEX** price (`pool.price`):
+
+$$ r^{DEX}_t = \ln(P_{DEX,t}) - \ln(P_{DEX,t-1}) \quad,\quad vol\_obs^{DEX}_t = (r^{DEX}_t)^2 $$
+
+This mode is selected with `fee_mode = "volatility_dex"` and uses the same $f_{raw} = k_\sigma \cdot \hat{\sigma}_t$ mapping, with $\hat{\sigma}_t$ estimated from the DEX price series.
+
+### 4. Toxicity-based Fee
 
 This mode adjusts the fee based on the "toxic" flow, measured by the arbitrage opportunity size (basis) that exceeds the current fee band. This effectively measures how far the DEX price is lagging behind the CEX price.
 
@@ -100,7 +111,7 @@ Since this controller is *pure-signal* (no additive baseline), when $\text{basis
 *   **Parameters:**
     *   $k_{basis}$: Scaling factor for basis ticks (parameter `k_basis`).
 
-### 4. LVR-gap EWMA-based Fee
+### 5. LVR-gap EWMA-based Fee
 
 This mode adjusts the fee using the EWMA of the per-step gap between LVR and fees, normalized by the executed DEX notional. The controller raises fees when LVR exceeds fees and lowers them when fees exceed LVR.
 
@@ -121,7 +132,7 @@ $$ f_{raw} = f_{current} + k_{lvr} \cdot g_{\hat{t}} $$
 
 *   **DEX notional (token1 units):**
     $$ \text{Notional}_t = \sum_{i \in \text{DEX swaps}} |\text{input}_i| $$
-    This uses the absolute input notional of executed DEX swaps in token1 units (including arbitrage). If $\text{Notional}_t = 0$, the controller skips the update for that step.
+    This uses the absolute input notional of executed DEX swaps in token1 units (including arbitrage). Concretely, inputs in token0 are converted to token1 notional using the *pre-execution DEX price* for that swap. If $\text{Notional}_t = 0$, the controller skips the update for that step and leaves the fee unchanged.
 
 *   **Parameters:**
     *   $k_{lvr}$: Feedback gain (parameter `k_lvr`), applied around the current fee.
@@ -130,26 +141,23 @@ $$ f_{raw} = f_{current} + k_{lvr} \cdot g_{\hat{t}} $$
 
 Regardless of the mode, the calculated raw fee $f_{raw}$ goes through a controller that applies clamping, smoothing, and hysteresis before updating the actual pool fee.
 
-1.  **Clamping:**
-    The target fee is clamped within a configured range:
-    $$ f_{tgt} = \text{clamp}(f_{raw}, f_{min}, f_{max}) $$
+The implementation is staged (commit→reveal): the controller computes signals from the end-of-step state, produces a pending fee `fee_next`, and the pool fee `pool.f` is only updated once the cooldown timer has elapsed.
 
-2.  **Step Size Limits & Hysteresis:**
-    The fee is only updated if the change is significant enough, and the change per step is limited.
+1.  **Step Size Limits & Clamping:**
+    Let $f_{current}$ be the current pool fee at the end of the step.
 
     *   **Minimum Change Threshold:**
-        If $|f_{tgt} - f_{current}| < \text{fee\_step\_bps\_min} / 10{,}000$, no update occurs.
+        If $|f_{raw} - f_{current}| < \text{fee\_step\_bps\_min} / 10{,}000$, no pending update is staged.
 
     *   **Maximum Step Size:**
         The change is capped at $\text{fee\_step\_bps\_max} / 10{,}000$.
-        $$ \Delta f = \text{sign}(f_{tgt} - f_{current}) \cdot \min(|f_{tgt} - f_{current}|, \text{fee\_step\_bps\_max} / 10{,}000) $$
+        $$ \Delta f = \text{sign}(f_{raw} - f_{current}) \cdot \min(|f_{raw} - f_{current}|, \text{fee\_step\_bps\_max} / 10{,}000) $$
 
-    *   **New Fee:**
-        $$ f_{new} = f_{current} + \Delta f $$
-        If scheduled, `f_new` is staged in `fee_next` and only committed once any cooldown has elapsed.
+    *   **Candidate New Fee (clamped):**
+        $$ f_{new} = \text{clamp}(f_{current} + \Delta f, f_{min}, f_{max}) $$
 
-3.  **Cooldown:**
-    After staging a fee update, a cooldown period (`fee_cooldown` steps) is enforced during which additional changes are ignored.
+2.  **Cooldown / Commit Timing:**
+    After staging a pending update (`fee_next = f_new`), a cooldown counter (`fee_cooldown_left`) counts down each step. Once the counter reaches 0, the current pool fee is set to `fee_next` and `fee_next` is cleared. This ensures the pool fee changes at most once every `fee_cooldown` steps. (Implementation detail: while the cooldown counts down, `fee_next` can be overwritten; the value that gets applied is the latest staged fee when the counter reaches 0.)
 
 ## Implementation Reference
 

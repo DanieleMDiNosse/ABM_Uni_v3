@@ -14,6 +14,18 @@ The goal is to use a PnL framework that:
 
 ---
 
+## Implementation conventions (this repo)
+
+The definitions below are generic, but `run.py` uses the following concrete conventions:
+
+- Tokens: `X = token0` (“ETH-like”), `Y = token1` (“USDC-like”).
+- Numéraire: all values are reported in token1 units (`Y`).
+- External (CEX) price: `m_t = ref.m` is the CEX mid in `Y per X`.
+- DEX price state: `S_t = pool.S` (sqrt-price), so `P^{DEX}_t = pool.price = S_t^2` is also `Y per X`.
+- LP wealth mark-to-market: `V^{LP}_t` is computed by `lp_wealth_y(lp, S_t, m_t)` (wallet + open positions, incl. uncollected fees).
+
+---
+
 ## 1. Uniswap v3 LP position: notation and mark-to-market
 
 Consider a v3 pool with two tokens, which we call **X** and **Y**.  
@@ -21,50 +33,64 @@ Let all values be expressed in a chosen **numéraire** (e.g. USDC).
 
 At time $t$:
 
-- External (CEX) prices:
+- External (CEX) mid price (in units of `Y per X`):
   $$
-  P^X_t, \quad P^Y_t
+  m_t
   $$
 - LP’s **principal (liquidity) balances** in the pool:
   $$
   x_t \text{ units of X}, \qquad y_t \text{ units of Y}.
   $$
-- LP’s **fee balances** (uncollected or notionally in the “fee bucket”):
+- LP’s **uncollected fee balances** on those open positions:
   $$
   f^X_t \text{ units of X}, \qquad f^Y_t \text{ units of Y}.
+  $$
+- LP’s **wallet balances** held outside the pool:
+  $$
+  w^X_t \text{ units of X}, \qquad w^Y_t \text{ units of Y}.
   $$
 
 We define:
 
 1. **Mark-to-market value of the principal (liquidity) only**
    $$
-   V^{\text{liq}}_t := x_t P^X_t + y_t P^Y_t.
+   V^{\text{liq}}_t := x_t m_t + y_t.
    $$
 
-2. **Mark-to-market value of fees**
+2. **Mark-to-market value of uncollected fees**
    $$
-   F_t := f^X_t P^X_t + f^Y_t P^Y_t.
+   F^{\text{uncol}}_t := f^X_t m_t + f^Y_t.
    $$
 
-3. **Total LP position value (principal + fees)**
+3. **Open-position value (principal + uncollected fees)**
    $$
-   V^{\text{LP}}_t := V^{\text{liq}}_t + F_t.
+   V^{\text{pos}}_t := V^{\text{liq}}_t + F^{\text{uncol}}_t.
+   $$
+
+4. **Wallet value**
+   $$
+   W_t := w^X_t m_t + w^Y_t.
+   $$
+
+5. **Total LP wealth (wallet + open positions)**
+   $$
+   V^{\text{LP}}_t := W_t + V^{\text{pos}}_t.
    $$
 
 At the initial time $t=0$:
 
 $$
-V^{\text{liq}}_0 = x_0 P^X_0 + y_0 P^Y_0, 
+V^{\text{liq}}_0 = x_0 m_0 + y_0, 
 \quad
-F_0 = f^X_0 P^X_0 + f^Y_0 P^Y_0,
+F^{\text{uncol}}_0 = f^X_0 m_0 + f^Y_0,
 \quad
-V^{\text{LP}}_0 = V^{\text{liq}}_0 + F_0.
+V^{\text{LP}}_0 = W_0 + V^{\text{liq}}_0 + F^{\text{uncol}}_0.
 $$
 
 In many v3 setups, fees start at zero:
 $$
-f^X_0 = f^Y_0 = 0, \quad F_0 = 0,
-\quad \Rightarrow \quad V^{\text{LP}}_0 = V^{\text{liq}}_0.
+f^X_0 = f^Y_0 = 0, \quad F^{\text{uncol}}_0 = 0,
+\quad \Rightarrow \quad V^{\text{LP}}_0 = W_0 + V^{\text{liq}}_0.
 $$
 
 ---
@@ -83,14 +109,14 @@ Replacing with the definitions:
 
 $$
 \text{PnL}^{\text{LP}}_t 
-= (V^{\text{liq}}_t + F_t) - V^{\text{LP}}_0.
+= V^{\text{LP}}_t - V^{\text{LP}}_0.
 $$
 
-If you prefer to think in terms of “mark-to-market of liquidity” and “fees” separately, you can rewrite:
+If you prefer to think in terms of “wallet”, “mark-to-market of liquidity”, and “uncollected fees”, you can rewrite:
 
-- **Mark-to-market of liquidity (principal) at time $t$**:
+- **Mark-to-market of liquidity (principal)**:
   $$
-  \text{MtM}^{\text{liq}}_t := V^{\text{liq}}_t = x_t P^X_t + y_t P^Y_t.
+  \text{MtM}^{\text{liq}}_t := V^{\text{liq}}_t = x_t m_t + y_t.
   $$
 
 Then:
@@ -98,15 +124,11 @@ Then:
 $$
 \boxed{
 \text{PnL}^{\text{LP}}_t 
-= \text{MtM}^{\text{liq}}_t + F_t - V^{\text{LP}}_0.
+= W_t + \text{MtM}^{\text{liq}}_t + F^{\text{uncol}}_t - V^{\text{LP}}_0.
 }
 $$
 
-This is exactly the informal description:
-
-> **PnL = mark-to-market (liquidity) + fees − initial value**
-
-provided that “mark-to-market” refers to the value of the **principal** only.
+This matches the simulator’s accounting: LP wealth is “wallet + open positions” marked at the CEX mid.
 
 ### Interpretation
 
@@ -132,51 +154,84 @@ To understand how much of the LP’s PnL comes from **liquidity provision** vs *
 
 ### 3.1. Rebalancing strategy
 
-Let $(x_t, y_t)$ be the LP’s pool balances at each time $t$.  
-Define a **rebalancing portfolio** that continuously adjusts its holdings to match this path, but trades at $P^X_t, P^Y_t$:
+In `run.py`, the benchmark is implemented as a **self-financing delta-hedge** at the CEX price $m_t$.
 
-- Value of the rebalancing strategy: $V^{\text{reb}}_t$
+Define the LP’s *token0 exposure* (in token units) at the current pool state:
+$$
+x^{\text{target}}_t
+:=
+\texttt{lp\_token0\_exposure}(lp, S_t)
+$$
+which (by design) includes:
+- token0 principal inside open positions,
+- uncollected token0 fees,
+- plus any token0 held in the LP wallet (typically zero for strategic LPs in this repo).
 
-We choose the initial condition so that:
+The benchmark holds:
+- $x^{\text{prev}}_t$ units of token0, and
+- a cash account in token1,
+and is initialized to match the LP’s initial wealth:
 
 $$
 V^{\text{reb}}_0 = V^{\text{LP}}_0.
 $$
 
-Then its PnL is:
+Whenever the CEX price moves $m \to m'$, the benchmark accrues (in token1):
+$$
+\Delta R = x^{\text{prev}} (m' - m),
+\qquad
+R_t = \sum \Delta R.
+$$
+In code this accrual happens on **every** diffusion/impact update via `_broadcast_price_move(M_new)`.
+
+Whenever the LP’s exposure changes (mint/burn, or a swap moves the pool price across the LP’s range), the benchmark *rebalances* by setting:
+$$
+x^{\text{prev}}_t \leftarrow x^{\text{target}}_t
+$$
+at the current CEX price $m_t$ (adjusting the cash account accordingly, with no immediate PnL).
+
+With this self-financing construction:
 
 $$
-\text{PnL}^{\text{reb}}_t := V^{\text{reb}}_t - V^{\text{reb}}_0.
+\text{PnL}^{\text{reb}}_t = V^{\text{reb}}_t - V^{\text{reb}}_0 = R_t,
+\qquad
+V^{\text{reb}}_t = V^{\text{reb}}_0 + R_t.
 $$
 
-This strategy carries exactly the **same market exposure** as the LP, but without adverse selection or fee income from AMM trades.
+This benchmark carries (by construction) the same *token0 price exposure* as the LP, while abstracting away AMM execution effects.
 
 ### 3.2. LVR: loss from adverse selection
 
 Define **Loss-Versus-Rebalancing (LVR)**, denoted $\text{LVR}_t$, as the cumulative loss the LP suffers from being forced to trade at mispriced AMM quotes instead of at fair CEX prices, along the entire path up to time $t$.
+
+Also define the **cumulative fees earned** (realized + uncollected), valued in token1 at the current CEX mid:
+$$
+F^{\text{cum}}_t := f^{X,\text{cum}}_t \, m_t + f^{Y,\text{cum}}_t.
+$$
+In the implementation, $f^{X,\text{cum}}_t, f^{Y,\text{cum}}_t$ correspond to the LP’s cumulative fee counters (`fees0_earned`, `fees1_earned`).
 
 The key result (in the continuous-time / frictionless framework) is:
 
 $$
 \boxed{
 V^{\text{LP}}_t
-= V^{\text{reb}}_t + F_t - \text{LVR}_t.
+= V^{\text{reb}}_t + F^{\text{cum}}_t - \text{LVR}_t.
 }
 $$
 
 Rearranging:
 
 $$
-V^{\text{LP}}_t - V^{\text{reb}}_t = F_t - \text{LVR}_t.
+V^{\text{LP}}_t - V^{\text{reb}}_t = F^{\text{cum}}_t - \text{LVR}_t.
 $$
 
 This decomposition says:
 
 - Start from what you’d have with a purely **rebalancing trader** $(V^{\text{reb}}_t)$,
 - Then add **fees** (a positive contribution for LPs),
-- Then subtract **LVR** (a negative contribution, equal to arbitrageur profits coming from adverse selection).
+- Then subtract **LVR** (a negative contribution capturing adverse selection / execution loss versus CEX).
 
-LVR is closely related to arbitrage profits between CEX and AMM: in many settings, **sum of arbitrage profits = LVR** (with opposite sign for LPs).
+In an idealized setting with only arbitrage flow and no external frictions, LVR is closely related to value captured by arbitrageurs. In this ABM, LVR is computed from LP wealth vs the benchmark and should be interpreted as a **residual adverse-selection term**, not as “arb PnL” one-for-one.
 
 ---
 
@@ -200,9 +255,9 @@ $$
 Now plug in the LVR decomposition:
 
 $$
-V^{\text{LP}}_t = V^{\text{reb}}_t + F_t - \text{LVR}_t
+V^{\text{LP}}_t = V^{\text{reb}}_t + F^{\text{cum}}_t - \text{LVR}_t
 \quad \Rightarrow \quad
-V^{\text{LP}}_t - V^{\text{reb}}_t = F_t - \text{LVR}_t.
+V^{\text{LP}}_t - V^{\text{reb}}_t = F^{\text{cum}}_t - \text{LVR}_t.
 $$
 
 Therefore:
@@ -211,22 +266,21 @@ $$
 \boxed{
 \text{PnL}^{\text{hedged}}_t 
 = V^{\text{LP}}_t - V^{\text{reb}}_t
-= F_t - \text{LVR}_t.
+= F^{\text{cum}}_t - \text{LVR}_t.
 }
 $$
 
 ### Why does mark-to-market disappear here?
 
-The **mark-to-market (principal) component** appears in both 
-$V^{\text{LP}}_t$ and $V^{\text{reb}}_t$.  
-By construction, the rebalancing strategy holds the **same path of token balances** $(x_t, y_t)$ as the LP (up to fees), and trades at the same external prices for those holdings.
+The **mark-to-market (principal) component** appears in both $V^{\text{LP}}_t$ and $V^{\text{reb}}_t$.  
+By construction, the benchmark is continuously rebalanced to match the LP’s **token0 exposure path** $x^{\text{target}}_t$ (including uncollected token0 fees), and all valuation uses the same external price $m_t$.
 
 - The **pure price risk** (beta) is **shared** by both strategies.
 - When we take the difference $V^{\text{LP}}_t - V^{\text{reb}}_t$,
   the **beta effect cancels**.
 - What remains is the **net liquidity-provision PnL**:
   $$
-  \text{PnL}^{\text{hedged}}_t = \underbrace{F_t}_{\text{fees}} - \underbrace{\text{LVR}_t}_{\text{adverse selection}}.
+  \text{PnL}^{\text{hedged}}_t = \underbrace{F^{\text{cum}}_t}_{\text{fees}} - \underbrace{\text{LVR}_t}_{\text{adverse selection}}.
   $$
 
 So:
@@ -243,25 +297,25 @@ This is exactly what you want for studying **MEV, adverse selection, and fee des
 
 For completeness, recall the standard **impermanent loss** definition.
 
-Let the LP’s initial token amounts (principal + any initial fees) be:
+Let the LP’s initial **principal** token amounts be:
 
 $$
-x^{\text{init}} := x_0 + f^X_0,
+x^{\text{init}} := x_0,
 \quad
-y^{\text{init}} := y_0 + f^Y_0.
+y^{\text{init}} := y_0.
 $$
 
 Define a **HODL strategy** that just keeps these tokens in a wallet, never trading:
 
 $$
-V^{\text{HODL}}_t := x^{\text{init}} P^X_t + y^{\text{init}} P^Y_t.
+V^{\text{HODL}}_t := x^{\text{init}} m_t + y^{\text{init}}.
 $$
 
-Then IL at time $t$ is:
+Then **impermanent loss on principal** at time $t$ is:
 
 $$
 \boxed{
-\text{IL}_t := V^{\text{LP}}_t - V^{\text{HODL}}_t.
+\text{IL}_t := V^{\text{liq}}_t - V^{\text{HODL}}_t.
 }
 $$
 
@@ -295,9 +349,15 @@ The pair **(unhedged PnL, hedged PnL)** gives you:
 
 - `lp_wallet_series`, `lp_wallet_active_series`, `lp_wallet_passive_series`: realized token1 wallet after mints/burns.
 - `lp_wealth_series` (+ active/passive splits): wallet + mark-to-market of open positions, i.e., $V^{\text{LP}}_t$.
-- `lp_fee_value_*_series`: fees marked to the CEX price.
+- `lp_fee_value_*_series`: cumulative fees *earned* (realized + uncollected), marked to the CEX price.
 - `lp_unhedged_*`: unhedged PnL $V^{\text{LP}}_t - V^{\text{LP}}_0$.
 - `lp_rebal_value_*_series` and `lp_rebal_*_series`: rebalancing benchmark value $V^{\text{reb}}_t$ and its PnL path.
-- `lp_pnl_*` (hedged) = $F_t - \text{LVR}_t$; `lp_lvr_*` = $\text{LVR}_t$.
+- `lp_pnl_*` (hedged) = $F^{\text{cum}}_t - \text{LVR}_t$; `lp_lvr_*` = $\text{LVR}_t$.
 
-All series are split into total/active/passive cohorts for easier cohort-level analysis and are consumed by the batch runners (e.g. `run_parameter_grid_2d_violin_parallel.py`, `run_parameter_surface_*`, etc.).
+Notes (matching current `run.py`):
+- `lp_pnl_*` is computed as $\sum_i (V^{LP,i}_t - V^{reb,i}_t)$ at end-of-block, where `V^{reb,i}_t = initial_rebal_value_y + cumulative_R`.
+- `lp_lvr_*` is computed as the identity `lp_fee_value_*_series - lp_pnl_*` (so the decomposition holds by construction), and it should not be expected to match `arb_pnl_*` exactly (flash fees, CEX impact, and settlement conventions differ).
+- In `light_mode: true`, most recorder series (including LP PnL/LVR) are disabled and returned as empty lists.
+- As of the current implementation, `lp_wallet_*_series` and `lp_wealth_*_series` are declared/returned but not populated inside the main loop (they will be empty). You can reconstruct cohort total wealth as `lp_pnl_total[t] + lp_rebal_value_total_series[t]` (and analogously for active/passive).
+
+All series are split into total/active/passive cohorts (seed LPs are excluded; Jiter has its own `jiter_*` series) and are consumed by batch runners such as `run_multiple.py`, `run_parameter_surface_nd_pnl_fee_dashboard.py`, and `build_parameter_surface_nd_pnl_fee_dashboard.py`.
