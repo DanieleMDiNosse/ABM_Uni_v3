@@ -13,8 +13,7 @@ The most important “global semantics” to understand before reading any indiv
 - **Validated snapshots for intent formation** (block start): `agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents` are copied from the **end of the previous block** and held fixed as the “validated state” for many decisions (slippage baselines, LP recenter/out-of-range counting, arb target price).
 - **Mempool execution at the block boundary**: intents are collected during micro-steps, but the DEX (pool) state does not change until the mempool is replayed at the end of the block.
 - **Execution ordering**: mempool replay executes **arbitrage first**, then shuffles all other intents uniformly at random; JIT liquidity, when enabled, is inserted as `jit_mint → target_swap → jit_burn` around one targeted swap.
-- **CEX impact is immediate**: every time an action “touches the CEX” (smart-router CEX routing, arb hedge leg, LP mint/burn conversion, JIT burn conversion), permanent impact is applied immediately via `ref.apply_impact_only(Δa)` and the rebalancing benchmark is updated via `_broadcast_price_move(ref.m)`. There is no deferred “net impact at end-of-block”.
-
+- **CEX impact is immediate**: every time an action “touches the CEX” (smart-router CEX routing, arb hedge leg, LP mint/burn conversion, JIT burn conversion), permanent impact is applied immediately via `ref.apply_impact_only(Δa)` and the rebalancing benchmark is updated via `_broadcast_price_move(ref.m)`.
 ---
 
 ## Notation (as used in code)

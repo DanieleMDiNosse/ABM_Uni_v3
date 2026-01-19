@@ -316,6 +316,11 @@ def simulate(
     noise_trades_per_block = max(0.0, float(noise_trades_per_block))
     smart_lambda_micro = smart_trades_per_block / B
     noise_lambda_micro = noise_trades_per_block / B
+    # Track which cohorts are active for plotting/metrics.
+    lp_active_enabled = passive_share < 1.0
+    lp_passive_enabled = passive_share > 0.0
+    smart_router_enabled = smart_trades_per_block > 0.0
+    noise_trader_enabled = noise_trades_per_block > 0.0
 
     jiter_enabled = p_jit > 0.0 and N_jit > 0 and liquidity_perc_jit > 0.0
     jiter_agent: Optional[LPAgent] = None
@@ -378,7 +383,7 @@ def simulate(
                 )
         sigma_annualized = sigma_for_ref * math.sqrt(seconds_per_year)
         _vprint(
-            f"\n[CONFIG] Heston cex_sigma_mode: "
+            f"[CONFIG] Heston cex_sigma_mode: "
             f"sigma0={sigma_for_ref} ({sigma_annualized:.2%} annualized), "
             f"kappa={cex_heston_kappa}, theta={cex_heston_theta}, "
             f"sigma_v={cex_heston_sigma_v}, rho={cex_heston_rho}, v0={cex_heston_v0}"
@@ -401,9 +406,10 @@ def simulate(
         sigma_for_ref = cex_sigma_low if regime_state == "L" else cex_sigma_high
     else:
         sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
-        _vprint(f"\n[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
+        _vprint(f"[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
         sigma_for_ref = cex_sigma
-    _vprint(f"[CONFIG] Initial fee f0: {initial_params.get('f0', 0.0005)*10000:.1f} bps\n")
+    _vprint(f"[CONFIG] Initial fee f0: {initial_params.get('f0', 0.0005)*10000:.1f} bps")
+    _vprint(f"[CONFIG] LP passive share: {passive_share:.2%}, N_LP={N_LP}, tau={tau}, Smart-Router target: {smart_trades_per_block:.2f} Noise trader target: {noise_trades_per_block:.2f}\n")
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
@@ -554,20 +560,29 @@ def simulate(
         LPs.append(jiter_agent)
 
     lp_lookup: Dict[int, LPAgent] = {lp.id: lp for lp in LPs}
-    positions_by_tick: Dict[int, Set[Position]] = defaultdict(set)
+    # NOTE on determinism:
+    # We keep per-tick position buckets as *lists* (in insertion order) rather than sets.
+    # Python randomizes hash seeds per process by default, so iterating a set can yield a
+    # different order across runs even when RNG seeds are fixed; that can change the
+    # floating-point accumulation order in fee allocation and cascade into divergent
+    # agent behavior and price paths.
+    positions_by_tick: Dict[int, List[Position]] = defaultdict(list)
 
     def _register_position(pos: Position) -> None:
         slots = tuple(range(pos.lower, pos.upper, pool.tick_spacing))
         pos.tick_slots = slots
         for tick_val in slots:
-            positions_by_tick[tick_val].add(pos)
+            positions_by_tick[tick_val].append(pos)
 
     def _unregister_position(pos: Position) -> None:
         for tick_val in getattr(pos, "tick_slots", ()):
             bucket = positions_by_tick.get(tick_val)
             if not bucket:
                 continue
-            bucket.discard(pos)
+            try:
+                bucket.remove(pos)
+            except ValueError:
+                continue
             if not bucket:
                 positions_by_tick.pop(tick_val, None)
         pos.tick_slots = tuple()
@@ -3027,7 +3042,8 @@ def simulate(
         _html_dir = _out_dir / "html"
         _png_dir.mkdir(parents=True, exist_ok=True)
         _html_dir.mkdir(parents=True, exist_ok=True)
-        _prefix = f"{pid_str}_{fee_mode}"
+        # Include key scenario parameters in filenames for clarity.
+        _prefix = f"{pid_str}_{fee_mode}_LPpassiveshare{passive_lp_share}_pjit{p_jit}"
 
         total_steps = max(1, len(steps) - s0)
 
@@ -3042,30 +3058,61 @@ def simulate(
 
         steps_list = steps_v.tolist()
 
+        def _finite(arr: np.ndarray) -> np.ndarray:
+            arr = np.asarray(arr, dtype=float)
+            return arr[np.isfinite(arr)]
+
+        def _finite_nonzero(arr: np.ndarray) -> np.ndarray:
+            arr = np.asarray(arr, dtype=float)
+            mask = np.isfinite(arr) & (arr != 0)
+            return arr[mask]
+
+        def _log_returns(prices: np.ndarray) -> np.ndarray:
+            prices = np.asarray(prices, dtype=float)
+            mask = np.isfinite(prices) & (prices > 0)
+            prices = prices[mask]
+            if prices.size < 2:
+                return np.array([], dtype=float)
+            return np.diff(np.log(prices))
+
         # ----- 1) Price panel -----
-        fig1 = go.Figure()
-        fig1.add_trace(
-                go.Scatter(
-                    x=steps_list,
-                    y=band_lo_target_v,
-                    mode="lines",
-                    line=dict(width=0),
-                    showlegend=False,
-                    hoverinfo="skip",
-                )
+        cex_returns_v = _log_returns(M_series_v)
+        dex_returns_v = _log_returns(P_series_v)
+        fig1 = make_subplots(
+            rows=2,
+            cols=2,
+            specs=[[{"rowspan": 2}, {}], [None, {}]],
+            column_widths=[0.72, 0.28],
+            horizontal_spacing=0.08,
+            vertical_spacing=0.12,
+            subplot_titles=("", "CEX log-returns", "DEX log-returns", "DEX log-returns"),
         )
         fig1.add_trace(
-                go.Scatter(
-                    x=steps_list,
-                    y=band_hi_target_v,
-                    mode="lines",
-                    fill="tonexty",
-                    fillcolor="rgba(180,180,180,0.35)",
-                    line=dict(width=0),
-                    name="No-arb fee band (snapshot)",
-                    hoverinfo="skip",
-                )
-            )
+            go.Scatter(
+                x=steps_list,
+                y=band_lo_target_v,
+                mode="lines",
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+        fig1.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=band_hi_target_v,
+                mode="lines",
+                fill="tonexty",
+                fillcolor="rgba(180,180,180,0.35)",
+                line=dict(width=0),
+                name="No-arb fee band",
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
         fig1.add_trace(
             go.Scatter(
                 x=steps_list,
@@ -3073,7 +3120,9 @@ def simulate(
                 mode="lines",
                 name="DEX price Pₜ",
                 line=dict(width=2),
-            )
+            ),
+            row=1,
+            col=1,
         )
         fig1.add_trace(
             go.Scatter(
@@ -3082,22 +3131,68 @@ def simulate(
                 mode="lines",
                 name="CEX price mₜ",
                 line=dict(width=1.6, dash="dash"),
-            )
+            ),
+            row=1,
+            col=1,
+        )
+        fig1.add_trace(
+            go.Histogram(
+                x=_finite(cex_returns_v),
+                nbinsx=60,
+                marker_color="#1f77b4",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+        fig1.add_trace(
+            go.Histogram(
+                x=_finite(dex_returns_v),
+                nbinsx=60,
+                marker_color="#ff7f0e",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=2,
+            col=2,
         )
         fig1.update_layout(
             template="plotly_white",
             title="CEX vs DEX Price",
-            xaxis_title="Step",
-            yaxis_title="Price (token1 per token0)",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         )
+        fig1.update_xaxes(title_text="Block", row=1, col=1)
+        fig1.update_yaxes(title_text="Price", row=1, col=1)
+        fig1.update_xaxes(title_text="Log-return", row=1, col=2)
+        fig1.update_xaxes(title_text="Log-return", row=2, col=2)
+        fig1.update_yaxes(title_text="Count", row=1, col=2)
+        fig1.update_yaxes(title_text="Count", row=2, col=2)
         _save_plotly("1_price", fig1)
 
         # ----- 1b) Micro-time price panel -----
         if len(M_micro) == len(P_micro) == len(micro_steps) and len(micro_steps) > 0:
-            fig1b = go.Figure()
+            cex_returns_micro = _log_returns(np.asarray(M_micro, dtype=float))
+            dex_returns_micro = _log_returns(np.asarray(P_micro, dtype=float))
+            fig1b = make_subplots(
+                rows=2,
+                cols=2,
+                specs=[[{"rowspan": 2}, {}], [None, {}]],
+                column_widths=[0.72, 0.28],
+                horizontal_spacing=0.08,
+                vertical_spacing=0.12,
+                subplot_titles=("", "CEX log-returns", "DEX log-returns", "DEX log-returns"),
+            )
             fig1b.add_trace(
-                go.Scatter(x=micro_steps, y=P_micro, mode="lines", name="DEX price (micro)", line=dict(width=1.2))
+                go.Scatter(
+                    x=micro_steps,
+                    y=P_micro,
+                    mode="lines",
+                    name="DEX price (micro)",
+                    line=dict(width=1.2),
+                ),
+                row=1,
+                col=1,
             )
             fig1b.add_trace(
                 go.Scatter(
@@ -3106,7 +3201,9 @@ def simulate(
                     mode="lines",
                     name="CEX price (micro)",
                     line=dict(width=1.0, dash="dash"),
-                )
+                ),
+                row=1,
+                col=1,
             )
             if micro_valid_steps:
                 fig1b.add_trace(
@@ -3116,66 +3213,189 @@ def simulate(
                         mode="markers",
                         name="Validated DEX price",
                         marker=dict(color="#d62728", size=6),
-                    )
+                    ),
+                    row=1,
+                    col=1,
                 )
+            fig1b.add_trace(
+                go.Histogram(
+                    x=_finite(cex_returns_micro),
+                    nbinsx=60,
+                    marker_color="#1f77b4",
+                    opacity=0.85,
+                    showlegend=False,
+                ),
+                row=1,
+                col=2,
+            )
+            fig1b.add_trace(
+                go.Histogram(
+                    x=_finite(dex_returns_micro),
+                    nbinsx=60,
+                    marker_color="#ff7f0e",
+                    opacity=0.85,
+                    showlegend=False,
+                ),
+                row=2,
+                col=2,
+            )
             fig1b.update_layout(
                 template="plotly_white",
                 title="Micro-time CEX vs DEX (within blocks)",
-                xaxis_title="Event time",
-                yaxis_title="Price",
             )
+            fig1b.update_xaxes(title_text="Micro steps", row=1, col=1)
+            fig1b.update_yaxes(title_text="Price", row=1, col=1)
+            fig1b.update_xaxes(title_text="Log-return", row=1, col=2)
+            fig1b.update_xaxes(title_text="Log-return", row=2, col=2)
+            fig1b.update_yaxes(title_text="Count", row=1, col=2)
+            fig1b.update_yaxes(title_text="Count", row=2, col=2)
             _save_plotly("1b_price_micro", fig1b)
 
         # ----- 2) Notionals -----
-        fig2 = go.Figure()
-        fig2.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"))
-        fig2.add_trace(go.Scatter(x=steps_list, y=sr_y_v, mode="lines", name="Smart router (token1)"))
+        fig2 = make_subplots(
+            rows=2,
+            cols=3,
+            specs=[[{"colspan": 3}, None, None], [{}, {}, {}]],
+            row_heights=[0.65, 0.35],
+            vertical_spacing=0.12,
+            subplot_titles=(
+                "Notional over time",
+                "Smart router",
+                "Noise trader",
+                "Arbitrageur",
+            ),
+        )
+        fig2.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=1, col=1)
+        fig2.add_trace(
+            go.Scatter(x=steps_list, y=sr_y_v, mode="lines", name="Smart router", line=dict(width=2, color="#1f77b4")),
+            row=1,
+            col=1,
+        )
         fig2.add_trace(
             go.Scatter(
                 x=steps_list,
                 y=noise_y_v,
                 mode="lines",
-                name="Noise trader (token1)",
-                line=dict(dash="dash"),
-            )
+                name="Noise trader",
+                line=dict(dash="dash", color="#ff7f0e"),
+            ),
+            row=1,
+            col=1,
         )
         fig2.add_trace(
             go.Scatter(
                 x=steps_list,
                 y=arb_y_v,
                 mode="lines",
-                name="Arbitrageur (token1)",
-                line=dict(dash="dot"),
-            )
+                name="Arbitrageur",
+                line=dict(dash="dot", color="#2ca02c"),
+            ),
+            row=1,
+            col=1,
+        )
+        fig2.add_trace(
+            go.Histogram(
+                x=_finite_nonzero(sr_y_v),
+                nbinsx=60,
+                marker_color="#1f77b4",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=2,
+            col=1,
+        )
+        fig2.add_trace(
+            go.Histogram(
+                x=_finite_nonzero(noise_y_v),
+                nbinsx=60,
+                marker_color="#ff7f0e",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=2,
+            col=2,
+        )
+        fig2.add_trace(
+            go.Histogram(
+                x=_finite_nonzero(arb_y_v),
+                nbinsx=60,
+                marker_color="#2ca02c",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=2,
+            col=3,
         )
         fig2.update_layout(
             template="plotly_white",
             title="Trader Notionals",
-            xaxis_title="Step",
-            yaxis_title="Notional (token1, signed)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         )
+        fig2.update_xaxes(title_text="Block", row=1, col=1)
+        fig2.update_yaxes(title_text="Notional", row=1, col=1)
+        fig2.update_xaxes(title_text="Notional", row=2, col=1)
+        fig2.update_xaxes(title_text="Notional", row=2, col=2)
+        fig2.update_xaxes(title_text="Notional", row=2, col=3)
+        fig2.update_yaxes(title_text="Count", row=2, col=1)
+        fig2.update_yaxes(title_text="Count", row=2, col=2)
+        fig2.update_yaxes(title_text="Count", row=2, col=3)
         _save_plotly("2_notional", fig2)
 
         # ----- 2a) Smart-router DEX share (per n blocks) -----
         sr_share_steps_arr = np.asarray(sr_dex_share_steps, dtype=int)
         sr_share_vals_arr = np.asarray(sr_dex_share_series, dtype=float)
         sr_share_mask = sr_share_steps_arr >= s0
-        fig2a = go.Figure()
+        fig2a = make_subplots(
+            rows=1,
+            cols=2,
+            column_widths=[0.72, 0.28],
+            horizontal_spacing=0.08,
+            subplot_titles=("", ""),
+        )
+        sr_share_steps_plot = sr_share_steps_arr[sr_share_mask].tolist()
+        sr_share_vals_plot = sr_share_vals_arr[sr_share_mask].tolist()
         fig2a.add_trace(
             go.Scatter(
-                x=sr_share_steps_arr[sr_share_mask].tolist(),
-                y=sr_share_vals_arr[sr_share_mask].tolist(),
+                x=sr_share_steps_plot,
+                y=sr_share_vals_plot,
                 mode="lines+markers",
                 name="DEX share",
-            )
+            ),
+            row=1,
+            col=1,
         )
+        fig2a.add_trace(
+            go.Histogram(
+                x=_finite(np.asarray(sr_share_vals_plot, dtype=float)),
+                nbinsx=50,
+                marker_color="#1f77b4",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+        # Mark mean DEX share in the histogram for quick reference.
+        sr_mean_val = np.mean(_finite(np.asarray(sr_share_vals_plot, dtype=float))) if len(sr_share_vals_plot) > 0 else None
+        if sr_mean_val is not None and np.isfinite(sr_mean_val):
+            fig2a.add_shape(
+                type="line",
+                x0=float(sr_mean_val),
+                x1=float(sr_mean_val),
+                y0=0,
+                y1=1,
+                xref="x2",
+                yref="y2 domain",
+                line=dict(color="firebrick", width=2, dash="dash"),
+            )
         fig2a.update_layout(
             template="plotly_white",
-            title=f"Smart-router DEX Share (DEX/(CEX+DEX)) — every {n_block_SR_ratio} blocks",
-            xaxis_title="Step (window end)",
-            yaxis_title="DEX share",
-            yaxis=dict(range=[0.0, 1.0]),
+            title=f"Smart-router DEX Share (DEX/(CEX+DEX))",
         )
+        fig2a.update_xaxes(title_text="Block", row=1, col=1)
+        fig2a.update_yaxes(title_text="DEX share", range=[0.0, 1.0], row=1, col=1)
+        fig2a.update_xaxes(title_text="DEX share", row=1, col=2)
+        fig2a.update_yaxes(title_text="Count", row=1, col=2)
         _save_plotly("2a_smart_router_dex_share", fig2a)
 
         # ----- 2b) Agent activity (cumulative +/-1) -----
@@ -3233,7 +3453,7 @@ def simulate(
         fig2b.update_layout(
             template="plotly_white",
             title="Agent Activity (cumulative +1 / -1)",
-            xaxis_title="Step",
+            xaxis_title="Block",
             yaxis_title="Cumulative activity",
         )
         _save_plotly("2b_agent_activity", fig2b)
@@ -3323,8 +3543,8 @@ def simulate(
         _save_plotly("2c_agent_activity_corr", fig2c)
 
         # helper for zero-liquidity shading
-        def _zero_liquidity_shapes():
-            shapes = []
+        def _zero_liquidity_shapes(*, xref: str = "x", yref: str = "paper") -> List[Dict[str, Any]]:
+            shapes: List[Dict[str, Any]] = []
             for s_idx, L_val in zip(steps_v, L_end_v):
                 if L_val <= 1e-9:
                     shapes.append(
@@ -3334,7 +3554,8 @@ def simulate(
                             x1=float(s_idx) + 0.5,
                             y0=0,
                             y1=1,
-                            yref="paper",
+                            xref=xref,
+                            yref=yref,
                             fillcolor="rgba(255,0,0,0.06)",
                             line=dict(width=0),
                         )
@@ -3342,8 +3563,24 @@ def simulate(
             return shapes
 
         # ----- 3) Liquidity traces -----
-        fig3 = go.Figure()
-        fig3.add_trace(go.Scatter(x=steps_list, y=L_end_v, mode="lines", name="Active L (end of step)", line=dict(width=1.8)))
+        fig3 = make_subplots(
+            rows=1,
+            cols=2,
+            column_widths=[0.72, 0.28],
+            horizontal_spacing=0.08,
+            subplot_titles=("", ""),
+        )
+        fig3.add_trace(
+            go.Scatter(
+                x=steps_list,
+                y=L_end_v,
+                mode="lines",
+                name="Active L (end of step)",
+                line=dict(width=1.8),
+            ),
+            row=1,
+            col=1,
+        )
         # fig3.add_trace(
         #     go.Scatter(
         #         x=steps_list,
@@ -3371,17 +3608,46 @@ def simulate(
         #         line=dict(width=1.2, dash="dashdot"),
         #     )
         # )
+        fig3.add_trace(
+            go.Histogram(
+                x=_finite(L_end_v),
+                nbinsx=60,
+                marker_color="#1f77b4",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
         fig3.update_layout(
             template="plotly_white",
             title="Active Liquidity",
-            xaxis_title="Step",
-            yaxis_title="Active L",
-            shapes=_zero_liquidity_shapes(),
+            shapes=_zero_liquidity_shapes(xref="x", yref="y domain"),
         )
+        fig3.update_xaxes(title_text="Block", row=1, col=1)
+        fig3.update_yaxes(title_text="Active L", row=1, col=1)
+        fig3.update_xaxes(title_text="Active L", row=1, col=2)
+        fig3.update_yaxes(title_text="Count", row=1, col=2)
         _save_plotly("3_activeL", fig3)
 
         # ----- 4) L per step (passive vs active) -----
-        fig4 = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("Passive LPs", "Active LPs"))
+        mint_passive_hist = _finite_nonzero(mint_step_sum_passive_v)
+        burn_passive_hist = -_finite_nonzero(burn_step_sum_passive_v)
+        mint_active_hist = _finite_nonzero(mint_step_sum_active_v)
+        burn_active_hist = -_finite_nonzero(burn_step_sum_active_v)
+        fig4 = make_subplots(
+            rows=2,
+            cols=2,
+            column_widths=[0.72, 0.28],
+            horizontal_spacing=0.08,
+            vertical_spacing=0.12,
+            subplot_titles=(
+                "Passive LPs",
+                "Passive LPs",
+                "Active LPs",
+                "Active LPs",
+            ),
+        )
         fig4.add_trace(
             go.Bar(x=steps_list, y=mint_step_sum_passive_v, name="Mint / recenter L", marker_color="#6a0dad"),
             row=1,
@@ -3402,27 +3668,86 @@ def simulate(
             row=2,
             col=1,
         )
+        fig4.add_trace(
+            go.Histogram(
+                x=mint_passive_hist,
+                nbinsx=60,
+                marker_color="#6a0dad",
+                opacity=0.75,
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+        fig4.add_trace(
+            go.Histogram(
+                x=burn_passive_hist,
+                nbinsx=60,
+                marker_color="#ff8c00",
+                opacity=0.75,
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+        fig4.add_trace(
+            go.Histogram(
+                x=mint_active_hist,
+                nbinsx=60,
+                marker_color="#6a0dad",
+                opacity=0.75,
+                showlegend=False,
+            ),
+            row=2,
+            col=2,
+        )
+        fig4.add_trace(
+            go.Histogram(
+                x=burn_active_hist,
+                nbinsx=60,
+                marker_color="#ff8c00",
+                opacity=0.75,
+                showlegend=False,
+            ),
+            row=2,
+            col=2,
+        )
         fig4.update_layout(
             template="plotly_white",
-            title="ΔL per Step",
+            title="ΔL per Block",
             barmode="relative",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         )
         fig4.update_yaxes(title_text="ΔL per step", row=1, col=1)
         fig4.update_yaxes(title_text="ΔL per step", row=2, col=1)
-        fig4.update_xaxes(title_text="Step", row=2, col=1)
+        fig4.update_xaxes(title_text="Block", row=2, col=1)
+        fig4.update_xaxes(title_text="ΔL (mint + / burn -)", row=1, col=2)
+        fig4.update_xaxes(title_text="ΔL (mint + / burn -)", row=2, col=2)
+        fig4.update_yaxes(title_text="Count", row=1, col=2)
+        fig4.update_yaxes(title_text="Count", row=2, col=2)
         _save_plotly("4_L_per_step", fig4)
 
         # ----- 5) Active-band reserves -----
-        fig5 = go.Figure()
+        x_active_value_v = X_active_end_v * P_series_v
+        fig5 = make_subplots(
+            rows=2,
+            cols=2,
+            specs=[[{"rowspan": 2}, {}], [None, {}]],
+            column_widths=[0.72, 0.28],
+            horizontal_spacing=0.08,
+            vertical_spacing=0.12,
+            subplot_titles=("", "token0 value (hist)", "", "token1 (hist)"),
+        )
         fig5.add_trace(
             go.Scatter(
                 x=steps_list,
-                y=X_active_end_v * P_series_v,
+                y=x_active_value_v,
                 mode="lines",
                 name="token0 value in active band",
                 line=dict(width=1.8),
-            )
+            ),
+            row=1,
+            col=1,
         )
         fig5.add_trace(
             go.Scatter(
@@ -3431,21 +3756,56 @@ def simulate(
                 mode="lines",
                 name="token1 in active band",
                 line=dict(width=1.8),
-            )
+            ),
+            row=1,
+            col=1,
+        )
+        fig5.add_trace(
+            go.Histogram(
+                x=_finite(x_active_value_v),
+                nbinsx=60,
+                marker_color="#1f77b4",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+        fig5.add_trace(
+            go.Histogram(
+                x=_finite(Y_active_end_v),
+                nbinsx=60,
+                marker_color="#ff7f0e",
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=2,
+            col=2,
         )
         fig5.update_layout(
             template="plotly_white",
             title="Active-band Reserves",
-            xaxis_title="Step",
-            yaxis_title="Token1 units",
-            shapes=_zero_liquidity_shapes(),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+            shapes=_zero_liquidity_shapes(xref="x", yref="y domain"),
         )
+        fig5.update_xaxes(title_text="Block", row=1, col=1)
+        fig5.update_yaxes(title_text="Token1 units", row=1, col=1)
+        fig5.update_xaxes(title_text="Token1 units", row=1, col=2)
+        fig5.update_xaxes(title_text="Token1 units", row=2, col=2)
+        fig5.update_yaxes(title_text="Count", row=1, col=2)
+        fig5.update_yaxes(title_text="Count", row=2, col=2)
         _save_plotly("5_active_reserves", fig5)
 
         # ----- 6b) LP mint width signal -----
         if len(w_ticks_series_v) > 0:
             width_baseline_v = w_unclipped_series_v - w_noise_series_v
-            fig6b = go.Figure()
+            fig6b = make_subplots(
+                rows=1,
+                cols=2,
+                column_widths=[0.72, 0.28],
+                horizontal_spacing=0.08,
+                subplot_titles=("", ""),
+            )
             # fig6b.add_trace(
             #     go.Scatter(
             #         x=steps_list,
@@ -3469,16 +3829,31 @@ def simulate(
                     x=steps_list,
                     y=w_ticks_series_v,
                     mode="lines",
-                    name="Final width",
+                    # name="Final width",
                     line=dict(width=1.6, dash="dashdot"),
-                )
+                ),
+                row=1,
+                col=1,
             )
-            # fig6b.update_layout(
-            #     template="plotly_white",
-            #     title="LP Mint Width Signal",
-            #     xaxis_title="Step",
-            #     yaxis_title="Width (ticks)",
-            # )
+            fig6b.add_trace(
+                go.Histogram(
+                    x=_finite_nonzero(w_ticks_series_v),
+                    nbinsx=60,
+                    marker_color="#1f77b4",
+                    opacity=0.85,
+                    showlegend=False,
+                ),
+                row=1,
+                col=2,
+            )
+            fig6b.update_layout(
+                template="plotly_white",
+                title="Active LP Mint Width",
+            )
+            fig6b.update_xaxes(title_text="Block", row=1, col=1)
+            fig6b.update_yaxes(title_text="Width (ticks)", row=1, col=1)
+            fig6b.update_xaxes(title_text="Width (ticks)", row=1, col=2)
+            fig6b.update_yaxes(title_text="Count", row=1, col=2)
             _save_plotly("6b_mint_width_signal", fig6b)
 
         # ----- 7) PnL panel -----
@@ -3489,63 +3864,68 @@ def simulate(
             shared_xaxes=True,
             vertical_spacing=0.08 if sigma_panel else 0.1,
             row_heights=[0.7, 0.3] if sigma_panel else None,
-            subplot_titles=("Agent PnL (token1)", "CEX σ per step") if sigma_panel else ("Agent PnL (token1)",),
+            subplot_titles=("Agent PnL", "CEX σ") if sigma_panel else ("Agent PnL",),
         )
         fig6.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=1, col=1)
-        fig6.add_trace(
-            go.Scatter(x=steps_list, y=sr_pnl_cum_v, mode="lines", name="Smart router PnL"),
-            row=1,
-            col=1,
-        )
-        fig6.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=noise_pnl_cum_v,
-                mode="lines",
-                name="Noise trader PnL",
-                line=dict(dash="dash"),
-            ),
-            row=1,
-            col=1,
-        )
+        if smart_router_enabled:
+            fig6.add_trace(
+                go.Scatter(x=steps_list, y=sr_pnl_cum_v, mode="lines", name="Smart router PnL"),
+                row=1,
+                col=1,
+            )
+        if noise_trader_enabled:
+            fig6.add_trace(
+                go.Scatter(
+                    x=steps_list,
+                    y=noise_pnl_cum_v,
+                    mode="lines",
+                    name="Noise trader PnL",
+                    line=dict(dash="dash"),
+                ),
+                row=1,
+                col=1,
+            )
         fig6.add_trace(
             go.Scatter(x=steps_list, y=arb_pnl_cum_v, mode="lines", name="Arbitrageur PnL"),
             row=1,
             col=1,
         )
-        fig6.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=lp_pnl_active_series_v,
-                mode="lines",
-                name="Active LP hedged (fees - LVR)",
-                line=dict(dash="dash", color="#9467bd"),
-            ),
-            row=1,
-            col=1,
-        )
-        fig6.add_trace(
+        if lp_active_enabled:
+            fig6.add_trace(
                 go.Scatter(
                     x=steps_list,
-                    y=jiter_pnl_series_v,
+                    y=lp_pnl_active_series_v,
                     mode="lines",
-                    name="Jiter hedged net (fees - LVR - flash)",
-                    line=dict(width=2, color="#d62728"),
+                    name="Active LP hedged",
+                    line=dict(dash="dash", color="#9467bd"),
                 ),
-            row=1,
-            col=1,
-        )
-        fig6.add_trace(
-            go.Scatter(
-                x=steps_list,
-                y=lp_pnl_passive_series_v,
-                mode="lines",
-                name="Passive LP hedged (fees - LVR)",
-                line=dict(dash="dot", color="#8c564b"),
-            ),
-            row=1,
-            col=1,
-        )
+                row=1,
+                col=1,
+            )
+        if jiter_enabled:
+            fig6.add_trace(
+                go.Scatter(
+                        x=steps_list,
+                        y=jiter_pnl_series_v,
+                        mode="lines",
+                        name="Jiter hedged net",
+                        line=dict(width=2, color="#d62728"),
+                    ),
+                row=1,
+                col=1,
+            )
+        if lp_passive_enabled:
+            fig6.add_trace(
+                go.Scatter(
+                    x=steps_list,
+                    y=lp_pnl_passive_series_v,
+                    mode="lines",
+                    name="Passive LP hedged",
+                    line=dict(dash="dot", color="#8c564b"),
+                ),
+                row=1,
+                col=1,
+            )
         # fig6.add_trace(
         #     go.Scatter(
         #         x=steps_list,
@@ -3583,10 +3963,10 @@ def simulate(
             )
         fig6.update_yaxes(title_text="Token1 value", row=1, col=1)
         if sigma_panel:
-            fig6.update_yaxes(title_text="CEX σ (per step)", row=2, col=1)
-            fig6.update_xaxes(title_text="Step", row=2, col=1)
+            fig6.update_yaxes(title_text="CEX σ", row=2, col=1)
+            fig6.update_xaxes(title_text="Block", row=2, col=1)
         else:
-            fig6.update_xaxes(title_text="Step", row=1, col=1)
+            fig6.update_xaxes(title_text="Block", row=1, col=1)
         fig6.update_layout(
             template="plotly_white",
             title="Agent PnL (token1)" + (" with CEX σ" if sigma_panel else ""),
@@ -3596,28 +3976,49 @@ def simulate(
 
         # ----- 8) Fee panel + controller signal -----
         fig7 = make_subplots(rows=2, cols=1, specs=[[{"secondary_y": True}], [{"secondary_y": False}]])
+        if fee_mode in ("volatility_cex", "volatility_dex"):
+            secondary_vals_full = fee_sigma_series_v
+            secondary_label = "EWMA(σ^2)"
+        elif fee_mode == "toxicity":
+            secondary_vals_full = fee_basis_ticks_series_v
+            secondary_label = "Basis (ticks)"
+        elif fee_mode == "lvr_fee_ewma":
+            secondary_vals_full = fee_signal_series_v
+            secondary_label = "EWMA(dLVR - dFees) / notional"
+        else:
+            secondary_vals_full = fee_signal_series_v
+            secondary_label = "Controller signal"
+
+        # Signals are computed from END-OF-STEP state at t, and the scheduled update is
+        # only committed at the START of step t+1. For visualization (signal→fee), plot
+        # fee_{t+1} at timestamp t (i.e., shift the fee series back by 1 step).
+        if len(steps_list) > 1:
+            steps_fee_plot = steps_list[:-1]
+            fee_plot = fee_series_v[1:]
+            secondary_vals_plot = secondary_vals_full[:-1]
+            fee_label = "Fee (applies next step; aligned to signal)"
+        else:
+            steps_fee_plot = steps_list
+            fee_plot = fee_series_v
+            secondary_vals_plot = secondary_vals_full
+            fee_label = "Fee"
+
         fig7.add_trace(
-            go.Scatter(x=steps_list, y=fee_series_v, mode="lines", name="Fee", line=dict(width=1.8)),
+            go.Scatter(
+                x=steps_fee_plot,
+                y=fee_plot,
+                mode="lines",
+                name=fee_label,
+                line=dict(width=1.8),
+            ),
             row=1,
             col=1,
             secondary_y=False,
         )
-        if fee_mode in ("volatility_cex", "volatility_dex"):
-            secondary_vals = fee_sigma_series_v
-            secondary_label = "EWMA(σ^2)"
-        elif fee_mode == "toxicity":
-            secondary_vals = fee_basis_ticks_series_v
-            secondary_label = "Basis (ticks)"
-        elif fee_mode == "lvr_fee_ewma":
-            secondary_vals = fee_signal_series_v
-            secondary_label = "EWMA(dLVR - dFees) / notional"
-        else:
-            secondary_vals = fee_signal_series_v
-            secondary_label = "Controller signal"
         fig7.add_trace(
             go.Scatter(
-                x=steps_list,
-                y=secondary_vals,
+                x=steps_fee_plot,
+                y=secondary_vals_plot,
                 mode="lines",
                 name=secondary_label,
                 line=dict(width=1.2, dash="dash"),
@@ -3727,8 +4128,8 @@ def simulate(
                 )
         fig7.update_layout(
             template="plotly_white",
-            title="Fee & Controller Signal",
-            xaxis_title="Step",
+            title="Fee & Controller Signal (fee aligned to prior step's signal)",
+            xaxis_title="Block",
             xaxis2_title="Fee",
             yaxis2_title="Count",
         )

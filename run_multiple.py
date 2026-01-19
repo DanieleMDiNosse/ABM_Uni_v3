@@ -8,7 +8,7 @@ Implements:
 - (a) Parallel execution across seeds.
 - (b) Auto-include only the agent PnL series that are meaningful for the scenario
       (e.g., hide active LP series when passive_lp_share=1, hide JIT series when
-      JIT is disabled).
+      JIT is disabled, hide smart/noise routers when their trades_per_block are 0).
 
 Outputs:
   abm_results/scenarios/<scenario>/multi_runs/{html,png}/
@@ -35,6 +35,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 import run as run_module
 from utils import load_simulation_parameters, scenario_output_root
@@ -68,9 +69,9 @@ BASE_PNL_SPECS: Tuple[PnlSeriesSpec, ...] = (
     PnlSeriesSpec("smart_router_pnl_cum", "Smart router PnL", "#1f77b4", None),
     PnlSeriesSpec("noise_trader_pnl_cum", "Noise trader PnL", "#ff7f0e", "dash"),
     PnlSeriesSpec("arb_pnl_cum", "Arbitrageur PnL", "#2ca02c", None),
-    PnlSeriesSpec("lp_pnl_active", "Active LP hedged (fees - LVR)", "#9467bd", "dash"),
-    PnlSeriesSpec("jiter_pnl_series", "Jiter hedged net (fees - LVR - flash)", "#d62728", None),
-    PnlSeriesSpec("lp_pnl_passive", "Passive LP hedged (fees - LVR)", "#8c564b", "dot"),
+    PnlSeriesSpec("lp_pnl_active", "Active LP hedged", "#9467bd", "dash"),
+    PnlSeriesSpec("jiter_pnl_series", "Jiter hedged)", "#d62728", None),
+    PnlSeriesSpec("lp_pnl_passive", "Passive LP hedged", "#8c564b", "dot"),
 )
 
 
@@ -80,6 +81,71 @@ def _slice_series(values: Sequence[float], skip: int) -> np.ndarray:
         return arr
     s0 = max(0, min(int(skip), int(arr.size)))
     return arr[s0:]
+
+
+def _slice_sr_dex_share(values: Sequence[float], steps: Sequence[int], skip: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0 or int(skip) <= 0:
+        return arr
+    steps_arr = np.asarray(steps, dtype=int)
+    if steps_arr.size != arr.size:
+        # Fallback: keep all values if step alignment is unclear.
+        return arr
+    return arr[steps_arr >= int(skip)]
+
+
+def _concat_series(results: Sequence[Dict[str, Any]], key: str) -> np.ndarray:
+    series = [
+        r[key]
+        for r in results
+        if isinstance(r.get(key), np.ndarray) and r[key].size > 0
+    ]
+    if not series:
+        return np.array([], dtype=float)
+    return np.concatenate(series, axis=0)
+
+
+def _add_quartile_legend_traces(
+    fig: go.Figure,
+    *,
+    values: np.ndarray,
+    label_prefix: str,
+    color: str,
+    row: int,
+    col: int,
+) -> None:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return
+    q1, q2, q3 = np.percentile(arr, [25.0, 50.0, 75.0])
+    styles = [
+        ("Q1", q1, "dash"),
+        ("Median", q2, None),
+        ("Q3", q3, "dot"),
+    ]
+    for label, value, dash in styles:
+        line = dict(color=color, width=2)
+        if dash:
+            line["dash"] = dash
+        fig.add_trace(
+            go.Scatter(
+            x=[0, 1],
+            y=[0, 1],
+            mode="lines",
+            line=line,
+            name=f"{label_prefix} {label} = {value:.6g}",
+            hoverinfo="skip",
+            visible="legendonly",
+            showlegend=True,
+            ),
+            row=row,
+            col=col,
+        )
+        fig.update_layout(
+            legend=dict(font=dict(size=18, color="black")),
+            font=dict(size=18, color="black")
+        )
 
 
 def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
@@ -147,19 +213,37 @@ def _add_mean_std_band(
             x=x,
             y=mean,
             mode="lines",
-            name=f"{name} (mean)",
+            name=f"{name}",
             line=line,
         )
     )
+
+    fig.update_layout(
+    legend=dict(
+        font=dict(size=18),
+        itemsizing="constant",  # prevents shrinking with many traces
+        itemwidth=50            # horizontal spacing for each item
+    )
+)
 
 
 def _resolve_pnl_specs(params: Dict[str, Any]) -> List[PnlSeriesSpec]:
     """Filter BASE_PNL_SPECS based on which agent cohorts exist in this scenario."""
     try:
-        passive_share = float(params.get("passive_lp_share", 1.0))
+        # Accept both spellings to match different configs.
+        passive_share = float(params.get("passive_lp_share", params.get("lp_passive_share", 1.0)))
     except (TypeError, ValueError):
         passive_share = 1.0
     passive_share = max(0.0, min(1.0, passive_share))
+
+    try:
+        smart_trades = float(params.get("smart_trades_per_block", 0.0))
+    except (TypeError, ValueError):
+        smart_trades = 0.0
+    try:
+        noise_trades = float(params.get("noise_trades_per_block", 0.0))
+    except (TypeError, ValueError):
+        noise_trades = 0.0
 
     # JIT enabled iff all three are strictly positive.
     try:
@@ -178,6 +262,9 @@ def _resolve_pnl_specs(params: Dict[str, Any]) -> List[PnlSeriesSpec]:
     include_active = passive_share < 1.0
     include_passive = passive_share > 0.0
     include_jit = p_jit > 0.0 and n_jit > 0 and liq_perc > 0.0
+    # Only plot cohorts that actually generate trades/PnL in this scenario.
+    include_smart_router = smart_trades > 0.0
+    include_noise_trader = noise_trades > 0.0
 
     specs: List[PnlSeriesSpec] = []
     for spec in BASE_PNL_SPECS:
@@ -186,6 +273,10 @@ def _resolve_pnl_specs(params: Dict[str, Any]) -> List[PnlSeriesSpec]:
         if spec.key == "lp_pnl_passive" and not include_passive:
             continue
         if spec.key == "jiter_pnl_series" and not include_jit:
+            continue
+        if spec.key == "smart_router_pnl_cum" and not include_smart_router:
+            continue
+        if spec.key == "noise_trader_pnl_cum" and not include_noise_trader:
             continue
         specs.append(spec)
     return specs
@@ -207,6 +298,7 @@ def _run_one_seed(
     params = dict(base_params)
     # Pop internal key before calling simulate (it doesn't accept it).
     pnl_keys = params.pop("_pnl_keys", [])
+    extra_series_keys = params.pop("_extra_series_keys", [])
     params["seed"] = int(seed)
 
     run_dir = tmp_root / f"seed_{int(seed)}"
@@ -222,6 +314,16 @@ def _run_one_seed(
     for key in pnl_keys:
         payload[key] = _slice_series(out.get(key, []), skip_step)
 
+    for key in extra_series_keys:
+        if key == "fee_series":
+            payload[key] = _slice_series(out.get(key, []), skip_step)
+        elif key == "smart_router_dex_share_series":
+            payload[key] = _slice_sr_dex_share(
+                out.get("smart_router_dex_share_series", []),
+                out.get("smart_router_dex_share_steps", []),
+                skip_step,
+            )
+
     if not keep_run_artifacts:
         shutil.rmtree(run_dir, ignore_errors=True)
 
@@ -230,8 +332,8 @@ def _run_one_seed(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run N seeds and plot mean±std PnL bands.")
-    p.add_argument("--config", required=True, type=Path, help="Path to the YAML scenario config.")
-    p.add_argument("--runs", type=int, default=10, help="Number of runs/seeds.")
+    p.add_argument("--config", required=True, type=Path, help="Path to the YAML scenario config. Required.")
+    p.add_argument("--runs", type=int, default=10, help="Number of runs/seeds. Default is 10.")
     p.add_argument(
         "--seed-base",
         type=int,
@@ -243,18 +345,18 @@ def parse_args() -> argparse.Namespace:
         "--max-workers",
         type=int,
         default=max(1, (os.cpu_count() or 1) - 1),
-        help="Number of parallel worker processes.",
+        help="Number of parallel worker processes. Defaults to number of CPUs minus one.",
     )
     p.add_argument(
         "--keep-run-artifacts",
         action="store_true",
-        help="Keep per-run temp folders/logs under multi_runs/_tmp_runs.",
+        help="Keep per-run temp folders/logs under multi_runs/_tmp_runs. Default is to delete them.",
     )
     p.add_argument(
         "--band-sigma-mult",
         type=float,
-        default=1.0,
-        help="Shaded band = ±mult*std.",
+        default=2.0,
+        help="Shaded band = ±mult*std. Default 2.0 (±2σ).",
     )
     return p.parse_args()
 
@@ -271,123 +373,256 @@ def main() -> None:
 
     config_path = args.config.expanduser().resolve()
 
-    scenario_label, base_params = load_simulation_parameters(config_path, simulate_func=simulate)
+    _, base_params = load_simulation_parameters(config_path, simulate_func=simulate)
     base_params = dict(base_params)
 
-    # We need PnL series => light_mode must be False.
-    base_params["light_mode"] = False
-    # Avoid per-run plots; we only want the aggregated plot.
-    base_params["visualize"] = False
-    # Reduce stdout, but note: run.py still writes a verbose log file unless light_mode=True.
-    base_params["verbose"] = False
+    fee_modes = ["static", "toxicity", "volatility_cex", "volatility_dex"]
 
-    # Decide which PnL series to include.
-    pnl_specs = _resolve_pnl_specs(base_params)
-    pnl_keys = [spec.key for spec in pnl_specs]
-    if not pnl_keys:
-        raise SystemExit("No PnL series selected; check your config.")
+    for fee_mode in fee_modes:
+        print(f"[multi_runs] Generating runs for fee_mode={fee_mode}...")
+        # We need PnL series => light_mode must be False.
+        base_params["light_mode"] = False
+        # Avoid per-run plots; we only want the aggregated plot.
+        base_params["visualize"] = False
+        # Reduce stdout, but note: run.py still writes a verbose log file unless light_mode=True.
+        base_params["verbose"] = False
+        base_params["fee_mode"] = str(fee_mode)
 
-    # Stash keys into params so worker can avoid pickling specs objects.
-    base_params["_pnl_keys"] = pnl_keys
+        # Decide which PnL series to include.
+        pnl_specs = _resolve_pnl_specs(base_params)
+        pnl_keys = [spec.key for spec in pnl_specs]
+        if not pnl_keys:
+            raise SystemExit("No PnL series selected; check your config.")
 
-    skip_step = int(base_params.get("skip_step", 0))
-    fee_mode = str(base_params.get("fee_mode")).lower()
-    seed0 = int(args.seed_base) if args.seed_base is not None else int(base_params.get("seed", 1))
-    seeds = [int(seed0 + i * int(args.seed_step)) for i in range(int(args.runs))]
+        # Stash keys into params so worker can avoid pickling specs objects.
+        base_params["_pnl_keys"] = pnl_keys
+        base_params["_extra_series_keys"] = ["fee_series", "smart_router_dex_share_series"]
 
-    scenario_root = scenario_output_root(config_path)
-    out_root = scenario_root / "multi_runs"
-    png_dir = out_root / "png"
-    html_dir = out_root / "html"
-    png_dir.mkdir(parents=True, exist_ok=True)
-    html_dir.mkdir(parents=True, exist_ok=True)
+        skip_step = int(base_params.get("skip_step", 0))
+        # fee_mode = str(base_params.get("fee_mode")).lower()
+        seed0 = int(args.seed_base) if args.seed_base is not None else int(base_params.get("seed", 1))
+        seeds = [int(seed0 + i * int(args.seed_step)) for i in range(int(args.runs))]
 
-    tmp_root = out_root / "_tmp_runs"
-    if tmp_root.exists() and not args.keep_run_artifacts:
-        shutil.rmtree(tmp_root, ignore_errors=True)
-    tmp_root.mkdir(parents=True, exist_ok=True)
+        scenario_root = scenario_output_root(config_path)
+        out_root = scenario_root / "multi_runs"
+        png_dir = out_root / "png"
+        html_dir = out_root / "html"
+        png_dir.mkdir(parents=True, exist_ok=True)
+        html_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- parallel execution -------------------------------------------------
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-    from tqdm import tqdm
+        tmp_root = out_root / "_tmp_runs"
+        if tmp_root.exists() and not args.keep_run_artifacts:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+        tmp_root.mkdir(parents=True, exist_ok=True)
 
-    results: List[Dict[str, Any]] = []
-    with ProcessPoolExecutor(max_workers=int(args.max_workers)) as executor:
-        futures = [
-            executor.submit(
-                _run_one_seed,
-                seed,
-                base_params=base_params,
-                tmp_root=tmp_root,
-                keep_run_artifacts=bool(args.keep_run_artifacts),
+        # --- parallel execution -------------------------------------------------
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from tqdm import tqdm
+
+        results: List[Dict[str, Any]] = []
+        with ProcessPoolExecutor(max_workers=int(args.max_workers)) as executor:
+            futures = [
+                executor.submit(
+                    _run_one_seed,
+                    seed,
+                    base_params=base_params,
+                    tmp_root=tmp_root,
+                    keep_run_artifacts=bool(args.keep_run_artifacts),
+                )
+                for seed in seeds
+            ]
+
+            with tqdm(total=len(futures), desc="Seeds", unit="run") as pbar:
+                for fut in as_completed(futures):
+                    results.append(fut.result())
+                    pbar.update(1)
+
+        # Reorder results by seed for consistent output.
+        results.sort(key=lambda r: int(r.get("seed", 0)))
+
+        # Align all series to the minimum length after skip_step.
+        min_len: Optional[int] = None
+        for key in pnl_keys:
+            lens = [int(r[key].size) for r in results if isinstance(r.get(key), np.ndarray)]
+            if not lens:
+                continue
+            cur = min(lens)
+            min_len = cur if min_len is None else min(min_len, cur)
+
+        if min_len is None or min_len <= 0:
+            raise SystemExit("No usable PnL data collected (check skip_step/light_mode/config).")
+
+        x = np.arange(skip_step, skip_step + int(min_len), dtype=int)
+
+        fig = go.Figure()
+        fig.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"))
+
+        mult = float(args.band_sigma_mult)
+        for spec in pnl_specs:
+            mats = np.stack([r[spec.key][:min_len] for r in results], axis=0)
+            mean = np.mean(mats, axis=0)
+            std = np.std(mats, axis=0) * mult
+            _add_mean_std_band(
+                fig,
+                x=x,
+                mean=mean,
+                std=2*std,
+                name=spec.label,
+                color=spec.color,
+                dash=spec.dash,
             )
-            for seed in seeds
-        ]
 
-        with tqdm(total=len(futures), desc="Seeds", unit="run") as pbar:
-            for fut in as_completed(futures):
-                results.append(fut.result())
-                pbar.update(1)
+        fig.update_layout(
+            template="plotly_white",
+            title=(
+                f"Agents's PnL "
+                f"({fee_mode})"
+            ),
+            xaxis_title="Blocks",
+            yaxis_title="Token1 value",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                x=0,
+                font=dict(size=18, color="black"),
+            ),
+            font=dict(size=18, color="black"),
+            title_font=dict(size=18, color="black"),
+            xaxis=dict(title_font=dict(size=18), tickfont=dict(size=18)),
+        yaxis=dict(title_font=dict(size=18), tickfont=dict(size=18)),
+    )
 
-    # Reorder results by seed for consistent output.
-    results.sort(key=lambda r: int(r.get("seed", 0)))
+        stem = config_path.stem
+        lp_share_val = base_params.get("passive_lp_share", base_params.get("lp_passive_share", "NA"))
+        p_jit_val = base_params.get("p_jit", "NA")
+        base_name = (
+            f"pnl_{fee_mode}_{stem}_runs{args.runs}_LPpassiveshare{lp_share_val}_pjit{p_jit_val}"
+        )
+        png_path = png_dir / f"{base_name}_{os.getpid()}.png"
+        html_path = html_dir / f"{base_name}_{os.getpid()}.html"
+        save_plotly_figure(fig, png_path, html_path, source="run_multiple")
 
-    # Align all series to the minimum length after skip_step.
-    min_len: Optional[int] = None
-    for key in pnl_keys:
-        lens = [int(r[key].size) for r in results if isinstance(r.get(key), np.ndarray)]
-        if not lens:
-            continue
-        cur = min(lens)
-        min_len = cur if min_len is None else min(min_len, cur)
+        fee_values = _concat_series(results, "fee_series")
+        sr_share_values = _concat_series(results, "smart_router_dex_share_series")
 
-    if min_len is None or min_len <= 0:
-        raise SystemExit("No usable PnL data collected (check skip_step/light_mode/config).")
+        dist_fig = make_subplots(
+            rows=1,
+            cols=2,
+            subplot_titles=(
+                f"Fee distribution",
+                f"Smart-router DEX share distribution",
+            ),
+        )
+        dist_fig.add_trace(
+            go.Histogram(
+                x=fee_values,
+                name="Fee",
+                marker=dict(color="#1f77b4"),
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=1,
+            col=1,
+        )
+        dist_fig.add_trace(
+            go.Histogram(
+                x=sr_share_values,
+                name="Smart-router DEX share",
+                marker=dict(color="#ff7f0e"),
+                opacity=0.85,
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+        # Mark mean DEX share for quick reference.
+        sr_mean = np.mean(sr_share_values[np.isfinite(sr_share_values)]) if sr_share_values.size else None
+        if sr_mean is not None and np.isfinite(sr_mean):
+            dist_fig.add_shape(
+                type="line",
+                x0=float(sr_mean),
+                x1=float(sr_mean),
+                y0=0,
+                y1=1,
+                xref="x2",
+                yref="y2 domain",
+                line=dict(color="firebrick", width=2, dash="dash"),
+            )
 
-    x = np.arange(skip_step, skip_step + int(min_len), dtype=int)
-
-    fig = go.Figure()
-    fig.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"))
-
-    mult = float(args.band_sigma_mult)
-    for spec in pnl_specs:
-        mats = np.stack([r[spec.key][:min_len] for r in results], axis=0)
-        mean = np.mean(mats, axis=0)
-        std = np.std(mats, axis=0) * mult
-        _add_mean_std_band(
-            fig,
-            x=x,
-            mean=mean,
-            std=2*std,
-            name=spec.label,
-            color=spec.color,
-            dash=spec.dash,
+        _add_quartile_legend_traces(
+            dist_fig,
+            values=fee_values,
+            label_prefix="Fee",
+            color="#1f77b4",
+            row=1,
+            col=1,
+        )
+        _add_quartile_legend_traces(
+            dist_fig,
+            values=sr_share_values,
+            label_prefix="SR DEX share",
+            color="#ff7f0e",
+            row=1,
+            col=2,
         )
 
-    fig.update_layout(
-        template="plotly_white",
-        title=(
-            f"Agent PnL (token1) — mean ± 2σ across {args.runs} seeds "
-            f"({scenario_label})"
-        ),
-        xaxis_title="Step",
-        yaxis_title="Token1 value",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-    )
+        if fee_values.size == 0:
+            dist_fig.add_annotation(
+                text="No fee data",
+                showarrow=False,
+                x=0.5,
+                y=0.5,
+                xref="x1 domain",
+                yref="y1 domain",
+            )
+        if sr_share_values.size == 0:
+            dist_fig.add_annotation(
+                text="No smart-router DEX share data",
+                showarrow=False,
+                x=0.5,
+                y=0.5,
+                xref="x2 domain",
+                yref="y2 domain",
+            )
 
-    stem = config_path.stem
-    base_name = (
-        f"multi_pnl_mean_std_{fee_mode}_{stem}_runs{args.runs}_seed{seed0}_step{args.seed_step}_skip{skip_step}"
-    )
-    png_path = png_dir / f"{base_name}_{os.getpid()}.png"
-    html_path = html_dir / f"{base_name}_{os.getpid()}.html"
-    save_plotly_figure(fig, png_path, html_path, source="run_multiple")
+        dist_fig.update_layout(
+            template="plotly_white",
+            title=dict(
+                text=f"Fee and smart-router DEX share ({fee_mode})",
+                y=0.98,
+                yanchor="top",
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=1.15,
+                xanchor="center",
+                x=0.5,
+                font=dict(size=18, color="black"),
+            ),
+            font=dict(size=18, color="black"),
+            margin=dict(t=180, b=80),
+        )
+        dist_fig.update_xaxes(title_text="Fee", row=1, col=1)
+        dist_fig.update_xaxes(title_text="DEX share", row=1, col=2)
+        dist_fig.update_yaxes(title_text="Count", row=1, col=1)
+        dist_fig.update_yaxes(title_text="Count", row=1, col=2)
 
-    print(f"[multi_runs] scenario: {scenario_label}")
-    print(f"[multi_runs] seeds:    {seeds[0]}..{seeds[-1]} (n={len(seeds)})")
-    print(f"[multi_runs] series:   {', '.join([s.key for s in pnl_specs])}")
-    print(f"[multi_runs] wrote:    {html_path}")
-    print(f"[multi_runs] wrote:    {png_path} (requires kaleido for PNG export)")
+        dist_base_name = (
+            f"fee_{fee_mode}_{stem}_runs{args.runs}_LPpassiveshare{lp_share_val}_pjit{p_jit_val}"
+        )
+        dist_png_path = png_dir / f"{dist_base_name}_{os.getpid()}.png"
+        dist_html_path = html_dir / f"{dist_base_name}_{os.getpid()}.html"
+        save_plotly_figure(dist_fig, dist_png_path, dist_html_path, source="run_multiple")
+
+        print(f"[multi_runs] scenario: {fee_mode}")
+        print(f"[multi_runs] seeds:    {seeds[0]}..{seeds[-1]} (n={len(seeds)})")
+        print(f"[multi_runs] series:   {', '.join([s.key for s in pnl_specs])}")
+        print(f"[multi_runs] wrote:    {html_path}")
+        print(f"[multi_runs] wrote:    {png_path} (requires kaleido for PNG export)")
+        print(f"[multi_runs] wrote:    {dist_html_path}")
+        print(f"[multi_runs] wrote:    {dist_png_path} (requires kaleido for PNG export)")
 
 
 if __name__ == "__main__":

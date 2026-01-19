@@ -1,22 +1,23 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: volatility_dex
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
   config_name: test
-  liquidity_for_gif: true
+  liquidity_for_gif: false
   verbose: true
   light_mode: false
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 7000
+  T: 13000
   # Number of initial steps to omit from visualizations and analytics
-  skip_step: 2000
+  skip_step: 3000
   # Compute smart-router DEX share (DEX/(CEX+DEX)) every n blocks
   n_block_SR_ratio: 100
   # Random seed used for reproducibility across RNGs
-  seed: 7
+  # seed: 7
+  seed: 70
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.00
   # Choose between static, regime (regime switching), noisy-sine, or Heston volatility modes
@@ -67,7 +68,7 @@ simulate:
   # Total number of LP agents instantiated in the simulation
   N_LP: 10
   # Fraction of LP agents designated as passive baseline providers
-  passive_lp_share: 0.7
+  passive_lp_share: 0.5
   # Expected number of narrow LP mints per block (total across narrow LPs)
   narrow_mints_per_block: 0.5
   # Expected number of passive LP mints per block (total across passive LPs)
@@ -105,9 +106,9 @@ simulate:
 
   ##### JIT LP (Jiter) #####
   # Bernoulli arrival probability per block (Jiter runs only when block_time > 1)
-  p_jit: 0
+  p_jit: 1
   # Target up to top-N swaps by input size per arriving block
-  N_jit: 1
+  N_jit: 3
   # Target share of active liquidity to temporarily add in a narrow band (0-1)
   liquidity_perc_jit: 0.90
 
@@ -134,7 +135,7 @@ simulate:
   # Multiplier converting EWMA volatility into a fee adjustment (volatility mode)
   k_sigma: 1
   # Multiplier converting EWMA basis (ticks) into a fee adjustment (toxicity mode)
-  k_basis: 0.01
+  k_basis: 0.0005
   # Feedback gain for EWMA(dLVR - dFees) / notional (lvr_fee_ewma mode)
   k_lvr: 0.1
   # Minimum absolute fee change (in bps) required before committing an update. A value of 0.0005 corresponds to 0.000005 = 0.0005% of the previous fee

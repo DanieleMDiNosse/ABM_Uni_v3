@@ -5,11 +5,13 @@ Outputs Plotly figures (HTML, and PNG if kaleido is installed) for:
 - Initial binomial-hill liquidity distribution.
 - Binomial noise term in the LP width rule.
 - Log-normal trader notional distribution.
-- Log-normal LP mint-size scale distribution.
+- Capped log-normal LP wallet utilization distribution (η = min(1, Z)).
 - Geometric distribution for LP review clocks.
+- Uniform distribution for LP out-of-range recenter thresholds (k_out_threshold).
 - Poisson arrival distributions:
   - traders: intents per block
   - LPs: target mint/burn counts per block
+- Bernoulli distribution for JIT (Jiter) arrival attempts.
 - Reference market path (price, volatility, and return/volatility histograms).
 
 By default this script mirrors the parameters in `abm_results/scenarios/test.yml`.
@@ -85,12 +87,21 @@ class DistributionParams:
         LP mint-scale log-normal parameters (in log space).
     tau : float
         Mean LP review interval in steps (geometric distribution).
+    k_out_min, k_out_max : int
+        Inclusive bounds for the discrete uniform draw of LP out-of-range
+        recenter thresholds.
     block_time : int
         Micro-steps per block (used for per-micro-step Poisson visualizations).
     smart_trades_per_block, noise_trades_per_block : float
         Expected trader intents per block (converted to per-micro-step intensities in run.py).
     narrow_mints_per_block, passive_mints_per_block, passive_burns_per_block : float
         Expected LP event targets per block.
+    p_jit : float
+        Bernoulli arrival probability per block for the JIT searcher.
+    N_jit : int
+        JIT target count enable/disable knob (kept for config alignment).
+    liquidity_perc_jit : float
+        JIT target liquidity share enable/disable knob (kept for config alignment).
     n_samples : int
         Monte Carlo sample size for histogram-based distributions.
 
@@ -136,12 +147,17 @@ class DistributionParams:
     mint_mu: float = -1.0
     mint_sigma: float = 1.5
     tau: float = 5.0
+    k_out_min: int = 10
+    k_out_max: int = 20
     block_time: int = 5
     smart_trades_per_block: float = 0.8
     noise_trades_per_block: float = 0.8
     narrow_mints_per_block: float = 0.5
     passive_mints_per_block: float = 0.5
     passive_burns_per_block: float = 0.5
+    p_jit: float = 0.0
+    N_jit: int = 1
+    liquidity_perc_jit: float = 0.90
     n_samples: int = 500_000
 
 
@@ -336,12 +352,17 @@ def build_distribution_params(
         mint_mu=float(simulate_params.get("mint_mu", DistributionParams.mint_mu)),
         mint_sigma=float(simulate_params.get("mint_sigma", DistributionParams.mint_sigma)),
         tau=float(simulate_params.get("tau", DistributionParams.tau)),
+        k_out_min=int(simulate_params.get("k_out_min", DistributionParams.k_out_min)),
+        k_out_max=int(simulate_params.get("k_out_max", DistributionParams.k_out_max)),
         block_time=max(1, block_time),
         smart_trades_per_block=float(simulate_params.get("smart_trades_per_block", DistributionParams.smart_trades_per_block)),
         noise_trades_per_block=float(simulate_params.get("noise_trades_per_block", DistributionParams.noise_trades_per_block)),
         narrow_mints_per_block=float(simulate_params.get("narrow_mints_per_block", DistributionParams.narrow_mints_per_block)),
         passive_mints_per_block=float(simulate_params.get("passive_mints_per_block", DistributionParams.passive_mints_per_block)),
         passive_burns_per_block=float(simulate_params.get("passive_burns_per_block", DistributionParams.passive_burns_per_block)),
+        p_jit=float(simulate_params.get("p_jit", DistributionParams.p_jit)),
+        N_jit=int(simulate_params.get("N_jit", DistributionParams.N_jit)),
+        liquidity_perc_jit=float(simulate_params.get("liquidity_perc_jit", DistributionParams.liquidity_perc_jit)),
         n_samples=max(1, int(n_samples)),
     )
 
@@ -483,6 +504,70 @@ def _add_hist_with_mean(
     fig.update_yaxes(title_text=y_label, type="log" if log_y else "linear", row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
 
 
+def _add_discrete_pmf(
+    fig: go.Figure,
+    *,
+    row: int,
+    col: int,
+    support: np.ndarray,
+    probabilities: np.ndarray,
+    x_label: str,
+    y_label: str,
+    color: str,
+) -> None:
+    """
+    Add a discrete probability mass function as a bar chart (with mean marker).
+
+    Parameters
+    ----------
+    fig : go.Figure
+        Target Plotly figure.
+    row, col : int
+        Subplot coordinates.
+    support : np.ndarray
+        Discrete support values (shape (k,)).
+    probabilities : np.ndarray
+        Probabilities for each support value (shape (k,)); should sum to ~1.
+    x_label, y_label : str
+        Axis labels.
+    color : str
+        Bar color.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Used for small-support discrete distributions (e.g., Bernoulli, UniformInt).
+    """
+    x = np.asarray(support, dtype=float)
+    p = np.asarray(probabilities, dtype=float)
+    if x.ndim != 1 or p.ndim != 1 or x.size != p.size:
+        raise ValueError("support and probabilities must be 1D arrays of the same length.")
+    p_sum = float(np.sum(p))
+    if not np.isfinite(p_sum) or p_sum <= 0.0:
+        raise ValueError("probabilities must sum to a positive finite value.")
+    p = p / p_sum
+    mean_val = float(np.sum(x * p))
+
+    fig.add_trace(
+        go.Bar(x=x, y=p, marker_color=color, opacity=0.85, showlegend=False),
+        row=row,
+        col=col,
+    )
+    fig.add_vline(
+        x=mean_val,
+        line_width=1,
+        line_dash="dash",
+        line_color="black",
+        row=row,
+        col=col,
+    )
+    fig.update_xaxes(title_text=x_label, row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    fig.update_yaxes(title_text=y_label, row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
+
+
 def sample_initial_liquidity(
     N: int,
     L_total: float,
@@ -512,7 +597,7 @@ def sample_initial_liquidity(
 
     Examples
     --------
-    >>> L = sample_initial_liquidity(N=4, L_total=100.0)
+    >>> L = sample_initial_liquidity(N=4, L_total=100.0, min_L_per_tick=0.0)
     >>> L.ndim == 1
     True
     """
@@ -609,7 +694,7 @@ def sample_lp_mint_scale(
     n_samples: int = 500_000,
 ) -> np.ndarray:
     """
-    Sample LP mint-size scale factors prior to caps.
+    Sample the LP wallet utilization factor used in mint attempts.
 
     Parameters
     ----------
@@ -623,12 +708,16 @@ def sample_lp_mint_scale(
     Returns
     -------
     np.ndarray
-        Positive scale factors (shape (n_samples,)).
+        Wallet utilization factors η in [0, 1] (shape (n_samples,)).
 
     Notes
     -----
-    Mirrors run.py where z ~ LogNormal(mint_mu, mint_sigma) is later truncated
-    by min(1, z).
+    Mirrors `run.py`'s `_draw_wallet_utilization_factor`:
+
+        Z ~ LogNormal(mean_log, sigma_log)
+        η = min(1, Z)
+
+    The cap introduces a point mass at η = 1.
 
     Examples
     --------
@@ -636,7 +725,10 @@ def sample_lp_mint_scale(
     >>> s.shape[0] == 2
     True
     """
-    return np.random.lognormal(mean=mean_log, sigma=sigma_log, size=n_samples)
+    z = np.random.lognormal(mean=mean_log, sigma=sigma_log, size=n_samples)
+    valid = np.isfinite(z) & (z > 0.0)
+    eta = np.where(valid, np.minimum(1.0, z), 0.0)
+    return eta.astype(float)
 
 
 def sample_review_intervals(
@@ -874,12 +966,21 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
         sigma_log=float(params.trader_sigma),
         n_samples=int(params.n_samples),
     )
-    lp_scale = sample_lp_mint_scale(
+    wallet_utilization = sample_lp_mint_scale(
         mean_log=float(params.mint_mu),
         sigma_log=float(params.mint_sigma),
         n_samples=int(params.n_samples),
     )
     review_intervals = sample_review_intervals(tau=float(params.tau), n_samples=int(params.n_samples))
+
+    k_out_min = int(params.k_out_min)
+    k_out_max = int(params.k_out_max)
+    if k_out_min <= 0 or k_out_max <= 0:
+        raise ValueError("k_out_min and k_out_max must be positive integers.")
+    if k_out_min > k_out_max:
+        raise ValueError("k_out_min cannot exceed k_out_max.")
+    k_out_support = np.arange(k_out_min, k_out_max + 1, dtype=float)
+    k_out_pmf = np.full_like(k_out_support, 1.0 / float(k_out_support.size), dtype=float)
 
     fig = make_subplots(
         rows=2,
@@ -888,9 +989,9 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
             "Initial liquidity per tick (binomial hill)",
             f"LP width noise (Binomial, tick_spacing={tick_spacing})",
             "Trader notional distribution (log-normal)",
-            "LP mint scale X (log-normal)",
+            "LP wallet utilization η = min(1, Z)",
             f"LP review intervals (Geometric, mean≈{float(params.tau):g})",
-            "",
+            f"Out-of-range recenter threshold (UniformInt[{k_out_min},{k_out_max}])",
         ),
     )
 
@@ -931,12 +1032,12 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
         fig,
         row=2,
         col=1,
-        data=lp_scale,
-        x_label="Scale factor X",
-        y_label="Density",
+        data=wallet_utilization,
+        x_label="Utilization factor η",
+        y_label="Probability",
         color="#d62728",
-        log_y=True,
-        histnorm="probability density",
+        log_y=False,
+        histnorm="probability",
     )
     _add_hist_with_mean(
         fig,
@@ -950,8 +1051,16 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
         histnorm="probability",
     )
 
-    fig.update_xaxes(visible=False, row=2, col=3, showgrid=True, gridcolor="lightgray", gridwidth=1)
-    fig.update_yaxes(visible=False, row=2, col=3, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    _add_discrete_pmf(
+        fig,
+        row=2,
+        col=3,
+        support=k_out_support,
+        probabilities=k_out_pmf,
+        x_label="k_out_threshold (steps)",
+        y_label="Probability",
+        color="#7f7f7f",
+    )
     fig.update_layout(template="plotly_white", height=750, width=1400, margin=dict(l=40, r=20, t=60, b=40))
     return fig
 
@@ -1000,13 +1109,18 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
     passive_mints = sample_poisson_per_block(float(params.passive_mints_per_block), int(params.n_samples))
     passive_burns = sample_poisson_per_block(float(params.passive_burns_per_block), int(params.n_samples))
 
+    p_jit = float(params.p_jit)
+    p_jit = max(0.0, min(1.0, p_jit))
+    jit_support = np.asarray([0.0, 1.0])
+    jit_pmf = np.asarray([1.0 - p_jit, p_jit], dtype=float)
+
     fig = make_subplots(
         rows=3,
         cols=3,
         subplot_titles=(
             f"Smart intents / micro-step (λ={float(params.smart_trades_per_block)/max(1,int(params.block_time)):.3g})",
             f"Noise intents / micro-step (λ={float(params.noise_trades_per_block)/max(1,int(params.block_time)):.3g})",
-            "",
+            f"JIT attempt / block (Bernoulli p={p_jit:.3g})",
             f"Smart intents / block (λ={float(params.smart_trades_per_block):g})",
             f"Noise intents / block (λ={float(params.noise_trades_per_block):g})",
             f"Narrow mint targets / block (λ={float(params.narrow_mints_per_block):g})",
@@ -1025,12 +1139,106 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
     _add_hist_with_mean(fig, row=3, col=1, data=passive_mints, x_label="Count", y_label="Probability", color="#8c564b", log_y=True, histnorm="probability")
     _add_hist_with_mean(fig, row=3, col=2, data=passive_burns, x_label="Count", y_label="Probability", color="#e377c2", log_y=True, histnorm="probability")
 
-    fig.update_xaxes(visible=False, row=1, col=3)
-    fig.update_yaxes(visible=False, row=1, col=3)
+    _add_discrete_pmf(
+        fig,
+        row=1,
+        col=3,
+        support=jit_support,
+        probabilities=jit_pmf,
+        x_label="Attempt (0/1)",
+        y_label="Probability",
+        color="#7f7f7f",
+    )
     fig.update_xaxes(visible=False, row=3, col=3)
     fig.update_yaxes(visible=False, row=3, col=3)
     fig.update_layout(template="plotly_white", height=980, width=1200, margin=dict(l=40, r=20, t=60, b=40))
     return fig
+
+
+def _normal_cdf(x: float) -> float:
+    """
+    Compute the standard normal CDF Φ(x).
+
+    Parameters
+    ----------
+    x : float
+        Input value.
+
+    Returns
+    -------
+    float
+        Φ(x) in [0, 1].
+
+    Notes
+    -----
+    Uses the error-function identity:
+
+        Φ(x) = 0.5 * (1 + erf(x / sqrt(2))).
+    """
+    return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
+
+
+def _run_self_check(params: DistributionParams) -> None:
+    """
+    Run lightweight, deterministic sanity checks for distribution alignment.
+
+    Parameters
+    ----------
+    params : DistributionParams
+        Scenario-aligned distribution parameters.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    These checks are intended as guardrails for paper figures:
+    - Wallet utilization factor η is capped at 1.
+    - The point mass at η=1 matches the closed-form probability P(Z>=1).
+    - k_out thresholds form a valid discrete uniform distribution.
+    - Binomial width noise has approximately zero mean.
+    """
+    n = int(min(50_000, max(10_000, params.n_samples // 50)))
+    np.random.seed(int(params.seed) + 12_345)
+
+    # --- Wallet utilization: η = min(1, Z), Z ~ LogNormal(mu, sigma) ---
+    eta = sample_lp_mint_scale(float(params.mint_mu), float(params.mint_sigma), n_samples=n)
+    if eta.size == 0:
+        raise AssertionError("wallet utilization check failed: empty sample.")
+    if float(np.min(eta)) < -1e-12 or float(np.max(eta)) > 1.0 + 1e-12:
+        raise AssertionError("wallet utilization check failed: η outside [0, 1].")
+
+    sigma = float(params.mint_sigma)
+    mu = float(params.mint_mu)
+    if sigma <= 0.0:
+        expected_mass_at_one = 1.0 if mu >= 0.0 else 0.0
+    else:
+        # P(Z >= 1) = P(N(mu, sigma) >= 0) = Φ(mu / sigma)
+        expected_mass_at_one = _normal_cdf(mu / sigma)
+    observed_mass_at_one = float(np.mean(np.isclose(eta, 1.0)))
+    if abs(observed_mass_at_one - expected_mass_at_one) > 0.02:
+        raise AssertionError(
+            "wallet utilization check failed: mass at 1 mismatch "
+            f"(observed={observed_mass_at_one:.3f}, expected={expected_mass_at_one:.3f})."
+        )
+
+    # --- k_out threshold: discrete uniform on [k_out_min, k_out_max] ---
+    k_out_min = int(params.k_out_min)
+    k_out_max = int(params.k_out_max)
+    if k_out_min <= 0 or k_out_max <= 0 or k_out_min > k_out_max:
+        raise AssertionError("k_out threshold check failed: invalid bounds.")
+
+    # --- Width noise: mean-zero binomial term in tick units ---
+    pool, _ = build_empty_pool()
+    width_noise = sample_width_noise(
+        n=int(params.binom_n),
+        p=float(params.binom_p),
+        tick_spacing=int(pool.tick_spacing),
+        n_samples=n,
+    )
+    if abs(float(np.mean(width_noise))) > float(pool.tick_spacing):
+        raise AssertionError("width noise check failed: mean too far from zero.")
 
 
 def main() -> None:
@@ -1073,11 +1281,19 @@ def main() -> None:
         default=DistributionParams.n_samples,
         help="Monte Carlo samples for histogram distributions (default: 500000).",
     )
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="Run quick distribution sanity checks before exporting figures.",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).expanduser().resolve()
     scenario_label, simulate_params = load_scenario_config(config_path)
     params = build_distribution_params(simulate_params, n_steps=int(args.n_steps), n_samples=int(args.n_samples))
+
+    if bool(args.self_check):
+        _run_self_check(params)
 
     scenario_root = scenario_output_root(config_path)
     html_dir = scenario_root / "html"
