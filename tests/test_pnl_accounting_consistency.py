@@ -241,14 +241,16 @@ class TestJITFlashFeeAccounting:
             p_jit=0.8,  # High probability of JIT execution
             N_jit=5,
             liquidity_perc_jit=0.5,
-            flash_loan_fee=flash_fee_rate,
+            jit_flash_loan_fee=flash_fee_rate,
         ))
         
         # If JIT minted, flash fees should be paid
-        jiter_flash_fees = out.get("jiter_flash_fees_paid_y", 0.0)
+        jiter_flash_fees_series = out.get("jiter_flash_fee_paid_series", [])
+        jiter_flash_fees = float(jiter_flash_fees_series[-1]) if jiter_flash_fees_series else 0.0
         
         # Flash fees should be positive if JIT executed
-        jiter_execs = sum(out.get("jiter_activity_signs", []))
+        jiter_activity_cum = out.get("jiter_activity_cum", [])
+        jiter_execs = float(jiter_activity_cum[-1]) if jiter_activity_cum else 0.0
         if jiter_execs > 0:
             assert jiter_flash_fees > 0, "JIT executed but no flash fees recorded"
 
@@ -267,12 +269,39 @@ class TestJITFlashFeeAccounting:
             p_jit=0.8,
             N_jit=5,
             liquidity_perc_jit=0.5,
-            flash_loan_fee=flash_fee_rate,
+            jit_flash_loan_fee=flash_fee_rate,
         ))
         
         # flash_fees_paid_y should be non-negative
-        flash_fees = out.get("jiter_flash_fees_paid_y", 0.0)
+        flash_fees_series = out.get("jiter_flash_fee_paid_series", [])
+        flash_fees = float(flash_fees_series[-1]) if flash_fees_series else 0.0
         assert flash_fees >= 0.0
+
+
+class TestJITFlashFeeParameterIndependence:
+    """Tests for decoupling arb and JIT flash-fee parameters."""
+
+    def test_jit_execution_ignores_arb_flash_loan_fee(self, tmp_path):
+        """
+        JIT profitability should depend on `jit_flash_loan_fee`, not `flash_loan_fee`.
+        Setting a very large `flash_loan_fee` (arb cost) should not suppress JIT when
+        `jit_flash_loan_fee=0` and pool fees are positive.
+        """
+        out = simulate(**_base_simulate_kwargs(
+            tmp_path,
+            T=10,
+            seed=7,
+            smart_trades_per_block=0.0,
+            noise_trades_per_block=20.0,
+            slippage_tolerance=1.0,
+            p_jit=1.0,
+            N_jit=1,
+            liquidity_perc_jit=0.5,
+            flash_loan_fee=0.5,
+            jit_flash_loan_fee=0.0,
+        ))
+        jiter_activity_cum = out.get("jiter_activity_cum", [])
+        assert jiter_activity_cum and float(jiter_activity_cum[-1]) > 0.0
 
 
 # =============================================================================
@@ -871,7 +900,7 @@ class TestJITWalletNetting:
             p_jit=0.9,  # High probability
             N_jit=5,
             liquidity_perc_jit=0.5,
-            flash_loan_fee=0.02,
+            jit_flash_loan_fee=0.02,
         ))
         
         # Simulation should complete
@@ -885,4 +914,3 @@ class TestJITWalletNetting:
         # All PnL values should be finite
         for pnl in out["lp_pnl_total"]:
             assert math.isfinite(pnl), f"LP PnL is not finite: {pnl}"
-

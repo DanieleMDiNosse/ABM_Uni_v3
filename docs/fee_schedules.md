@@ -24,7 +24,8 @@ This is equivalent to the common EMA form $v_t = (1-\alpha)v_{t-1} + \alpha x_t$
 
 In this codebase, the EWMA is parameterized by a *half-life in steps* (e.g. `fee_half_life`). The decay is chosen so that the influence of past information halves every `half_life_steps`:
 
-$$ \lambda = \exp\left(-\frac{\ln 2}{\text{half\_life\_steps}}\right) \quad\Rightarrow\quad \alpha = 1-\lambda $$
+$$ \lambda = \exp\left(-\frac{\ln 2}{\tau_{\text{hl}}}\right) \quad\Rightarrow\quad \alpha = 1-\lambda $$
+where $\tau_{\text{hl}}$ is the half-life in steps.
 
 ## Fee Modes
 
@@ -58,11 +59,11 @@ Since this controller is *pure-signal* (no additive baseline), when $\hat{\sigma
 
 *   **Log-return observation:**
     $$ r_t = \ln(m_t) - \ln(m_{t-1}) $$
-    $$ vol\_obs_t = r_t^2 $$
+    $$ v_t = r_t^2 $$
     where $m_t$ is the CEX price at step $t$.
 
 *   **EWMA volatility estimate:**
-    $$ \hat{\sigma^2}_t = \text{EWMA}(vol\_obs_t) $$
+    $$ \hat{\sigma^2}_t = \text{EWMA}(v_t) $$
     $$ \hat{\sigma}_t = \sqrt{\hat{\sigma^2}_t} $$
     The Exponentially Weighted Moving Average (EWMA) is updated at each step using a half-life parameter (`fee_half_life`). In the code, `fee_sigma_series` stores $\hat{\sigma^2}_t$ (see plotting label "EWMA(σ^2)").
 
@@ -73,7 +74,7 @@ Since this controller is *pure-signal* (no additive baseline), when $\hat{\sigma
 
 Same controller as above, but with the volatility observation computed from the **DEX** price (`pool.price`):
 
-$$ r^{DEX}_t = \ln(P_{DEX,t}) - \ln(P_{DEX,t-1}) \quad,\quad vol\_obs^{DEX}_t = (r^{DEX}_t)^2 $$
+$$ r^{\text{DEX}}_t = \ln(P_{DEX,t}) - \ln(P_{DEX,t-1}) \quad,\quad v^{\text{DEX}}_t = (r^{\text{DEX}}_t)^2 $$
 
 This mode is selected with `fee_mode = "volatility_dex"` and uses the same $f_{raw} = k_\sigma \cdot \hat{\sigma}_t$ mapping, with $\hat{\sigma}_t$ estimated from the DEX price series.
 
@@ -83,21 +84,21 @@ This mode adjusts the fee based on the "toxic" flow, measured by the arbitrage o
 
 **Formula:**
 
-$$ f_{raw} = k_{basis} \cdot \text{basis\_ticks}_t $$
+$$ f_{raw} = k_{\text{basis}} \cdot \beta^{\text{ticks}}_t $$
 
-Since this controller is *pure-signal* (no additive baseline), when $\text{basis\_ticks}_t$ is small the applied fee will typically be clamped to $f_{min}$ by the update mechanism below.
+Since this controller is *pure-signal* (no additive baseline), when $\beta^{\text{ticks}}_t$ is small the applied fee will typically be clamped to $f_{min}$ by the update mechanism below.
 
 **Components:**
 
 *   **Fee Band (Log Space):**
-    $$ \text{fee\_band\_ln} = -\ln(1 - f_{current}) $$
+    $$ \ell_f = -\ln(1 - f_{current}) $$
     This represents the price impact of the current fee.
 
 *   **Log Price Gap:**
-    $$ \text{log\_gap}_t = |\ln(P_{DEX, t}) - \ln(P_{CEX, t})| $$
+    $$ \gamma_t = |\ln(P_{DEX, t}) - \ln(P_{CEX, t})| $$
 
 *   **Excess Basis (Observation, uses the *current* pool fee):**
-    $$ B_{obs, t} = \max(0, \text{log\_gap}_t - \text{fee\_band\_ln}) $$
+    $$ B_{obs, t} = \max(0, \gamma_t - \ell_f) $$
     This measures how much the price gap exceeds the fee band; gaps inside the fee band contribute 0.
 
 *   **EWMA of Basis:**
@@ -105,7 +106,7 @@ Since this controller is *pure-signal* (no additive baseline), when $\text{basis
     Smoothed using `fee_half_life`.
 
 *   **Basis in Ticks:**
-    $$ \text{basis\_ticks}_t = \frac{B_{hat, t}}{\text{TICK\_LN}} $$
+    $$ \beta^{\text{ticks}}_t = \frac{\hat{B}_t}{\ln(1.0001)} $$
     Converts the log-basis into an equivalent number of ticks.
 
 *   **Parameters:**
@@ -147,11 +148,11 @@ The implementation is staged (commit→reveal): the controller computes signals 
     Let $f_{current}$ be the current pool fee at the end of the step.
 
     *   **Minimum Change Threshold:**
-        If $|f_{raw} - f_{current}| < \text{fee\_step\_bps\_min} / 10{,}000$, no pending update is staged.
+        If $|f_{raw} - f_{current}| < \delta_{\min} / 10{,}000$, no pending update is staged (where $\delta_{\min} = \texttt{fee\_step\_bps\_min}$).
 
     *   **Maximum Step Size:**
-        The change is capped at $\text{fee\_step\_bps\_max} / 10{,}000$.
-        $$ \Delta f = \text{sign}(f_{raw} - f_{current}) \cdot \min(|f_{raw} - f_{current}|, \text{fee\_step\_bps\_max} / 10{,}000) $$
+        The change is capped at $\delta_{\max} / 10{,}000$ (where $\delta_{\max} = \texttt{fee\_step\_bps\_max}$).
+        $$ \Delta f = \text{sign}(f_{raw} - f_{current}) \cdot \min(|f_{raw} - f_{current}|, \delta_{\max} / 10{,}000) $$
 
     *   **Candidate New Fee (clamped):**
         $$ f_{new} = \text{clamp}(f_{current} + \Delta f, f_{min}, f_{max}) $$

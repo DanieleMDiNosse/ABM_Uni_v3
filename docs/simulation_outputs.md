@@ -69,10 +69,10 @@ section.
   $$
   r_t = 1 - f_t
   $$
-  , and the flash-loan fee parameter is $\phi_{\text{flash}} = \text{flash\_loan\_fee} \ge 0$, then
+  , and the flash-loan fee parameter is $\phi_{\text{flash}} = \texttt{flash\_loan\_fee} \ge 0$, then
   $$
-    \text{band\_lo}[t] = \frac{m_t\,r_t}{1+\phi_{\text{flash}}},\qquad
-    \text{band\_hi}[t] = \frac{m_t(1+\phi_{\text{flash}})}{r_t}.
+    P^{\text{lo}}_t = \frac{m_t\,r_t}{1+\phi_{\text{flash}}},\qquad
+    P^{\text{hi}}_t = \frac{m_t(1+\phi_{\text{flash}})}{r_t}.
   $$
 
 ---
@@ -99,9 +99,9 @@ section.
   Token0 and token1 reserves *inside the active band* at the end of step `t`,
   computed as
   $$
-    (x_t, y_t) = \text{reserves\_in\_active\_tick}(L_{\text{active},t}, S_t),
+    (x_t, y_t) = R(L_{\text{active},t}, S_t),
   $$
-  using the standard Uniswap v3 formulas in sqrt‑price space.
+  where $R(\cdot)$ is the `reserves_in_active_tick` function using the standard Uniswap v3 formulas.
 
 - `liq_history[t]`  
   Snapshot of the sparse `liquidity_net` map at the end of step `t`:
@@ -114,16 +114,8 @@ section.
   Grid parameters for the AMM:
   - `base_s` is the base sqrt‑price,
   - `g > 1` is the geometric tick ratio in sqrt‑price.  
-  Tick `i` has sqrt‑price interval 
-  $$
-  [s_i, s_{i+Δ})
-  $$
-   with
-  
-  $$
-  s_i = \text{base\_s} \cdot g^i
-  $$
-  , `Δ = tick_spacing`.
+  Tick `i` has sqrt‑price interval $[s_i, s_{i+\Delta})$ with
+  $s_i = s_0 \cdot g^i$, where $s_0 = \texttt{base\_s}$ and $\Delta = \texttt{tick\_spacing}$.
 
 ### 2.3. LP mint/burn event logs
 
@@ -214,9 +206,9 @@ perspective (positive = profit).
 - `trader_pnl_steps[t]`, `trader_pnl_cum[t]`  
   Aggregated trader PnL (smart + noise) per step and cumulative:
   $$
-    \text{trader\_pnl\_steps}[t]
-      = \text{smart\_router\_pnl\_steps}[t]
-      + \text{noise\_trader\_pnl\_steps}[t].
+    \text{PnL}^{\text{trader}}_t
+      = \text{PnL}^{\text{smart}}_t
+      + \text{PnL}^{\text{noise}}_t.
   $$
 
 - `trader_exec_count[t]`, `arb_exec_count[t]`  
@@ -282,7 +274,7 @@ Series below aggregate these quantities across LP cohorts.
 - `lp_pnl_total[t]`  
   Total hedged LP PnL across all strategic (non‑seed) LPs:
   $$
-    \text{lp\_pnl\_total}[t]
+    \text{PnL}^{\text{LP}}_t
       = \sum_i \left(F^i_t - \text{LVR}^i_t\right).
   $$
 
@@ -294,7 +286,7 @@ Series below aggregate these quantities across LP cohorts.
   `lp_unhedged_passive[t]`  
   Unhedged PnL (wealth change) aggregated over the same cohorts:
   $$
-    \text{lp\_unhedged\_total}[t]
+    \text{PnL}^{\text{unhedged}}_t
       = \sum_i \left(V^{\text{LP},i}_t - V^{\text{LP},i}_0\right),
   $$
   and analogously for active/passive splits.
@@ -332,9 +324,8 @@ Series below aggregate these quantities across LP cohorts.
   `lp_lvr_passive_series[t]`  
   Aggregated LVR per cohort, computed by the identity
   $$
-    \text{lp\_lvr\_total\_series}[t]
-      = \text{lp\_fee\_value\_total\_series}[t]
-        - \text{lp\_pnl\_total}[t],
+    \text{LVR}_t
+      = F_t - \text{PnL}^{\text{LP}}_t,
   $$
   and analogously for active/passive.
 
@@ -350,7 +341,7 @@ Series below aggregate these quantities across LP cohorts.
   Aggregated wealth in token1 (wallet + mark‑to‑market of open positions) per
   cohort:
   $$
-    \text{lp\_wealth\_total}[t]
+    W^{\text{LP}}_t
       = \sum_i V^{\text{LP},i}_t.
   $$
 
@@ -368,16 +359,16 @@ When Jiter is enabled (`p_jit > 0`, `N_jit > 0`, `liquidity_perc_jit > 0`), thes
   Mark-to-market value (token1) of Jiter’s cumulative fees earned (realized + uncollected).
 
 - `jiter_flash_fee_paid_series[t]`  
-  Cumulative flash-loan fees paid by Jiter (token1 units), valued at the mint-time CEX snapshot for each JIT mint.
+  Cumulative flash-loan fees paid by Jiter (token1 units), valued at the mint-time CEX snapshot for each JIT mint using `jit_flash_loan_fee`.
 
 - `jiter_pnl_series[t]`  
   Jiter “hedged” PnL net of flash-loan fees, using the same sign convention as LP hedged PnL:
   $$
-    \text{jiter\_pnl\_series}[t] = V^{\text{LP}}_t - V^{\text{reb}}_t.
+    \text{PnL}^{\text{jit}}_t = V^{\text{LP}}_t - V^{\text{reb}}_t.
   $$
-  In the implementation, flash-loan fees are debited from Jiter’s wallet, so this series corresponds to
+  In the implementation, flash-loan fees are debited from Jiter's wallet, so this series corresponds to
   $$
-    (\text{fees} - \text{LVR}) - \text{flash\_fees\_paid}.
+    (F - \text{LVR}) - \phi_{\text{paid}}.
   $$
   (This matches the default plot label “Jiter hedged net (fees - LVR - flash)”.)
 
@@ -419,20 +410,15 @@ series below expose its internal signals.
       = \max\bigl(0,\; |\log P_t - \log m_t| - \log(1/(1-f_t))\bigr),
   $$
   $$
-    B_{\hat{t}} = \text{EWMA}(B_{\text{obs},t}),\qquad
-    \text{basis\_ticks}_t = \frac{B_{\hat{t}}}{\log(1.0001)}.
+    \hat{B}_t = \text{EWMA}(B_{\text{obs},t}),\qquad
+    \beta^{\text{ticks}}_t = \frac{\hat{B}_t}{\log(1.0001)}.
   $$
 
 - `fee_imb_series[t]`  
   Imbalance proxy in token1 units within the active band at step `t`, defined
-  from active reserves
-  
+  from active reserves $(x_t, y_t)$ as
   $$
-  (x_t, y_t) = \text{reserves\_in\_active\_tick}(t)
-  $$
-   as
-  $$
-    \text{fee\_imb\_series}[t]
+    \text{imb}_t
       = \frac{y_t - x_t P_t}{\max(10^{-12},\, y_t + x_t P_t)}.
   $$
   (This is tracked for diagnostics; the current controllers do not use it.)

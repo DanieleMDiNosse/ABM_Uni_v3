@@ -17,7 +17,7 @@ simulate:
   n_block_SR_ratio: 100
   # Random seed used for reproducibility across RNGs
   # seed: 7
-  seed: 70
+  seed: 10
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.00
   # Choose between static, regime (regime switching), noisy-sine, or Heston volatility modes
@@ -111,6 +111,8 @@ simulate:
   N_jit: 3
   # Target share of active liquidity to temporarily add in a narrow band (0-1)
   liquidity_perc_jit: 0.90
+  # Flash loan fee for the jiter
+  jit_flash_loan_fee: 0.0001
 
 
   #### INITIALIZATION & VISUALIZATION #####

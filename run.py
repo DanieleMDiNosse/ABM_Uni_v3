@@ -213,6 +213,7 @@ def simulate(
     flash_loan_fee: float = 0.0,  # percentage cost on arbitrage notional (e.g., 0.0005 = 5 bps)
     
     # === Jiter (JIT LP searcher) parameters ===
+    jit_flash_loan_fee: float = 0.0,  # percentage cost on JIT principal value (token1), per mint
     p_jit: float = 0.0,           # Bernoulli arrival probability per block
     N_jit: int = 0,               # target up to top-N swaps by input amount
     liquidity_perc_jit: float = 0.0,  # target share of active liquidity (0-1)
@@ -287,6 +288,13 @@ def simulate(
     if flash_loan_fee < 0.0:
         raise ValueError(f"flash_loan_fee must be >= 0.0: got {flash_loan_fee}")
     flash_loan_mult = 1.0 + flash_loan_fee
+
+    try:
+        jit_flash_loan_fee = float(jit_flash_loan_fee)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"jit_flash_loan_fee must be a non-negative number: got {jit_flash_loan_fee!r}") from exc
+    if jit_flash_loan_fee < 0.0:
+        raise ValueError(f"jit_flash_loan_fee must be >= 0.0: got {jit_flash_loan_fee}")
 
     initial_params = dict(locals())
 
@@ -1463,6 +1471,10 @@ def simulate(
     total_noise_swaps_skipped = 0
     total_smart_swaps_executed = 0
     total_smart_swaps_skipped = 0
+    total_arb_swaps_executed = 0
+    total_arb_no_op_in_band = 0
+    total_arb_swaps_rejected_profitability = 0
+    total_jit_trades_executed = 0
     smart_swaps_x_to_y = 0
     smart_swaps_y_to_x = 0
     noise_swaps_x_to_y = 0
@@ -1791,6 +1803,8 @@ def simulate(
                 nonlocal noise_swaps_x_to_y, noise_swaps_y_to_x
                 nonlocal executed_smart_swaps, executed_noise_swaps, executed_lp_events
                 nonlocal arb_y_this, L_pre_arb_eff_this, dir_arb_this, delta_a_cex_this, _arb_execs
+                nonlocal total_arb_swaps_executed, total_arb_no_op_in_band, total_arb_swaps_rejected_profitability
+                nonlocal total_jit_trades_executed
                 nonlocal jit_open_positions, jit_swap_executed
                 nonlocal sr_dex_execs_this
                 P_pre_exec = pool.price
@@ -1852,75 +1866,128 @@ def simulate(
 
                     L_existing_band = pool.bidx.active_liquidity_at_tick(lower)
                     L_existing_band = max(EPS_LIQ, L_existing_band)
-                    share_factor = liquidity_perc_jit / max(1e-12, (1.0 - liquidity_perc_jit))
-                    L_share_target = share_factor * L_existing_band
-                    L_needed = 0.0
+
+                    def _disable_jit_target(target_id: Any) -> None:
+                        """Remove bookkeeping so this swap doesn't count as a JIT success."""
+                        try:
+                            tgt_id_int = int(target_id)
+                        except (TypeError, ValueError):
+                            return
+                        jit_targets.pop(tgt_id_int, None)
+                        jit_swap_executed.pop(tgt_id_int, None)
+
+                    # --- Closed-form JIT sizing ----------------------------------------------
+                    # Choose L_target (added liquidity) to maximize expected profit:
+                    #   Pi(L) = expected_fee_capture_y(L) - flash_fee_y(L)
+                    # where fee capture is limited to the portion of the swap that stays inside
+                    # this single tick band, and flash fee is proportional to the token1 value
+                    # of minted principal.
+                    fee_rate = float(getattr(pool, "f", 0.0))
+                    r_t = float(getattr(pool, "r", 1.0 - fee_rate))
+                    if fee_rate <= 0.0 or r_t <= 0.0:
+                        _disable_jit_target(tgt)
+                        return
+
+                    # Limit Jiter to at most `liquidity_perc_jit` share of the tick after minting.
+                    q_max = float(liquidity_perc_jit)
+                    share_factor_max = q_max / max(1e-12, (1.0 - q_max))
+                    L_share_cap = share_factor_max * L_existing_band
+
+                    # Numerical safety: avoid minting astronomically large liquidity (float stability).
+                    max_jit_mult = 1e6
+                    L_cap_numeric = max_jit_mult * max(1.0, L_existing_band)
+                    L_max = min(L_share_cap, L_cap_numeric)
+                    if L_max <= 0.0:
+                        _disable_jit_target(tgt)
+                        return
+
+                    # k_cap is the pre-fee input (in swap input units) that can be processed inside
+                    # this tick per unit of total liquidity L_total.
+                    denom = 0.0
+                    denom_floor = 0.0
+                    v_fee = 1.0  # convert input-token fees to token1
                     if side == "Y_to_X":
                         denom = sb_band - S_now
                         denom_floor = boundary_tol
-                        if denom > denom_floor:
-                            dy_eff = amount_in * pool.r
-                            L_needed = dy_eff / denom
+                        v_fee = 1.0
                     else:
-                        # dx_eff = L * (1/S_lo - 1/S_now)  =>  L = dx_eff / denom
                         denom = (1.0 / sa_band) - (1.0 / S_now)
                         inv_scale = max(1.0, abs(1.0 / sa_band), abs(1.0 / S_now))
                         denom_floor = EPS_BOUNDARY * inv_scale
-                        if denom > denom_floor:
-                            dx_eff = amount_in * pool.r
-                            L_needed = dx_eff / denom
-                    L_target = max(L_share_target, max(0.0, L_needed - L_existing_band))
-                    # Numerical safety: avoid minting astronomically large liquidity, which can
-                    # destroy small baseline `liquidity_net` deltas when added/removed as floats.
-                    max_jit_mult = 1e6
-                    L_cap = max(L_share_target, max_jit_mult * max(1.0, L_existing_band))
-                    if L_target > L_cap:
-                        L_target = L_cap
+                        v_fee = float(m_exec)
+                    if denom <= denom_floor:
+                        _disable_jit_target(tgt)
+                        return
+                    k_cap = denom / r_t
+                    if k_cap <= 0.0:
+                        _disable_jit_target(tgt)
+                        return
+
+                    # Flash fee is linear in liquidity for a fixed tick band:
+                    # minted_amounts_at_S(L) is linear in L, so principal_value_y(L) = L * principal_value_y(1).
+                    amt0_unit, amt1_unit = minted_amounts_at_S(1.0, sa, sb, S_now)
+                    principal_value_per_L_y = float(amt0_unit) * float(m_exec) + float(amt1_unit)
+                    c_flash = float(jit_flash_loan_fee) * max(0.0, principal_value_per_L_y)
+
+                    # Convenience scalars:
+                    # A = total fee value (token1) if the whole swap stays inside the tick.
+                    # b = fee value captured per unit L when the swap crosses out of the tick.
+                    A_fee_full = amount_in * fee_rate * v_fee
+                    b_fee_per_L_crossing = fee_rate * v_fee * k_cap
+
+                    # Liquidity threshold (added L) needed so the entire swap stays within the tick:
+                    # amount_in <= k_cap * (L_existing + L_target)
+                    L_full = max(0.0, (amount_in / k_cap) - L_existing_band)
+
+                    L_target = 0.0
+                    if c_flash <= 0.0:
+                        # No financing cost: maximize fee capture by minting up to the cap.
+                        L_target = L_max
+                    else:
+                        slope_cross = b_fee_per_L_crossing - c_flash
+                        if slope_cross <= 0.0:
+                            # Even in the best case (swap immediately crosses), fee capture per unit L
+                            # does not cover financing cost per unit L => never profitable.
+                            L_target = 0.0
+                        elif L_max <= L_full:
+                            # Swap still crosses at the cap; profit is linear in L in this regime.
+                            L_target = L_max
+                        else:
+                            # In the full-in-range regime, Pi(L) = A * L/(E+L) - cL has an interior maximizer:
+                            #   L* = sqrt(A*E/c) - E.
+                            # Constrain to L >= L_full and L <= L_max.
+                            L_star = math.sqrt((A_fee_full * L_existing_band) / c_flash) - L_existing_band
+                            if not math.isfinite(L_star):
+                                L_star = 0.0
+                            L_target = min(L_max, max(L_full, max(0.0, L_star)))
+
                     if L_target <= 0.0:
+                        _disable_jit_target(tgt)
                         return
 
                     amt0, amt1 = minted_amounts_at_S(L_target, sa, sb, S_now)
-                    
-                    # Calculate flash-loan cost BEFORE profitability check
-                    # (valued at the mint-time CEX snapshot).
-                    # We model Jiter as borrowing the principal required for the mint
-                    # and paying a proportional fee on the token1 value of that principal.
+
+                    # Calculate flash-loan cost BEFORE profitability check (valued at mint-time CEX price).
                     flash_fee_y = 0.0
-                    if flash_loan_fee > 0.0:
+                    if jit_flash_loan_fee > 0.0:
                         borrowed_value_y = float(amt0) * float(m_exec) + float(amt1)
                         if borrowed_value_y > 0.0:
-                            flash_fee_y = borrowed_value_y * float(flash_loan_fee)
+                            flash_fee_y = borrowed_value_y * float(jit_flash_loan_fee)
 
-                    # --- Profitability filter -------------------------------------------------
-                    # Skip the JIT if the *expected* fee capture (in token1 value) does not
-                    # cover the flash-loan fee. This is intentionally conservative: it ignores
-                    # LVR, so if it fails this test the realized hedged PnL net of flash fees
-                    # is guaranteed to be <= 0 up to numerical noise.
-                    fee_rate = float(getattr(pool, "f", 0.0))
-                    fee_total_value_y = 0.0
-                    if fee_rate > 0.0:
-                        if side == "Y_to_X":
-                            fee_total_value_y = amount_in * fee_rate
-                        else:  # X_to_Y: fees are paid in token0; value at the snapshot CEX price.
-                            fee_total_value_y = amount_in * fee_rate * float(m_exec)
+                    # --- Profitability filter (expected fees inside tick) ----------------------
                     L_total_tick = L_existing_band + L_target
                     fee_share = float(L_target / max(1e-12, L_total_tick))
+                    in_range_input = min(amount_in, k_cap * L_total_tick)
+                    fee_total_value_y = in_range_input * fee_rate * v_fee
                     expected_fee_capture_y = fee_share * fee_total_value_y
                     expected_profit_y = expected_fee_capture_y - flash_fee_y
                     if expected_profit_y <= 0.0:
-                        # Remove the marker so the swap doesn't register as a JIT success.
-                        # NOTE: Do NOT apply flash_fee_y here since we're not executing the mint
-                        try:
-                            tgt_id = int(tgt)
-                        except (TypeError, ValueError):
-                            tgt_id = None
-                        if tgt_id is not None:
-                            jit_targets.pop(tgt_id, None)
-                            jit_swap_executed.pop(tgt_id, None)
+                        _disable_jit_target(tgt)
                         buffer_log(
                             f"[t={t:03d}] JIT SKIP (expected_profit<=0) "
                             f"expected_fee={expected_fee_capture_y:.6g} flash_fee={flash_fee_y:.6g} "
-                            f"share={fee_share:.3f} notional_in={amount_in:.6g} side={side}\n"
+                            f"share={fee_share:.3f} in_range_in={in_range_input:.6g} "
+                            f"notional_in={amount_in:.6g} side={side}\n"
                         )
                         return
                     # --------------------------------------------------------------------------
@@ -1977,18 +2044,24 @@ def simulate(
                     amt0, amt1 = pos.current_amounts(pool.S)
                     amt0_total = float(amt0) + float(pos.fees0)
                     amt1_total = float(amt1) + float(pos.fees1)
-                    # Flaw 4 fix: Convert token0 to token1 at CEX execution price
-                    # and apply immediate CEX impact. This is consistent with how regular LPs
-                    # handle burns (via _rebalance_lp_to_target which sells token0 on CEX).
-                    # JIT gets proceeds in token1, wallet_x explicitly set to zero (flash loan fully repaid).
-                    m_exec_jit = ref.m  # Use current CEX price for conversion
-                    jiter_agent.wallet_x = 0.0  # Flash loan fully repaid (net mint borrow vs burn withdrawal)
-                    jiter_agent.wallet_y = float(getattr(jiter_agent, "wallet_y", 0.0)) + amt1_total + amt0_total * m_exec_jit
-                    # Apply immediate CEX impact: selling amt0_total on CEX
-                    if abs(amt0_total) > 1e-18:
-                        delta_a_cex_this += -amt0_total
-                        ref.apply_impact_only(-amt0_total)
+                    # JIT burn + netting: withdraw principal+fees, then convert the net token0
+                    # inventory to token1 at the current CEX price, applying immediate CEX impact.
+                    # This mirrors regular LP burns, but must account for the flash-funded
+                    # (potentially negative) wallet_x carried from the mint.
+                    m_exec_jit = float(ref.m)  # Use current CEX price for conversion
+                    wallet_x_before = float(getattr(jiter_agent, "wallet_x", 0.0))
+                    wallet_y_before = float(getattr(jiter_agent, "wallet_y", 0.0))
+                    wallet_x_after = wallet_x_before + amt0_total
+                    wallet_y_after = wallet_y_before + amt1_total
+                    amt0_net_cex = wallet_x_after
+                    # Convert net token0 to token1 (sell if positive, buy if negative)
+                    if abs(amt0_net_cex) > 1e-18:
+                        wallet_y_after += amt0_net_cex * m_exec_jit
+                        delta_a_cex_this += -amt0_net_cex
+                        ref.apply_impact_only(-amt0_net_cex)
                         _broadcast_price_move(ref.m)
+                    jiter_agent.wallet_x = 0.0
+                    jiter_agent.wallet_y = wallet_y_after
                     _unregister_position(pos)
                     pool.add_liquidity_range(pos.lower, pos.upper, -pos.L)
                     _assert_active_liquidity_state_fast("jit_burn")
@@ -2001,9 +2074,10 @@ def simulate(
                     if jit_swap_executed.pop(int(tgt), False):
                         jiter_activity_steps.append(t)
                         jiter_activity_signs.append(+1)
+                        total_jit_trades_executed += 1
                     buffer_log(
                         f"[t={t:03d}] JIT BURN L={pos.L:.4f} [{pos.lower},{pos.upper}) | L_active={pool.L_active:.4f} | tick={pool.tick} | "
-                        f"amt0_sold={amt0_total:.6f} @ m={m_exec_jit:.4f}\n"
+                        f"amt0_net_cex={amt0_net_cex:+.6f} @ m={m_exec_jit:.4f}\n"
                     )
                     executed_lp_events += 1
                     return
@@ -2072,6 +2146,14 @@ def simulate(
                     arb_ref = float(o.get('arb_ref_m', ref.m))
                     # Preview arbitrage profitability (includes liquidity fee + flash loan fee)
                     prev_in, prev_x_out, prev_y_out, prev_dir, _ = preview_arbitrage_to_target(arb_ref)
+                    if prev_dir is None:
+                        arb_skip_steps.append(t)
+                        total_arb_no_op_in_band += 1
+                        buffer_log(
+                            f"[t={t:03d}] arb NO-OP (in-band): "
+                            f"| price={pool.price:.4f} cex={arb_ref:.4f}\n"
+                        )
+                        return
                     expected_profit = 0.0
                     expected_flash_fee = 0.0
                     if prev_dir == "up":
@@ -2081,8 +2163,9 @@ def simulate(
                         notional_y = prev_in * arb_ref
                         expected_flash_fee = (flash_loan_mult - 1.0) * notional_y
                         expected_profit = prev_y_out - flash_loan_mult * notional_y
-                    if prev_dir is None or expected_profit <= 0.0:
+                    if expected_profit <= 0.0:
                         arb_skip_steps.append(t)
+                        total_arb_swaps_rejected_profitability += 1
                         buffer_log(
                             f"[t={t:03d}] arb SKIPPED (unprofitable): dir={prev_dir} "
                             f"expected_profit={expected_profit:.6f} flash_fee={expected_flash_fee:.6f} "
@@ -2119,7 +2202,9 @@ def simulate(
                                 f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick} (impact applied)\n"
                             )
                         _record_micro(price_before)
-                        _arb_execs += int(in_used > 0)
+                        executed = int(in_used > 0)
+                        _arb_execs += executed
+                        total_arb_swaps_executed += executed
                     return
 
                 if o.get('side') == 'X_to_Y':
@@ -2815,6 +2900,10 @@ def simulate(
             "# Run summary",
             f"total_mints = {len(mint_steps)}",
             f"total_burns = {len(burn_steps)}",
+            f"arb_trades_executed = {total_arb_swaps_executed}",
+            f"arb_trades_no_op_in_band = {total_arb_no_op_in_band}",
+            f"arb_trades_rejected_profitability = {total_arb_swaps_rejected_profitability}",
+            f"jit_trades_executed = {total_jit_trades_executed}",
             f"total_noise_trader_swaps = {total_noise_swaps_executed}",
             f"noise_trader_swaps_rejected_slippage = {total_noise_swaps_skipped}",
             f"total_smart_router_swaps = {total_smart_swaps_executed}",
@@ -2861,6 +2950,16 @@ def simulate(
             "lp_unhedged_active": list(lp_unhedged_active_series),
             "lp_unhedged_passive": list(lp_unhedged_passive_series),
             "fee_series": list(fee_series),
+            "total_noise_trader_swaps": int(total_noise_swaps_executed),
+            "noise_trader_swaps_rejected_slippage": int(total_noise_swaps_skipped),
+            "total_smart_router_swaps": int(total_smart_swaps_executed),
+            "smart_router_swaps_rejected_slippage": int(total_smart_swaps_skipped),
+            "smart_router_swaps_cex_routed": int(total_sr_cex_execs),
+            "smart_router_swaps_dex_routed": int(total_sr_dex_execs),
+            "total_arb_swaps": int(total_arb_swaps_executed),
+            "arb_no_op_in_band": int(total_arb_no_op_in_band),
+            "arb_swaps_rejected_profitability": int(total_arb_swaps_rejected_profitability),
+            "total_jit_trades_executed": int(total_jit_trades_executed),
         }
 
     # =============================================================================
@@ -4224,6 +4323,16 @@ def simulate(
         "jiter_flash_fee_paid_series": jiter_flash_fee_paid_series.tolist(),
         "jiter_activity_cum": jiter_activity_cum.tolist(),
         "arb_exec_count": arb_exec_count,
+        "total_noise_trader_swaps": int(total_noise_swaps_executed),
+        "noise_trader_swaps_rejected_slippage": int(total_noise_swaps_skipped),
+        "total_smart_router_swaps": int(total_smart_swaps_executed),
+        "smart_router_swaps_rejected_slippage": int(total_smart_swaps_skipped),
+        "smart_router_swaps_cex_routed": int(total_sr_cex_execs),
+        "smart_router_swaps_dex_routed": int(total_sr_dex_execs),
+        "total_arb_swaps": int(total_arb_swaps_executed),
+        "arb_no_op_in_band": int(total_arb_no_op_in_band),
+        "arb_swaps_rejected_profitability": int(total_arb_swaps_rejected_profitability),
+        "total_jit_trades_executed": int(total_jit_trades_executed),
         "smart_router_activity_cum": smart_activity_cum.tolist(),
         "noise_trader_activity_cum": noise_activity_cum.tolist(),
         "lp_active_activity_cum": lp_active_activity_cum.tolist(),

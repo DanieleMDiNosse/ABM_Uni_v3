@@ -294,66 +294,169 @@ Both trader types share the same size distribution and micro-step arrival proces
 This is the signal used for **new narrow mints** and **recenters**.
 
 - The engine updates an EWMA of **absolute** CEX log-returns once per block:
+
   $$
-  v_t = \left|\log m_t - \log m_{t-1}\right|,\qquad D_t = \text{EWMA}(v_t;\; \text{half-life}=\text{basis_half_life})
+  v_t = \left|\log m_t - \log m_{t-1}\right|,\qquad D_t = \text{EWMA}(v_t;\, \tau_{\text{hl}})
   $$
+  where $\tau_{\text{hl}} = \texttt{basis\_half\_life}$ is the half-life parameter.
 - Convert to “ticks” units using `TICK_LN = log(1.0001)`:
+
   $$
-  \text{vol\_ticks}_t = D_t / \log(1.0001)
+  \sigma^{\text{ticks}}_t = D_t / \log(1.0001)
   $$
 - Add mean-zero binomial noise (in tick units, snapped to spacing):
+
   $$
-  K_t \sim \text{Binomial}(\text{binom\_n}, \text{binom\_p}),\quad
-  \text{noise\_ticks}_t = (K_t - n p)\cdot \text{tick\_spacing}
+  K_t \sim \text{Binomial}(n_b, p_b),\quad
+  \varepsilon_t = (K_t - n_b p_b)\cdot \Delta_{\text{tick}}
   $$
+  where $n_b = \texttt{binom\_n}$, $p_b = \texttt{binom\_p}$, and $\Delta_{\text{tick}} = \texttt{tick\_spacing}$.
 - Width before snapping:
+
   $$
-  w^{\text{raw}}_t = w_{\min} + \text{slope\_s}\cdot \text{vol\_ticks}_t + \text{noise\_ticks}_t
+  w^{\text{raw}}_t = w_{\min} + s \cdot \sigma^{\text{ticks}}_t + \varepsilon_t
   $$
+  where $s = \texttt{slope\_s}$ is the volatility-to-width scaling factor.
 - Then the code snaps to the tick grid and clamps to `[w_min_ticks, w_max_ticks]` in *band units* (multiples of `tick_spacing`).
 
 ---
 
 ## Jiter (JIT LP searcher, implemented)
-- Enabled when `p_jit > 0`, `N_jit > 0`, `liquidity_perc_jit > 0`.
-- **Arrival**: each block, joins with Bernoulli probability `p_jit`.
-- **Target selection (implemented)**:
-  - Observes the current mempool (excluding arb special-casing) and targets the **single largest swap intent** by input size, normalized to token1 using `cex_ref_for_agents`:
-    - if intent is `dx` (token0 in), compare `dx * cex_ref_for_agents`
-    - if intent is `dy` (token1 in), compare `dy`
-  - Wraps the target as: `jit_mint` → target swap → `jit_burn`.
-  - **Implementation detail**:
-    - The targeted swap dict is tagged in-place with `o["jit_target"] = id(o)`.
-    - During mempool replay, the execution engine injects wrapper orders around any swap carrying that tag.
-- **Single-tick placement with boundary handling**:
-  - Mints a one-tick position `[lower, lower + tick_spacing)` near the current active tick, with a direction-aware adjustment if `pool.S` is numerically on the band boundary (to avoid immediate-cross + numerical blowups).
-- **Liquidity sizing (implemented)**:
-  - Let `L_existing_band` be active liquidity at the chosen tick band.
-  - Share target uses:
-    $$
-      L_{\text{share}} = \frac{q}{1-q}\,L_{\text{existing}},\quad q=\text{liquidity\_perc\_jit}
-    $$
-  - Also computes a minimum `L_needed` to keep the targeted swap inside the tick when possible, then sets:
-    $$
-      L_{\text{target}} = \max\left(L_{\text{share}},\,\max(0,\,L_{\text{needed}} - L_{\text{existing}})\right)
-    $$
-  - Caps the mint to avoid astronomically large liquidity (a numeric stability guard).
-- **Flash funding + profitability filter (implemented)**:
-  - Models a flash cost on the **token1 value** of principal at the mint-time CEX price `m_exec = ref.m`:
-    - `flash_fee_y = (amt0 * m_exec + amt1) * flash_loan_fee`
-  - Computes an *expected fee capture* for the targeted swap:
-    - total fee value is `amount_in * pool.f` (if fees in token1) or `amount_in * pool.f * m_exec` (if fees in token0 valued in token1),
-    - Jiter’s fee share is `L_target / (L_existing + L_target)`.
-  - Skips the JIT if `expected_fee_capture_y - flash_fee_y <= 0`.
-  - If the JIT is skipped at this stage, the engine removes the `jit_target` bookkeeping entry so the later `jit_burn` becomes a no-op.
-- **Flash-funded accounting model (implemented)**:
-  - Jiter is treated as flash-funded, so it is allowed to run negative inventories temporarily:
-    - At mint, the model subtracts the minted principal (and the flash fee) from the Jiter wallet.
-    - The flash fee is also accumulated in `flash_fees_paid_y`.
-  - Unlike regular LP mints, Jiter does not apply a CEX conversion impact at mint time (it is “borrowed”, not bought).
-- **Burn + conversion (implemented)**:
-  - After the targeted swap, burns the one-tick position, converts any token0 to token1 at the current `ref.m`, and applies immediate CEX impact from that conversion.
-  - The JIT “success” activity marker is recorded only if the targeted swap actually executed (i.e., it was not skipped by the execution-time slippage gate).
+Jiter is a synthetic, dedicated “searcher LP” that can insert a one-tick position right before a selected swap and remove it immediately after (`jit_mint → swap → jit_burn`). Its sizing rule is designed to be simple, deterministic, and cheap to compute.
+
+### Enablement and target selection
+- Enabled when `p_jit > 0`, `N_jit > 0`, and `liquidity_perc_jit > 0`.
+- Each block, participates with Bernoulli probability `p_jit`.
+- Target selection is the **single largest swap intent** in the current mempool (ignores the special `'arb'` order), measured by *input value in token1* using the validated snapshot price `cex_ref_for_agents`:
+  - if `unit == "dx"`: compare `dx * cex_ref_for_agents`
+  - if `unit == "dy"`: compare `dy`
+- Note: `N_jit` currently acts only as an enable/disable knob; the implementation always targets exactly one swap.
+
+### Execution wrapper (what actually runs)
+- The chosen swap dict is tagged in-place with `o["jit_target"] = id(o)` and recorded in `jit_targets`.
+- During mempool replay, any swap carrying that tag is wrapped as:
+  - `{"type": "jit_mint", "target_id": jit_target}`
+  - the swap itself
+  - `{"type": "jit_burn", "target_id": jit_target}`
+- If `jit_mint` decides to skip (unprofitable or numerically unsafe), it removes bookkeeping (`jit_targets.pop(...)`). The already-enqueued `jit_burn` then becomes a no-op because no position was opened.
+
+### Placement (one tick, with boundary handling)
+At `jit_mint` execution time (i.e., after any earlier mempool orders have potentially moved the pool), Jiter uses the *current* pool state (`pool.tick`, `pool.S`) to choose a one-tick band:
+- Start from the current active tick band.
+- If `pool.S` is extremely close to the band boundary in the swap direction, shift one tick into the direction the swap will move (up for `Y_to_X`, down for `X_to_Y`). This prevents a near-zero denominator in the sizing formulas.
+
+### Mint size selection (`L_target`) — the procedure used in `run.py`
+All quantities below are evaluated at `jit_mint` execution time:
+- `S_now = pool.S`, `tick_now = pool.tick` (current DEX state)
+- `m_exec = ref.m` (current CEX price used to value principal/fees in token1)
+- `side` and `amount_in` are taken from the target swap plan:
+  - `side == "Y_to_X"` ⇒ input token is `Y` and `amount_in` is in token1
+  - `side == "X_to_Y"` ⇒ input token is `X` and `amount_in` is in token0
+
+**Step 1 — read existing liquidity in the band**
+- Compute existing active liquidity in the chosen tick band:
+  - `E = L_existing_band = max(EPS_LIQ, pool.bidx.active_liquidity_at_tick(lower))`
+
+**Step 2 — cap the maximum mint size**
+- Enforce a post-mint share cap `q_max = liquidity_perc_jit`:
+  - `L_share_cap = (q_max / (1 - q_max)) * E` so that `L/(E+L) <= q_max`
+- Enforce a numeric safety cap to avoid huge `L` (float stability):
+  - `L_cap_numeric = 1e6 * max(1, E)`
+- Set `L_max = min(L_share_cap, L_cap_numeric)`; if `L_max <= 0`, Jiter skips.
+
+**Step 3 — compute how much of the swap can stay inside the tick**
+The one-tick position only earns fees on the part of the swap that is processed while the price remains inside that tick.
+
+The code computes `k_cap`, the *pre-fee input per unit total liquidity* that can be processed inside this tick before hitting the boundary:
+- Let `f = pool.f` and `r = pool.r = 1 - f`. If `f <= 0` or `r <= 0`, Jiter skips.
+- Here `sa_band` / `sb_band` are the sqrt-price boundaries of the chosen tick band (from `pool.s_lower(...)` / `pool.s_upper(...)` after the boundary-aware tick shift).
+- If `side == "Y_to_X"` (price increases):
+  - `k_cap = (sb_band - S_now) / r`
+  - fees are paid in token1, so `v_fee = 1`
+- If `side == "X_to_Y"` (price decreases):
+  - `k_cap = (1/sa_band - 1/S_now) / r`
+  - fees are paid in token0 and are valued in token1 at `m_exec`, so `v_fee = m_exec`
+- If the denominator is too small (price numerically on the boundary) or `k_cap <= 0`, Jiter skips.
+
+Given total tick liquidity `E + L`, the in-range (pre-fee) input processed inside the tick is:
+- `in_range_input(L) = min(amount_in, k_cap * (E + L))`
+
+**Step 4 — compute the flash financing cost per unit liquidity**
+Minted principal scales linearly with liquidity in a fixed tick band. The code:
+- Computes unit-liquidity minted amounts: `(amt0_unit, amt1_unit) = minted_amounts_at_S(1.0, sa, sb, S_now)`.
+- Values principal per unit liquidity in token1: `V_per_L_y = amt0_unit * m_exec + amt1_unit`.
+- Sets the per-liquidity financing cost:
+  - `c_flash = jit_flash_loan_fee * max(0, V_per_L_y)`
+
+**Step 5 — choose `L_target` with a closed-form rule**
+Define the added liquidity needed for the *entire* swap to stay inside the tick:
+- `L_full = max(0, amount_in / k_cap - E)`
+
+Then the code uses this piecewise decision:
+- If `c_flash <= 0`: set `L_target = L_max` (no financing cost ⇒ mint as much as allowed).
+- Else compute two scalars in token1:
+  - `A = amount_in * f * v_fee` (total fee value if the whole swap stays in-range),
+  - `b = f * v_fee * k_cap` (fee value per unit `L` in the crossing regime).
+- If `b - c_flash <= 0`: set `L_target = 0` (even the best-case marginal fee capture does not cover marginal financing cost).
+- Else if `L_max <= L_full`: set `L_target = L_max` (still in the “crossing” regime at the cap, where profit is linear in `L`).
+- Else (full-in-range regime is reachable):
+  - Compute the interior maximizer `L_star = sqrt((A * E) / c_flash) - E`.
+  - Clamp it to the feasible interval: `L_target = min(L_max, max(L_full, max(0, L_star)))`.
+  - If this yields `L_target <= 0`, Jiter skips.
+
+**Step 6 — final profitability filter (uses the chosen `L_target`)**
+Even after the closed-form choice, the engine re-checks profitability using the actual minted principal for `L_target`:
+- Compute principal for `L_target`: `(amt0, amt1) = minted_amounts_at_S(L_target, sa, sb, S_now)`.
+- Flash fee: `flash_fee_y = jit_flash_loan_fee * (amt0 * m_exec + amt1)` (if the borrowed value is positive).
+- Expected in-range fee value in token1:
+  - `L_total_tick = E + L_target`
+  - `fee_share = L_target / L_total_tick`
+  - `in_range_input = min(amount_in, k_cap * L_total_tick)`
+  - `fee_total_value_y = in_range_input * f * v_fee`
+  - `expected_fee_capture_y = fee_share * fee_total_value_y`
+- Skip if `expected_fee_capture_y - flash_fee_y <= 0`.
+
+**Profit model (math summary, matches the code path above)**
+Let:
+- `E` be the existing band liquidity (`L_existing_band`),
+- `L` be the added JIT liquidity,
+- `a` be the swap pre-fee input (`amount_in`),
+- `f` be the taker fee (`pool.f`),
+- `v` be the token-to-token1 conversion factor (`v_fee`),
+- `k` be the tick capacity per unit liquidity (`k_cap`), and
+- `c` be the financing cost per unit liquidity (`c_flash`).
+
+Then the sizing rule is derived from the objective:
+
+$$
+\Pi(L) = \frac{L}{E+L}\,f\,v\,\min\!\bigl(a,\,k(E+L)\bigr) - cL.
+$$
+
+Define the “full-in-range” threshold (the smallest `L` that keeps the whole swap inside the tick):
+
+$$
+L_{\text{full}} = \max\!\left(0,\; \frac{a}{k} - E\right).
+$$
+
+In the full-in-range regime, $\min(a, k(E+L)) = a$, so:
+
+$$
+\Pi(L) = A\frac{L}{E+L} - cL,\qquad A = fva,
+$$
+
+which yields the stationary point used in code:
+
+$$
+L^* = \sqrt{\frac{AE}{c}} - E.
+$$
+
+### Accounting model (flash-funded mint, impactful burn)
+- Mint is treated as flash-funded:
+  - Jiter may run negative inventories (`wallet_x`, `wallet_y`) temporarily.
+  - No CEX conversion impact is applied at mint time (principal is “borrowed”, not bought).
+  - The flash fee is deducted from `wallet_y` and accumulated in `flash_fees_paid_y`.
+- Burn withdraws principal + fees and then converts any net token0 inventory to token1 at the **current** `ref.m`, applying immediate CEX impact.
+- The JIT “success” activity marker is recorded only if the targeted swap actually executed (i.e., it was not skipped by the execution-time slippage gate).
 
 ---
 

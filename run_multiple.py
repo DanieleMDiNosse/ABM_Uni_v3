@@ -21,7 +21,8 @@ Notes:
   can collect the PnL series in-memory.
 - `verbose=False` does not disable run.py's per-run verbose log file (it is
   controlled by light_mode). To avoid clutter, we route each worker's outputs to
-  a per-seed temp folder and delete them by default.
+  a per-seed temp folder (scoped under a per-invocation PID folder) and delete
+  them by default.
 """
 
 from __future__ import annotations
@@ -73,6 +74,33 @@ BASE_PNL_SPECS: Tuple[PnlSeriesSpec, ...] = (
     PnlSeriesSpec("jiter_pnl_series", "Jiter hedged)", "#d62728", None),
     PnlSeriesSpec("lp_pnl_passive", "Passive LP hedged", "#8c564b", "dot"),
 )
+
+
+def _make_unique_dir(path: Path) -> Path:
+    """Create a unique directory, appending a suffix if needed.
+
+    Parameters:
+        path: Target directory path to create.
+
+    Returns:
+        Path: The created directory path (may differ from the input if a suffix
+        was added).
+
+    Notes:
+        If `path` already exists, a suffix `_<n>` is appended until an available
+        path is found. This avoids collisions when keeping artifacts across
+        multiple runs and in the rare case of PID reuse.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = path
+    suffix = 1
+    while True:
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            candidate = path.with_name(f"{path.name}_{suffix}")
+            suffix += 1
 
 
 def _slice_series(values: Sequence[float], skip: int) -> np.ndarray:
@@ -324,6 +352,38 @@ def _run_one_seed(
                 skip_step,
             )
 
+    def _sum_counts(values: Any) -> int:
+        if isinstance(values, (list, tuple, np.ndarray)):
+            return int(np.sum(values))
+        return 0
+
+    smart_cex = int(
+        out.get("smart_router_swaps_cex_routed", _sum_counts(out.get("smart_router_cex_exec_count", [])))
+    )
+    smart_dex = int(
+        out.get("smart_router_swaps_dex_routed", _sum_counts(out.get("smart_router_dex_exec_count", [])))
+    )
+    smart_total = out.get("total_smart_router_swaps")
+    if smart_total is None:
+        smart_total = smart_cex + smart_dex
+        if smart_total == 0:
+            smart_total = _sum_counts(out.get("smart_router_exec_count", []))
+
+    payload["total_smart_router_swaps"] = int(smart_total)
+    payload["smart_router_swaps_cex_routed"] = int(smart_cex)
+    payload["smart_router_swaps_dex_routed"] = int(smart_dex)
+    payload["smart_router_swaps_rejected_slippage"] = int(out.get("smart_router_swaps_rejected_slippage", 0))
+
+    payload["total_noise_trader_swaps"] = int(
+        out.get("total_noise_trader_swaps", _sum_counts(out.get("noise_trader_exec_count", [])))
+    )
+    payload["noise_trader_swaps_rejected_slippage"] = int(out.get("noise_trader_swaps_rejected_slippage", 0))
+
+    payload["total_arb_swaps"] = int(out.get("total_arb_swaps", _sum_counts(out.get("arb_exec_count", []))))
+    payload["arb_no_op_in_band"] = int(out.get("arb_no_op_in_band", 0))
+    payload["arb_swaps_rejected_profitability"] = int(out.get("arb_swaps_rejected_profitability", 0))
+    payload["total_jit_trades_executed"] = int(out.get("total_jit_trades_executed", 0))
+
     if not keep_run_artifacts:
         shutil.rmtree(run_dir, ignore_errors=True)
 
@@ -331,6 +391,20 @@ def _run_one_seed(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for multi-run simulations.
+
+    Parameters:
+        None.
+
+    Returns:
+        argparse.Namespace: Parsed CLI options for run_multiple.
+
+    Notes:
+        Reads from sys.argv and applies default values defined in this module.
+
+    Examples:
+        >>> args = parse_args()
+    """
     p = argparse.ArgumentParser(description="Run N seeds and plot mean±std PnL bands.")
     p.add_argument("--config", required=True, type=Path, help="Path to the YAML scenario config. Required.")
     p.add_argument("--runs", type=int, default=10, help="Number of runs/seeds. Default is 10.")
@@ -350,7 +424,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--keep-run-artifacts",
         action="store_true",
-        help="Keep per-run temp folders/logs under multi_runs/_tmp_runs. Default is to delete them.",
+        help=(
+            "Keep per-run temp folders/logs under multi_runs/_tmp_runs/<pid>/... "
+            "Default is to delete them."
+        ),
     )
     p.add_argument(
         "--band-sigma-mult",
@@ -362,6 +439,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run multi-seed simulations and write aggregated outputs.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Notes:
+        Writes plots and a trade-summary log under the scenario's multi_runs folder.
+
+    Examples:
+        >>> main()
+    """
     args = parse_args()
 
     if args.runs <= 0:
@@ -371,12 +462,25 @@ def main() -> None:
     if args.max_workers <= 0:
         raise SystemExit("--max-workers must be positive.")
 
+    print("PID:", os.getpid())
     config_path = args.config.expanduser().resolve()
 
     _, base_params = load_simulation_parameters(config_path, simulate_func=simulate)
     base_params = dict(base_params)
 
     fee_modes = ["static", "toxicity", "volatility_cex", "volatility_dex"]
+
+    scenario_root = scenario_output_root(config_path)
+    out_root = scenario_root / "multi_runs"
+    png_dir = out_root / "png"
+    html_dir = out_root / "html"
+    png_dir.mkdir(parents=True, exist_ok=True)
+    html_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use a per-invocation temp root to avoid collisions across concurrent runs
+    # from multiple terminals. We key by PID (with a suffix if it already exists).
+    tmp_base = out_root / "_tmp_runs"
+    run_tmp_root = _make_unique_dir(tmp_base / str(os.getpid()))
 
     for fee_mode in fee_modes:
         print(f"[multi_runs] Generating runs for fee_mode={fee_mode}...")
@@ -403,16 +507,9 @@ def main() -> None:
         seed0 = int(args.seed_base) if args.seed_base is not None else int(base_params.get("seed", 1))
         seeds = [int(seed0 + i * int(args.seed_step)) for i in range(int(args.runs))]
 
-        scenario_root = scenario_output_root(config_path)
-        out_root = scenario_root / "multi_runs"
-        png_dir = out_root / "png"
-        html_dir = out_root / "html"
-        png_dir.mkdir(parents=True, exist_ok=True)
-        html_dir.mkdir(parents=True, exist_ok=True)
-
-        tmp_root = out_root / "_tmp_runs"
-        if tmp_root.exists() and not args.keep_run_artifacts:
-            shutil.rmtree(tmp_root, ignore_errors=True)
+        # Separate fee modes within the same invocation to avoid overwriting artifacts
+        # when --keep-run-artifacts is enabled.
+        tmp_root = run_tmp_root / str(fee_mode)
         tmp_root.mkdir(parents=True, exist_ok=True)
 
         # --- parallel execution -------------------------------------------------
@@ -439,6 +536,84 @@ def main() -> None:
 
         # Reorder results by seed for consistent output.
         results.sort(key=lambda r: int(r.get("seed", 0)))
+
+        total_smart_router_swaps = sum(int(r.get("total_smart_router_swaps", 0)) for r in results)
+        total_smart_router_swaps_cex = sum(int(r.get("smart_router_swaps_cex_routed", 0)) for r in results)
+        total_smart_router_swaps_dex = sum(int(r.get("smart_router_swaps_dex_routed", 0)) for r in results)
+        total_smart_router_rejected = sum(
+            int(r.get("smart_router_swaps_rejected_slippage", 0)) for r in results
+        )
+
+        total_noise_trader_swaps = sum(int(r.get("total_noise_trader_swaps", 0)) for r in results)
+        total_noise_trader_rejected = sum(
+            int(r.get("noise_trader_swaps_rejected_slippage", 0)) for r in results
+        )
+
+        total_arb_swaps = sum(int(r.get("total_arb_swaps", 0)) for r in results)
+        total_arb_no_op = sum(int(r.get("arb_no_op_in_band", 0)) for r in results)
+        total_arb_rejected_profitability = sum(
+            int(r.get("arb_swaps_rejected_profitability", 0)) for r in results
+        )
+        total_jit_trades_executed = sum(int(r.get("total_jit_trades_executed", 0)) for r in results)
+        n_runs = max(1, len(results))
+
+        smart_total_arr = np.array(
+            [int(r.get("total_smart_router_swaps", 0)) for r in results], dtype=float
+        )
+        smart_cex_arr = np.array(
+            [int(r.get("smart_router_swaps_cex_routed", 0)) for r in results], dtype=float
+        )
+        smart_dex_arr = np.array(
+            [int(r.get("smart_router_swaps_dex_routed", 0)) for r in results], dtype=float
+        )
+        smart_rejected_arr = np.array(
+            [int(r.get("smart_router_swaps_rejected_slippage", 0)) for r in results], dtype=float
+        )
+
+        noise_total_arr = np.array(
+            [int(r.get("total_noise_trader_swaps", 0)) for r in results], dtype=float
+        )
+        noise_rejected_arr = np.array(
+            [int(r.get("noise_trader_swaps_rejected_slippage", 0)) for r in results], dtype=float
+        )
+
+        arb_total_arr = np.array(
+            [int(r.get("total_arb_swaps", 0)) for r in results], dtype=float
+        )
+        arb_no_op_arr = np.array(
+            [int(r.get("arb_no_op_in_band", 0)) for r in results], dtype=float
+        )
+        arb_rejected_arr = np.array(
+            [int(r.get("arb_swaps_rejected_profitability", 0)) for r in results], dtype=float
+        )
+
+        jit_executed_arr = np.array(
+            [int(r.get("total_jit_trades_executed", 0)) for r in results], dtype=float
+        )
+
+        smart_total_mean = float(np.mean(smart_total_arr)) if n_runs > 0 else float("nan")
+        smart_total_std = float(np.std(smart_total_arr)) if n_runs > 0 else float("nan")
+        smart_cex_mean = float(np.mean(smart_cex_arr)) if n_runs > 0 else float("nan")
+        smart_cex_std = float(np.std(smart_cex_arr)) if n_runs > 0 else float("nan")
+        smart_dex_mean = float(np.mean(smart_dex_arr)) if n_runs > 0 else float("nan")
+        smart_dex_std = float(np.std(smart_dex_arr)) if n_runs > 0 else float("nan")
+        smart_rejected_mean = float(np.mean(smart_rejected_arr)) if n_runs > 0 else float("nan")
+        smart_rejected_std = float(np.std(smart_rejected_arr)) if n_runs > 0 else float("nan")
+
+        noise_total_mean = float(np.mean(noise_total_arr)) if n_runs > 0 else float("nan")
+        noise_total_std = float(np.std(noise_total_arr)) if n_runs > 0 else float("nan")
+        noise_rejected_mean = float(np.mean(noise_rejected_arr)) if n_runs > 0 else float("nan")
+        noise_rejected_std = float(np.std(noise_rejected_arr)) if n_runs > 0 else float("nan")
+
+        arb_total_mean = float(np.mean(arb_total_arr)) if n_runs > 0 else float("nan")
+        arb_total_std = float(np.std(arb_total_arr)) if n_runs > 0 else float("nan")
+        arb_no_op_mean = float(np.mean(arb_no_op_arr)) if n_runs > 0 else float("nan")
+        arb_no_op_std = float(np.std(arb_no_op_arr)) if n_runs > 0 else float("nan")
+        arb_rejected_mean = float(np.mean(arb_rejected_arr)) if n_runs > 0 else float("nan")
+        arb_rejected_std = float(np.std(arb_rejected_arr)) if n_runs > 0 else float("nan")
+
+        jit_executed_mean = float(np.mean(jit_executed_arr)) if n_runs > 0 else float("nan")
+        jit_executed_std = float(np.std(jit_executed_arr)) if n_runs > 0 else float("nan")
 
         # Align all series to the minimum length after skip_step.
         min_len: Optional[int] = None
@@ -616,6 +791,52 @@ def main() -> None:
         dist_html_path = html_dir / f"{dist_base_name}_{os.getpid()}.html"
         save_plotly_figure(dist_fig, dist_png_path, dist_html_path, source="run_multiple")
 
+        log_base_name = (
+            f"trade_summary_{fee_mode}_{stem}_runs{args.runs}_LPpassiveshare{lp_share_val}_pjit{p_jit_val}"
+        )
+        log_path = out_root / f"{log_base_name}_{os.getpid()}.txt"
+        log_lines = [
+            "# Multi-run trade summary",
+            f"config = {config_path}",
+            f"fee_mode = {fee_mode}",
+            f"runs = {len(results)}",
+            f"seeds = {seeds[0]}..{seeds[-1]} (step={args.seed_step})",
+            "---- totals across runs ----",
+            f"arb_trades_executed = {total_arb_swaps}",
+            f"arb_trades_no_op_in_band = {total_arb_no_op}",
+            f"arb_trades_rejected_profitability = {total_arb_rejected_profitability}",
+            f"jit_trades_executed = {total_jit_trades_executed}",
+            f"noise_trader_trades_executed = {total_noise_trader_swaps}",
+            f"noise_trader_trades_rejected_slippage = {total_noise_trader_rejected}",
+            f"smart_router_trades_total = {total_smart_router_swaps}",
+            f"smart_router_trades_dex = {total_smart_router_swaps_dex}",
+            f"smart_router_trades_cex = {total_smart_router_swaps_cex}",
+            f"smart_router_trades_rejected_slippage = {total_smart_router_rejected}",
+            "---- per-run mean/std ----",
+            f"arb_trades_executed_mean = {arb_total_mean:.6f}",
+            f"arb_trades_executed_std = {arb_total_std:.6f}",
+            f"arb_trades_no_op_in_band_mean = {arb_no_op_mean:.6f}",
+            f"arb_trades_no_op_in_band_std = {arb_no_op_std:.6f}",
+            f"arb_trades_rejected_profitability_mean = {arb_rejected_mean:.6f}",
+            f"arb_trades_rejected_profitability_std = {arb_rejected_std:.6f}",
+            f"jit_trades_executed_mean = {jit_executed_mean:.6f}",
+            f"jit_trades_executed_std = {jit_executed_std:.6f}",
+            f"noise_trader_trades_executed_mean = {noise_total_mean:.6f}",
+            f"noise_trader_trades_executed_std = {noise_total_std:.6f}",
+            f"noise_trader_trades_rejected_slippage_mean = {noise_rejected_mean:.6f}",
+            f"noise_trader_trades_rejected_slippage_std = {noise_rejected_std:.6f}",
+            f"smart_router_trades_total_mean = {smart_total_mean:.6f}",
+            f"smart_router_trades_total_std = {smart_total_std:.6f}",
+            f"smart_router_trades_dex_mean = {smart_dex_mean:.6f}",
+            f"smart_router_trades_dex_std = {smart_dex_std:.6f}",
+            f"smart_router_trades_cex_mean = {smart_cex_mean:.6f}",
+            f"smart_router_trades_cex_std = {smart_cex_std:.6f}",
+            f"smart_router_trades_rejected_slippage_mean = {smart_rejected_mean:.6f}",
+            f"smart_router_trades_rejected_slippage_std = {smart_rejected_std:.6f}",
+            "note = smart_router_trades_total includes CEX + DEX routes",
+        ]
+        log_path.write_text("\n".join(log_lines) + "\n")
+
         print(f"[multi_runs] scenario: {fee_mode}")
         print(f"[multi_runs] seeds:    {seeds[0]}..{seeds[-1]} (n={len(seeds)})")
         print(f"[multi_runs] series:   {', '.join([s.key for s in pnl_specs])}")
@@ -623,6 +844,17 @@ def main() -> None:
         print(f"[multi_runs] wrote:    {png_path} (requires kaleido for PNG export)")
         print(f"[multi_runs] wrote:    {dist_html_path}")
         print(f"[multi_runs] wrote:    {dist_png_path} (requires kaleido for PNG export)")
+        print(f"[multi_runs] wrote:    {log_path}")
+
+    if not args.keep_run_artifacts:
+        # Best-effort cleanup of the temp folders created for this invocation.
+        # Each worker already deletes its own seed folder; this removes any
+        # leftovers (e.g., if a run crashed mid-way).
+        shutil.rmtree(run_tmp_root, ignore_errors=True)
+        try:
+            tmp_base.rmdir()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

@@ -60,7 +60,7 @@ The computation is handled by the `RebalancerState` class in `agents.py` and upd
 
 The benchmark portfolio consists of:
 1.  **Risky Asset ($x_{prev}$):** The amount of token0 held by the LP.
-2.  **Cash ($cash\_y$):** The amount of token1 (numéraire) held.
+2.  **Cash ($\mathrm{cash}_y$):** The amount of token1 (numéraire) held.
 
 The benchmark value is updated in two ways:
 
