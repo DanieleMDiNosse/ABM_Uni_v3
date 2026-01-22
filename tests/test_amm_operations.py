@@ -156,31 +156,47 @@ class TestSwapMechanics:
         # Tick should not have changed for small swap
         assert pool.tick == tick_before
 
-    def test_swap_crosses_tick_boundary_liquidity_update(self, pool_with_multi_range_liquidity: V3Pool):
+    def test_swap_crosses_tick_boundary_updates_tick_and_L_active(self):
         """
-        Verify that when a swap crosses a tick boundary, L_active is correctly
-        updated by the liquidity_net delta at that boundary.
+        Verify that a swap that crosses exactly one tick boundary:
+        - advances tick by exactly tick_spacing
+        - updates L_active according to liquidity_net at the crossed boundary
+        - reports the full pre-fee input as used input
         """
-        pool = pool_with_multi_range_liquidity
+        pool, _ = build_empty_pool()
+        spacing = pool.tick_spacing
+
+        # Construct a two-band setup with known post-crossing liquidity:
+        # - Band 0 (active): liquidity = L0
+        # - Band 1 (next up): liquidity = L1
+        L0 = 30_000.0
+        L1 = 10_000.0
+        pool.add_liquidity_range(pool.tick - spacing, pool.tick + spacing, L0)
+        pool.add_liquidity_range(pool.tick + spacing, pool.tick + 2 * spacing, L1)
+        pool.recompute_active_L()
+
         tick_before = pool.tick
-        L_before = pool.L_active
-        
-        # Calculate dy needed to cross to the next tick up
+        S_before = pool.S
+        assert pool.L_active == pytest.approx(L0)
+
+        # Post-fee dy needed to reach the next upper boundary.
         S_hi = pool.s_upper()
-        dy_to_boundary = pool.L_active * (S_hi - pool.S)
-        # Add extra to cross and go beyond
-        dy_in = (dy_to_boundary / pool.r) + 500.0
-        
-        used_dy, dx_out, fee_y = pool.swap_y_to_x(dy_in, fee_cb=None)
-        
-        # Verify tick crossed upward
-        assert pool.tick > tick_before
-        
-        # L_active should have changed due to liquidity_net at the boundary
-        expected_L = L_before + pool.liquidity_net.get(tick_before + pool.tick_spacing, 0.0)
-        # Note: might cross multiple ticks, so L_active should reflect all crossings
-        # For this test, we just verify L_active changed appropriately
-        assert pool.L_active != L_before or pool.liquidity_net.get(tick_before + pool.tick_spacing, 0.0) == 0.0
+        dy_to_boundary = L0 * (S_hi - S_before)
+
+        # Add a small extra to enter the next band, but not enough to cross again.
+        S_hi_next = pool.s_upper(tick_before + spacing)
+        dy_to_next_boundary = L1 * (S_hi_next - S_hi)
+        dy_eff_total = dy_to_boundary + min(0.5 * dy_to_next_boundary, 1.0)
+        dy_in = dy_eff_total / pool.r
+
+        used_dy, _dx_out, fee_y = pool.swap_y_to_x(dy_in, fee_cb=None)
+
+        assert pool.tick == tick_before + spacing
+        assert used_dy == pytest.approx(dy_in)
+        assert fee_y == pytest.approx(dy_in * pool.f, rel=1e-12, abs=1e-12)
+        assert pool.L_active == pytest.approx(L1)
+        # After the extra consumption inside the next band, S is strictly above S_hi.
+        assert pool.S > S_hi
 
     def test_swap_fee_deduction_correct(self, pool_with_liquidity: V3Pool):
         """
@@ -233,10 +249,10 @@ class TestSwapMechanics:
         expected_ratio = (pool.r) ** 2
         assert dx_back / initial_dx == pytest.approx(expected_ratio, rel=0.01)
 
-    def test_swap_desert_bridging(self):
+    def test_swap_does_not_bridge_desert_when_L_active_is_zero(self):
         """
-        When liquidity is zero in the active tick but exists in adjacent ticks,
-        verify the swap correctly bridges to the next initialized tick.
+        If the active band has zero liquidity, swaps should return zeros and leave
+        the pool state unchanged even if liquidity exists in adjacent bands.
         """
         pool, _ = build_empty_pool()
         spacing = pool.tick_spacing
@@ -250,19 +266,18 @@ class TestSwapMechanics:
         # Active tick has no liquidity
         assert pool.L_active == pytest.approx(0.0, abs=EPS_LIQ)
         
+        tick_before = pool.tick
         S_before = pool.S
         
         # Try a Y→X swap (pushes price up toward the liquidity)
         dy_in = 1000.0
         used_dy, dx_out, fee_y = pool.swap_y_to_x(dy_in, fee_cb=None)
-        
-        # Should not consume any input since we can't move price through empty liquidity
-        # Actually, the pool should bridge up to the next initialized tick
-        # If we're already at a boundary, the swap should execute in the next tick
-        # The behavior depends on the exact implementation
-        
-        # At minimum, verify the pool state is consistent
-        assert pool.S >= S_before  # Price should not decrease for Y→X
+
+        assert used_dy == 0.0
+        assert dx_out == 0.0
+        assert fee_y == 0.0
+        assert pool.tick == tick_before
+        assert pool.S == pytest.approx(S_before, rel=0.0, abs=EPS_BOUNDARY)
 
     def test_swap_returns_zero_on_empty_pool(self, empty_pool: V3Pool):
         """
@@ -567,64 +582,81 @@ class TestBoundaryIndex:
 class TestFeeAllocation:
     """Tests for fee allocation to liquidity providers."""
 
-    def test_fee_allocation_pro_rata(self):
+    def test_fee_callback_records_segment_fee_single_tick(self, pool_with_liquidity: V3Pool):
         """
-        When multiple positions share the active tick, fees should be allocated
-        proportionally to each position's liquidity share.
-        """
-        pool, m0 = build_empty_pool()
-        
-        # Create positions with different liquidity amounts
-        L1, L2, L3 = 10_000.0, 20_000.0, 30_000.0
-        total_L = L1 + L2 + L3
-        
-        lower = pool.tick - pool.tick_spacing
-        upper = pool.tick + pool.tick_spacing
-        sa = pool.s_lower(lower)
-        sb = pool.s_upper(upper)
-        
-        # Add all positions to the pool
-        pool.add_liquidity_range(lower, upper, L1)
-        pool.add_liquidity_range(lower, upper, L2)
-        pool.add_liquidity_range(lower, upper, L3)
-        pool.recompute_active_L()
-        
-        # Create Position objects for tracking fees
-        pos1 = Position(owner=1, lower=lower, upper=upper, L=L1, sa=sa, sb=sb, amt0_init=0, amt1_init=0)
-        pos2 = Position(owner=2, lower=lower, upper=upper, L=L2, sa=sa, sb=sb, amt0_init=0, amt1_init=0)
-        pos3 = Position(owner=3, lower=lower, upper=upper, L=L3, sa=sa, sb=sb, amt0_init=0, amt1_init=0)
-        
-        # Simulate fee allocation (this mimics allocate_fees logic)
-        fee_total = 100.0
-        for pos in [pos1, pos2, pos3]:
-            pos.fees0 = fee_total * (pos.L / total_L)
-        
-        # Verify pro-rata allocation
-        assert pos1.fees0 == pytest.approx(fee_total * L1 / total_L)
-        assert pos2.fees0 == pytest.approx(fee_total * L2 / total_L)
-        assert pos3.fees0 == pytest.approx(fee_total * L3 / total_L)
-        
-        # Sum should equal total
-        assert pos1.fees0 + pos2.fees0 + pos3.fees0 == pytest.approx(fee_total)
-
-    def test_fee_allocation_via_swap(self, pool_with_liquidity: V3Pool):
-        """
-        Verify that fees are generated during swaps equal to input * fee_rate
-        when the swap stays within a single tick.
+        For a single-tick swap, fee_cb should be called exactly once with the
+        segment fee matching the returned fee and the correct tick/L snapshot.
         """
         pool = pool_with_liquidity
-        
-        # Calculate a swap small enough to stay within the tick
+        tick_before = pool.tick
+        L_before = pool.L_active
+
+        calls = []
+
+        def fee_cb(token: str, fee_amt: float, tick_snapshot: int, L_snapshot: float) -> None:
+            calls.append((token, fee_amt, tick_snapshot, L_snapshot))
+
+        # Calculate a swap small enough to stay within the tick.
         S_lo = pool.s_lower()
-        S = pool.S
-        L = pool.L_active
-        dx_max = L * (1.0 / S_lo - 1.0 / S) / pool.r
-        dx_in = dx_max * 0.1  # Small swap stays in tick
-        expected_fee = dx_in * pool.f
-        
-        used_dx, dy_out, fee_x = pool.swap_x_to_y(dx_in, fee_cb=None)
-        
-        assert fee_x == pytest.approx(expected_fee, rel=1e-12)
+        dx_max = L_before * (1.0 / S_lo - 1.0 / pool.S) / pool.r
+        dx_in = dx_max * 0.1
+
+        used_dx, _dy_out, fee_x = pool.swap_x_to_y(dx_in, fee_cb=fee_cb)
+
+        assert used_dx == pytest.approx(dx_in)
+        assert fee_x == pytest.approx(dx_in * pool.f, rel=1e-12, abs=1e-12)
+        assert len(calls) == 1
+
+        token, fee_amt, tick_snap, L_snap = calls[0]
+        assert token == "x"
+        assert tick_snap == tick_before
+        assert L_snap == pytest.approx(L_before, rel=1e-12, abs=1e-12)
+        assert fee_amt == pytest.approx(fee_x, rel=1e-12, abs=1e-12)
+
+    def test_fee_callback_segments_sum_to_returned_fee_across_tick_crossing(self):
+        """
+        Across a swap that crosses exactly one boundary, fee_cb should be called
+        once per segment with the expected tick/L snapshots, and the sum of
+        segment fees should match the returned fee.
+        """
+        pool, _ = build_empty_pool()
+        spacing = pool.tick_spacing
+
+        L0 = 30_000.0
+        L1 = 10_000.0
+        pool.add_liquidity_range(pool.tick - spacing, pool.tick + spacing, L0)
+        pool.add_liquidity_range(pool.tick + spacing, pool.tick + 2 * spacing, L1)
+        pool.recompute_active_L()
+
+        tick_before = pool.tick
+        S_before = pool.S
+        S_hi = pool.s_upper()
+        dy_to_boundary = L0 * (S_hi - S_before)
+
+        # Cross one boundary, then move slightly in the next band.
+        S_hi_next = pool.s_upper(tick_before + spacing)
+        dy_to_next_boundary = L1 * (S_hi_next - S_hi)
+        dy_eff_total = dy_to_boundary + min(0.5 * dy_to_next_boundary, 1.0)
+        dy_in = dy_eff_total / pool.r
+
+        calls = []
+
+        def fee_cb(token: str, fee_amt: float, tick_snapshot: int, L_snapshot: float) -> None:
+            calls.append((token, fee_amt, tick_snapshot, L_snapshot))
+
+        used_dy, _dx_out, fee_y = pool.swap_y_to_x(dy_in, fee_cb=fee_cb)
+
+        assert used_dy == pytest.approx(dy_in)
+        assert pool.tick == tick_before + spacing
+        assert len(calls) == 2
+        assert [c[0] for c in calls] == ["y", "y"]
+        assert [c[2] for c in calls] == [tick_before, tick_before + spacing]
+        assert calls[0][3] == pytest.approx(L0, rel=1e-12, abs=1e-12)
+        assert calls[1][3] == pytest.approx(L1, rel=1e-12, abs=1e-12)
+
+        fee_sum = sum(c[1] for c in calls)
+        assert fee_sum == pytest.approx(fee_y, rel=1e-12, abs=1e-12)
+        assert fee_y == pytest.approx(dy_in * pool.f, rel=1e-12, abs=1e-12)
 
     def test_fees_accumulate_on_position(self):
         """
@@ -658,6 +690,26 @@ class TestFeeAllocation:
 
 class TestQuoteConsistency:
     """Tests that quotes match actual swap results."""
+
+    def test_quote_does_not_mutate_pool_state(self, pool_with_liquidity: V3Pool):
+        """
+        quote_* methods should be read-only with respect to economic pool state:
+        (tick, S, L_active) must not change.
+        """
+        pool = pool_with_liquidity
+        tick_before = pool.tick
+        S_before = pool.S
+        L_before = pool.L_active
+
+        _ = pool.quote_x_to_y(1.0)
+        assert pool.tick == tick_before
+        assert pool.S == pytest.approx(S_before, rel=0.0, abs=EPS_BOUNDARY)
+        assert pool.L_active == pytest.approx(L_before, rel=1e-12, abs=1e-12)
+
+        _ = pool.quote_y_to_x(1.0)
+        assert pool.tick == tick_before
+        assert pool.S == pytest.approx(S_before, rel=0.0, abs=EPS_BOUNDARY)
+        assert pool.L_active == pytest.approx(L_before, rel=1e-12, abs=1e-12)
 
     def test_quote_x_to_y_matches_swap_result(self, pool_with_liquidity: V3Pool):
         """

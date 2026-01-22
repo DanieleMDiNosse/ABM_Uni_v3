@@ -200,22 +200,6 @@ class TestTraderStepAccumulatorCEXTrades:
         assert acc.pnl == pytest.approx(dex_pnl)
         assert acc.realized_pnl_cex == pytest.approx(0.0)
 
-    def test_realized_pnl_cex_field_exists(self):
-        """
-        TraderStepAccumulator should have a realized_pnl_cex field initialized to 0.
-        """
-        acc = TraderStepAccumulator()
-        assert hasattr(acc, 'realized_pnl_cex')
-        assert acc.realized_pnl_cex == 0.0
-
-    def test_record_cex_trade_pnl_method_exists(self):
-        """
-        TraderStepAccumulator should have a record_cex_trade_pnl method.
-        """
-        acc = TraderStepAccumulator()
-        assert hasattr(acc, 'record_cex_trade_pnl')
-        assert callable(acc.record_cex_trade_pnl)
-
 
 # =============================================================================
 # 2. JIT Flash Fee Accounting Tests (Flaw 2)
@@ -224,58 +208,58 @@ class TestTraderStepAccumulatorCEXTrades:
 class TestJITFlashFeeAccounting:
     """Tests for JIT flash fee deduction from rebalancer."""
 
-    def test_jit_flash_fee_reduces_hedged_pnl(self, tmp_path):
+    def test_jit_flash_fee_paid_series_is_zero_when_rate_is_zero(self, tmp_path):
         """
-        JIT flash fees should reduce hedged PnL.
-        After a JIT mint, the rebalancer's cash_y should be reduced by flash_fee_y.
+        When jit_flash_loan_fee=0, the cumulative flash fee series should remain identically zero.
         """
-        flash_fee_rate = 0.05  # 5% flash loan fee
-        
         out = simulate(**_base_simulate_kwargs(
             tmp_path,
             T=10,
-            seed=42,
-            noise_trades_per_block=5.0,
-            slippage_tolerance=0.5,
-            trader_mean=5.0,
-            p_jit=0.8,  # High probability of JIT execution
-            N_jit=5,
+            seed=7,
+            smart_trades_per_block=0.0,
+            noise_trades_per_block=20.0,
+            slippage_tolerance=1.0,
+            p_jit=1.0,
+            N_jit=1,
             liquidity_perc_jit=0.5,
-            jit_flash_loan_fee=flash_fee_rate,
+            flash_loan_fee=0.5,
+            jit_flash_loan_fee=0.0,
         ))
-        
-        # If JIT minted, flash fees should be paid
-        jiter_flash_fees_series = out.get("jiter_flash_fee_paid_series", [])
-        jiter_flash_fees = float(jiter_flash_fees_series[-1]) if jiter_flash_fees_series else 0.0
-        
-        # Flash fees should be positive if JIT executed
-        jiter_activity_cum = out.get("jiter_activity_cum", [])
-        jiter_execs = float(jiter_activity_cum[-1]) if jiter_activity_cum else 0.0
-        if jiter_execs > 0:
-            assert jiter_flash_fees > 0, "JIT executed but no flash fees recorded"
+        assert out["jiter_activity_cum"] and float(out["jiter_activity_cum"][-1]) > 0.0
+        assert all(abs(v) <= 1e-18 for v in out["jiter_flash_fee_paid_series"])
 
-    def test_jit_flash_fee_consistency(self, tmp_path):
+    def test_jit_flash_fee_paid_series_increases_with_positive_rate(self, tmp_path):
         """
-        JIT agent's flash_fees_paid_y should equal the sum of all flash fees paid.
+        When jit_flash_loan_fee>0 and JIT executes, the cumulative flash fee series should be
+        non-decreasing and strictly positive by the end of the run.
         """
-        flash_fee_rate = 0.02
-        
         out = simulate(**_base_simulate_kwargs(
             tmp_path,
-            T=15,
-            seed=123,
-            noise_trades_per_block=8.0,
-            slippage_tolerance=0.3,
-            p_jit=0.8,
-            N_jit=5,
+            T=10,
+            seed=7,
+            smart_trades_per_block=0.0,
+            noise_trades_per_block=20.0,
+            slippage_tolerance=1.0,
+            p_jit=1.0,
+            N_jit=1,
             liquidity_perc_jit=0.5,
-            jit_flash_loan_fee=flash_fee_rate,
+            flash_loan_fee=0.5,
+            jit_flash_loan_fee=1e-4,
         ))
-        
-        # flash_fees_paid_y should be non-negative
-        flash_fees_series = out.get("jiter_flash_fee_paid_series", [])
-        flash_fees = float(flash_fees_series[-1]) if flash_fees_series else 0.0
-        assert flash_fees >= 0.0
+
+        assert out["jiter_activity_cum"] and float(out["jiter_activity_cum"][-1]) > 0.0
+
+        fees = out["jiter_flash_fee_paid_series"]
+        assert fees and fees[-1] > 0.0
+        assert all(fees[i] <= fees[i + 1] + 1e-12 for i in range(len(fees) - 1))
+
+        # Self-consistency check: wealth should equal wallet value + open-position value.
+        wallet = out["jiter_wallet_series"]
+        pos_value = out["jiter_position_value_series"]
+        wealth = out["jiter_wealth_series"]
+        assert len(wallet) == len(pos_value) == len(wealth)
+        for w, pv, ww in zip(wallet, pos_value, wealth):
+            assert ww == pytest.approx(w + pv, rel=1e-12, abs=1e-12)
 
 
 class TestJITFlashFeeParameterIndependence:
@@ -302,38 +286,6 @@ class TestJITFlashFeeParameterIndependence:
         ))
         jiter_activity_cum = out.get("jiter_activity_cum", [])
         assert jiter_activity_cum and float(jiter_activity_cum[-1]) > 0.0
-
-
-# =============================================================================
-# 3. JIT Burn CEX Impact Tests (Flaw 4)
-# =============================================================================
-
-class TestJITBurnCEXImpact:
-    """Tests for JIT burn handling and CEX impact recording."""
-
-    def test_jit_burn_records_cex_impact(self, tmp_path):
-        """
-        When JIT burns a position with token0, it should record CEX impact
-        (delta_a_cex_this should be updated).
-        """
-        out = simulate(**_base_simulate_kwargs(
-            tmp_path,
-            T=15,
-            seed=77,
-            noise_trades_per_block=5.0,
-            slippage_tolerance=0.5,
-            p_jit=0.8,
-            N_jit=5,
-            liquidity_perc_jit=0.5,
-            flash_loan_fee=0.0,  # No flash fee to isolate CEX impact
-        ))
-        
-        # Simulation should complete successfully with JIT enabled
-        assert "DEX_price" in out
-        assert len(out["DEX_price"]) == 15
-        
-        # JIT activity should be tracked (may or may not execute depending on conditions)
-        assert "jiter_activity_steps" in out or "lp_pnl_total" in out
 
 
 # =============================================================================

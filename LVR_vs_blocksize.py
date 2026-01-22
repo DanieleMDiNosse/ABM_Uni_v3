@@ -1,0 +1,792 @@
+#!/usr/bin/env python3
+"""LVR_vs_blocksize.py
+
+Sweep `block_time` (block size B) and study the distribution of per-block LVR
+increments (ΔLVR) across multiple random seeds.
+
+This script:
+1) Loads a base scenario YAML (e.g., `abm_results/scenarios/test.yml`).
+2) Builds a grid of block sizes B (default: 2..16 inclusive => 15 points).
+3) For each B, runs N simulations with different seeds (default: 10 runs).
+4) Extracts per-block ΔLVR series after `skip_step` and aggregates across runs.
+5) Produces violin plots of the ΔLVR distributions vs B, with a line connecting
+   the per-violin medians. Separate panels are produced for active LPs, passive
+   LPs, and (if enabled) the Jiter agent.
+
+Outputs are written under:
+  `abm_results/scenarios/<scenario_stem>/lvr_vs_blocksize/`
+
+Example:
+  conda activate main
+  python LVR_vs_blocksize.py --config abm_results/scenarios/test.yml --runs 10 --max-workers 8
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+import run as run_module
+from utils import load_simulation_parameters, scenario_output_root
+
+
+def _silent_tqdm(iterable=None, **kwargs):
+    """Silence tqdm inside run.simulate to avoid nested progress bars.
+
+    Parameters:
+        iterable: Optional iterable to wrap.
+        **kwargs: Ignored tqdm options.
+
+    Returns:
+        Iterable: A pass-through iterable.
+
+    Notes:
+        `run.py` uses `tqdm(range(...))`. Replacing it with `range(...)` prevents
+        worker subprocesses from generating progress bars.
+    """
+    if iterable is None:
+        total = int(kwargs.get("total", 0))
+        return range(total)
+    return iterable
+
+
+# Monkeypatch tqdm used inside run.py
+run_module.tqdm = _silent_tqdm  # type: ignore[attr-defined]
+
+simulate = run_module.simulate
+
+
+@dataclass(frozen=True)
+class CohortSpec:
+    """Metadata for a cohort whose ΔLVR distribution we want to plot."""
+
+    name: str
+    label: str
+    color: str
+
+
+COHORT_SPECS: Tuple[CohortSpec, ...] = (
+    CohortSpec("active", "Active LPs", "#9467bd"),
+    CohortSpec("passive", "Passive LPs", "#8c564b"),
+    CohortSpec("jiter", "Jiter", "#d62728"),
+)
+
+
+def _make_unique_dir(path: Path) -> Path:
+    """Create a unique directory, appending a suffix if needed.
+
+    Parameters:
+        path: Target directory path to create.
+
+    Returns:
+        Path: The created directory path (may differ from the input if a suffix
+        was added).
+
+    Notes:
+        If `path` already exists, a suffix `_<n>` is appended until an available
+        path is found. This avoids collisions across concurrent invocations.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = path
+    suffix = 1
+    while True:
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            candidate = path.with_name(f"{path.name}_{suffix}")
+            suffix += 1
+
+
+def _resolve_enabled_cohorts(params: Mapping[str, Any]) -> List[CohortSpec]:
+    """Determine which cohorts are active given the scenario parameters.
+
+    Parameters:
+        params: Simulation parameter mapping (loaded from YAML + defaults).
+
+    Returns:
+        List[CohortSpec]: Enabled cohorts, in a stable order.
+
+    Notes:
+        - Active LP cohort exists iff `passive_lp_share < 1`.
+        - Passive LP cohort exists iff `passive_lp_share > 0`.
+        - Jiter exists iff `p_jit > 0`, `N_jit > 0`, and `liquidity_perc_jit > 0`.
+    """
+    try:
+        passive_share = float(params.get("passive_lp_share", 1.0))
+    except (TypeError, ValueError):
+        passive_share = 1.0
+    passive_share = max(0.0, min(1.0, passive_share))
+
+    try:
+        p_jit = float(params.get("p_jit", 0.0))
+    except (TypeError, ValueError):
+        p_jit = 0.0
+    try:
+        n_jit = int(params.get("N_jit", 0))
+    except (TypeError, ValueError):
+        n_jit = 0
+    try:
+        liq_perc = float(params.get("liquidity_perc_jit", 0.0))
+    except (TypeError, ValueError):
+        liq_perc = 0.0
+
+    include_active = passive_share < 1.0
+    include_passive = passive_share > 0.0
+    include_jiter = p_jit > 0.0 and n_jit > 0 and liq_perc > 0.0
+
+    enabled: List[CohortSpec] = []
+    for spec in COHORT_SPECS:
+        if spec.name == "active" and not include_active:
+            continue
+        if spec.name == "passive" and not include_passive:
+            continue
+        if spec.name == "jiter" and not include_jiter:
+            continue
+        enabled.append(spec)
+    return enabled
+
+
+def _delta_after_skip(values: Sequence[float], *, skip_step: int) -> np.ndarray:
+    """Compute per-block increments Δx after skipping a transient prefix.
+
+    Parameters:
+        values: Cumulative series x_t over blocks (length ~= T).
+        skip_step: Number of initial blocks to omit (burn-in).
+
+    Returns:
+        np.ndarray: Δx series after burn-in (float), with non-finite values set to NaN.
+
+    Notes:
+        The Δ series is computed as `diff(values[skip_step:])`, which excludes
+        the increment that bridges the transient regime boundary.
+    """
+    arr = np.asarray(values, dtype=float)
+    s0 = max(0, min(int(skip_step), int(arr.size)))
+    arr = arr[s0:]
+    if arr.size < 2:
+        return np.array([], dtype=float)
+    delta = np.diff(arr)
+    delta[~np.isfinite(delta)] = np.nan
+    return delta
+
+
+def _compute_jiter_lvr_cumulative(out: Mapping[str, Any]) -> np.ndarray:
+    """Reconstruct Jiter cumulative LVR from returned accounting series.
+
+    Parameters:
+        out: Output dict returned by `run.simulate()`.
+
+    Returns:
+        np.ndarray: Cumulative Jiter LVR series (float).
+
+    Notes:
+        In the implementation, `jiter_pnl_series` is the hedged PnL measured as
+        V^LP - V^reb, and flash-loan fees are debited directly from the wallet.
+        The model's identity implies:
+
+            jiter_pnl = (F - LVR) - flash_fees_paid
+            => LVR = F - (jiter_pnl + flash_fees_paid)
+    """
+    fee = np.asarray(out.get("jiter_fee_value_series", []), dtype=float)
+    pnl = np.asarray(out.get("jiter_pnl_series", []), dtype=float)
+    flash = np.asarray(out.get("jiter_flash_fee_paid_series", []), dtype=float)
+
+    n = min(int(fee.size), int(pnl.size), int(flash.size))
+    if n <= 0:
+        return np.array([], dtype=float)
+
+    fee = fee[:n]
+    pnl = pnl[:n]
+    flash = flash[:n]
+    return fee - (pnl + flash)
+
+
+def _jit_success_mask_after_skip(out: Mapping[str, Any], *, skip_step: int, n_steps: int) -> np.ndarray:
+    """Build a boolean mask for blocks with successful JIT execution after burn-in.
+
+    Parameters:
+        out: Output dict returned by `run.simulate()`.
+        skip_step: Number of initial blocks to omit (burn-in).
+        n_steps: Number of simulation blocks to align to (typically len(LVR series)).
+
+    Returns:
+        np.ndarray: Boolean mask aligned with Δ series (length ~= n_steps - skip_step - 1).
+
+    Notes:
+        `run.py` increments `jiter_activity` by +1 in block `t` when a JIT mint/burn
+        roundtrip successfully surrounds an executed swap (`jit_swap_executed=True`).
+        The output only exposes the cumulative series `jiter_activity_cum`, so we
+        recover per-block counts via a first difference.
+    """
+    cum = np.asarray(out.get("jiter_activity_cum", []), dtype=float)
+    if cum.size <= 0 or n_steps <= 0:
+        return np.array([], dtype=bool)
+    n = min(int(n_steps), int(cum.size))
+    cum = cum[:n]
+    # Per-block successful jit count (0,1,2,...) via diff of cumulative series.
+    act = np.diff(np.concatenate(([0.0], cum)))
+
+    s0 = max(0, min(int(skip_step), n))
+    # Align mask with ΔLVR = LVR[t] - LVR[t-1] for t=s0+1..n-1
+    mask = act[s0 + 1 :]
+    return mask > 0.0
+
+
+def _run_one(
+    seed: int,
+    block_time: int,
+    *,
+    base_params: Mapping[str, Any],
+    tmp_root: Path,
+    keep_run_artifacts: bool,
+    cohort_names: Sequence[str],
+) -> Dict[str, Any]:
+    """Worker: run one simulation and return ΔLVR series per enabled cohort.
+
+    Parameters:
+        seed: RNG seed for the simulation.
+        block_time: Block size B (micro-steps per block).
+        base_params: Base simulation parameters (will be copied and overridden).
+        tmp_root: Temporary output root for per-run artifacts (logs, etc.).
+        keep_run_artifacts: If True, keep per-run temp folders. Otherwise delete them.
+        cohort_names: Cohort names to return (subset of {"active","passive","jiter"}).
+
+    Returns:
+        Dict[str, Any]: A payload with keys: block_time, seed, and `dLVR_<cohort>`.
+
+    Notes:
+        We call `run.simulate()` directly to keep results in-memory. We set
+        `results_root` to a per-run folder so any verbose logs are isolated and
+        can be removed when `keep_run_artifacts=False`.
+    """
+    import run as _run_module
+
+    _run_module.tqdm = _silent_tqdm  # type: ignore[attr-defined]
+
+    params = dict(base_params)
+    params["seed"] = int(seed)
+    params["block_time"] = int(block_time)
+
+    run_dir = tmp_root / f"B{int(block_time)}_seed{int(seed)}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    params["results_root"] = run_dir
+
+    out = _run_module.simulate(**params)
+    skip_step = int(params.get("skip_step", 0))
+
+    payload: Dict[str, Any] = {
+        "seed": int(seed),
+        "block_time": int(block_time),
+    }
+
+    if "active" in cohort_names:
+        payload["dLVR_active"] = _delta_after_skip(out.get("lp_lvr_active_series", []), skip_step=skip_step)
+    if "passive" in cohort_names:
+        payload["dLVR_passive"] = _delta_after_skip(out.get("lp_lvr_passive_series", []), skip_step=skip_step)
+    if "jiter" in cohort_names:
+        jiter_lvr_cum = _compute_jiter_lvr_cumulative(out)
+        # Align to the activity series length so the success mask matches ΔLVR indexing.
+        act_cum = np.asarray(out.get("jiter_activity_cum", []), dtype=float)
+        if act_cum.size > 0 and jiter_lvr_cum.size > 0:
+            n = min(int(jiter_lvr_cum.size), int(act_cum.size))
+            jiter_lvr_cum = jiter_lvr_cum[:n]
+        # Keep unconditional per-block ΔLVR for storage; apply conditional filtering
+        # (successful JIT blocks) downstream when computing medians/distributions.
+        payload["dLVR_jiter"] = _delta_after_skip(jiter_lvr_cum, skip_step=skip_step)
+        payload["jit_success_mask"] = _jit_success_mask_after_skip(
+            out, skip_step=skip_step, n_steps=int(jiter_lvr_cum.size)
+        )
+
+    if not keep_run_artifacts:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+    return payload
+
+
+def _build_violin_figure(
+    distributions: Mapping[str, Mapping[int, np.ndarray]],
+    *,
+    cohort_specs: Sequence[CohortSpec],
+    block_times: Sequence[int],
+    # title: str,
+) -> go.Figure:
+    """Create violin plots of ΔLVR distributions vs block size, with medians line.
+
+    Parameters:
+        distributions: Mapping cohort -> block_time -> 1D ΔLVR samples.
+        cohort_specs: Enabled cohort specifications (label/color).
+        block_times: Block size grid in display order.
+
+    Returns:
+        go.Figure: Plotly figure with one row per cohort.
+
+    Notes:
+        Each violin is built from the pooled ΔLVR samples across all runs for a
+        given block size.
+    """
+    n_rows = max(1, len(cohort_specs))
+    subplot_titles = [spec.label for spec in cohort_specs] if cohort_specs else ["ΔLVR"]
+    fig = make_subplots(
+        rows=n_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        subplot_titles=subplot_titles,
+    )
+
+    x_categories = [str(int(b)) for b in block_times]
+
+    for row_idx, spec in enumerate(cohort_specs, start=1):
+        per_b = distributions.get(spec.name, {})
+
+        medians: List[float] = []
+        for b in block_times:
+            vals = np.asarray(per_b.get(int(b), np.array([], dtype=float)), dtype=float)
+            vals = vals[np.isfinite(vals)]
+            med = float(np.median(vals)) if vals.size > 0 else float("nan")
+            medians.append(med)
+
+            fig.add_trace(
+                go.Violin(
+                    x=[str(int(b))] * int(vals.size),
+                    y=vals,
+                    name=str(int(b)),
+                    showlegend=False,
+                    points=False,
+                    line=dict(color=spec.color, width=1.2),
+                    fillcolor=spec.color,
+                    opacity=0.35,
+                    meanline_visible=False,
+                    scalemode="width",
+                ),
+                row=row_idx,
+                col=1,
+            )
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_categories,
+                y=medians,
+                mode="lines+markers",
+                name=f"{spec.label} median",
+                showlegend=False,
+                line=dict(color="black", width=2),
+                marker=dict(color="black", size=6),
+                hovertemplate="B=%{x}<br>median=%{y:.6g}<extra></extra>",
+            ),
+            row=row_idx,
+            col=1,
+        )
+
+        fig.add_hline(
+            y=0.0,
+            line=dict(color="gray", width=1, dash="dash"),
+            row=row_idx,
+            col=1,
+        )
+
+        fig.update_yaxes(title_text="ΔLVR", row=row_idx, col=1)
+
+    fig.update_xaxes(
+        title_text="B",
+        categoryorder="array",
+        categoryarray=x_categories,
+        row=n_rows,
+        col=1,
+    )
+    fig.update_layout(
+        template="plotly_white",
+        # title=title,
+        violinmode="group",
+        font=dict(size=16, color="black"),
+        margin=dict(t=120, b=80),
+        height=380 * n_rows,
+    )
+    return fig
+
+
+def _build_medians_only_figure(
+    medians: Mapping[str, Sequence[float]],
+    *,
+    cohort_specs: Sequence[CohortSpec],
+    block_times: Sequence[int],
+    # title: str,
+) -> go.Figure:
+    """Create a median-only plot vs block size (no violins).
+
+    Parameters:
+        medians: Mapping cohort -> sequence of median values aligned with `block_times`.
+        cohort_specs: Enabled cohort specifications (label/color).
+        block_times: Block size grid in display order.
+        title: Figure title.
+
+    Returns:
+        go.Figure: Plotly figure with one row per cohort.
+
+    Notes:
+        The plotted median is the median of pooled ΔLVR samples across all runs
+        (and all post-transient blocks) for each block size B.
+    """
+    n_rows = max(1, len(cohort_specs))
+    subplot_titles = [spec.label for spec in cohort_specs] if cohort_specs else ["ΔLVR"]
+    fig = make_subplots(
+        rows=n_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        subplot_titles=subplot_titles,
+    )
+
+    x_categories = [str(int(b)) for b in block_times]
+
+    for row_idx, spec in enumerate(cohort_specs, start=1):
+        y = list(medians.get(spec.name, []))
+        if len(y) != len(x_categories):
+            y = [float("nan")] * len(x_categories)
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_categories,
+                y=y,
+                mode="lines+markers",
+                name=f"{spec.label} median",
+                showlegend=False,
+                line=dict(color="black", width=2),
+                marker=dict(color="black", size=6),
+                hovertemplate="B=%{x}<br>median=%{y:.6g}<extra></extra>",
+            ),
+            row=row_idx,
+            col=1,
+        )
+        fig.add_hline(
+            y=0.0,
+            line=dict(color="gray", width=1, dash="dash"),
+            row=row_idx,
+            col=1,
+        )
+        fig.update_yaxes(title_text="ΔLVR", row=row_idx, col=1)
+
+    fig.update_xaxes(
+        title_text="B",
+        categoryorder="array",
+        categoryarray=x_categories,
+        row=n_rows,
+        col=1,
+    )
+    fig.update_layout(
+        template="plotly_white",
+        # title=title,
+        font=dict(size=16, color="black"),
+        margin=dict(t=120, b=80),
+        height=320 * n_rows,
+    )
+    return fig
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments.
+
+    Parameters:
+        None.
+
+    Returns:
+        argparse.Namespace: Parsed CLI options.
+
+    Notes:
+        Defaults are chosen to match the requested experiment:
+        B=2..16 (15 points), N_run=10, and seed base from the YAML when omitted.
+
+    Examples:
+        >>> args = parse_args()
+    """
+    p = argparse.ArgumentParser(description="Sweep block_time and plot ΔLVR violins vs block size.")
+    p.add_argument(
+        "--config",
+        type=Path,
+        default=Path("abm_results/scenarios/test.yml"),
+        help="Path to the YAML scenario config. Default: abm_results/scenarios/test.yml",
+    )
+    p.add_argument("--runs", type=int, default=10, help="Number of runs/seeds per block size. Default: 10.")
+    p.add_argument("--block-min", type=int, default=2, help="Minimum block_time (inclusive). Default: 2.")
+    p.add_argument("--block-max", type=int, default=16, help="Maximum block_time (inclusive). Default: 16.")
+    p.add_argument(
+        "--seed-base",
+        type=int,
+        default=None,
+        help="Base seed (defaults to the YAML seed). Seeds are seed_base + i*seed_step.",
+    )
+    p.add_argument("--seed-step", type=int, default=1, help="Seed increment per run. Default: 1.")
+    p.add_argument(
+        "--max-workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 1) - 1),
+        help="Number of parallel worker processes. Default: CPUs minus one.",
+    )
+    p.add_argument(
+        "--keep-run-artifacts",
+        action="store_true",
+        help="Keep per-run temp folders/logs. Default is to delete them.",
+    )
+    p.add_argument(
+        "--plot-only-medians",
+        "--plot_only_medians",
+        action="store_true",
+        help="Plot only the medians vs block_time (no violin plots). Default: violins + median line.",
+    )
+    return p.parse_args()
+
+
+def main() -> None:
+    """Run the block size sweep and write plots + data to disk.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Notes:
+        - Sets `visualize=False` and `verbose=False` for the sweep runs.
+        - Uses `light_mode=False` because LVR series are disabled in light_mode.
+        - Deletes per-run artifacts unless `--keep-run-artifacts` is passed.
+
+    Examples:
+        >>> main()
+    """
+    args = parse_args()
+
+    if args.runs <= 0:
+        raise SystemExit("--runs must be positive.")
+    if args.seed_step <= 0:
+        raise SystemExit("--seed-step must be positive.")
+    if args.max_workers <= 0:
+        raise SystemExit("--max-workers must be positive.")
+    if args.block_min < 2:
+        raise SystemExit("--block-min must be >= 2 (run.py requires block_time > 1).")
+    if args.block_min > args.block_max:
+        raise SystemExit("--block-min cannot exceed --block-max.")
+
+    config_path = args.config.expanduser().resolve()
+    if not config_path.exists():
+        raise FileNotFoundError(f"Missing config: {config_path}")
+
+    _, base_params = load_simulation_parameters(config_path, simulate_func=simulate)
+    base_params = dict(base_params)
+
+    # We need LVR recorders => light_mode must be False.
+    base_params["light_mode"] = False
+    # Avoid per-run plots; we only want the aggregated violin plot.
+    base_params["visualize"] = False
+    # Reduce stdout; note: detailed per-run logs are controlled by light_mode.
+    base_params["verbose"] = False
+
+    enabled_cohorts = _resolve_enabled_cohorts(base_params)
+    if not enabled_cohorts:
+        raise SystemExit("No enabled cohorts detected (active/passive/jiter are all disabled).")
+    cohort_names = [c.name for c in enabled_cohorts]
+
+    scenario_root = scenario_output_root(config_path)
+    out_root = scenario_root / "lvr_vs_blocksize"
+    out_root.mkdir(parents=True, exist_ok=True)
+    fee_mode_label = str(base_params.get("fee_mode", "unknown"))
+    pid = int(os.getpid())
+
+    # Temp root for per-run artifacts (logs, etc.). Each worker uses a unique folder.
+    tmp_base = out_root / "_tmp_runs"
+    run_tmp_root = _make_unique_dir(tmp_base / str(os.getpid()))
+
+    block_times = list(range(int(args.block_min), int(args.block_max) + 1))
+    seed0 = int(args.seed_base) if args.seed_base is not None else int(base_params.get("seed", 1))
+    seeds = [int(seed0 + i * int(args.seed_step)) for i in range(int(args.runs))]
+
+    # Expected Δ series length (used only for saving aligned 3D arrays).
+    T = int(base_params.get("T", 0))
+    skip_step = int(base_params.get("skip_step", 0))
+    expected_delta_len = max(0, (T - skip_step) - 1)
+
+    # Pre-allocate (B, seed, step) arrays per cohort for reproducible storage.
+    block_idx = {int(b): i for i, b in enumerate(block_times)}
+    seed_idx = {int(s): i for i, s in enumerate(seeds)}
+    delta_arrays: Dict[str, np.ndarray] = {
+        c.name: np.full((len(block_times), len(seeds), expected_delta_len), np.nan, dtype=float)
+        for c in enabled_cohorts
+    }
+    jit_success_arrays: Optional[np.ndarray]
+    if "jiter" in cohort_names:
+        jit_success_arrays = np.zeros((len(block_times), len(seeds), expected_delta_len), dtype=np.uint8)
+    else:
+        jit_success_arrays = None
+
+    # Run all (B, seed) combinations in parallel.
+    tasks: List[Tuple[int, int]] = [(b, s) for b in block_times for s in seeds]
+    print(f"[LVR_vs_blocksize] config: {config_path}")
+    print(f"[LVR_vs_blocksize] fee mode: {fee_mode_label}")
+    print(f"[LVR_vs_blocksize] cohorts: {', '.join(cohort_names)}")
+    print(f"[LVR_vs_blocksize] B grid: {block_times[0]}..{block_times[-1]} (n={len(block_times)})")
+    print(f"[LVR_vs_blocksize] seeds:  {seeds[0]}..{seeds[-1]} (n={len(seeds)}, step={args.seed_step})")
+    print(f"[LVR_vs_blocksize] total runs: {len(tasks)}")
+
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from tqdm import tqdm
+
+    results: List[Dict[str, Any]] = []
+    with ProcessPoolExecutor(max_workers=int(args.max_workers)) as executor:
+        futures = [
+            executor.submit(
+                _run_one,
+                seed,
+                block_time,
+                base_params=base_params,
+                tmp_root=run_tmp_root,
+                keep_run_artifacts=bool(args.keep_run_artifacts),
+                cohort_names=cohort_names,
+            )
+            for (block_time, seed) in tasks
+        ]
+        with tqdm(total=len(futures), desc="Runs", unit="sim") as pbar:
+            for fut in as_completed(futures):
+                results.append(fut.result())
+                pbar.update(1)
+
+    # Fill aligned arrays.
+    for r in results:
+        b = int(r["block_time"])
+        s = int(r["seed"])
+        bi = block_idx.get(b)
+        si = seed_idx.get(s)
+        if bi is None or si is None:
+            continue
+        for cohort in cohort_names:
+            key = f"dLVR_{cohort}"
+            if key not in r:
+                continue
+            vals = np.asarray(r[key], dtype=float)
+            if vals.size == 0 or expected_delta_len <= 0:
+                continue
+            n = min(int(vals.size), int(expected_delta_len))
+            delta_arrays[cohort][bi, si, :n] = vals[:n]
+        if jit_success_arrays is not None and "jit_success_mask" in r:
+            mask = np.asarray(r["jit_success_mask"], dtype=bool)
+            if mask.size > 0 and expected_delta_len > 0:
+                n = min(int(mask.size), int(expected_delta_len))
+                jit_success_arrays[bi, si, :n] = mask[:n].astype(np.uint8)
+
+    # Save arrays for reproducibility (time series per run).
+    npz_path = out_root / (
+        f"dLVR_arrays_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}"
+        f"_B{block_times[0]}to{block_times[-1]}_pid{pid}.npz"
+    )
+    npz_payload: Dict[str, Any] = {
+        "block_times": np.array(block_times, dtype=int),
+        "seeds": np.array(seeds, dtype=int),
+        "T": np.array(T, dtype=int),
+        "skip_step": np.array(skip_step, dtype=int),
+    }
+    for cohort in cohort_names:
+        npz_payload[f"dLVR_{cohort}"] = delta_arrays[cohort]
+    if jit_success_arrays is not None:
+        npz_payload["jit_success_mask"] = jit_success_arrays
+    np.savez_compressed(npz_path, **npz_payload)
+
+    # Build distributions per (cohort, B) by pooling across seeds and time.
+    distributions: Dict[str, Dict[int, np.ndarray]] = {c: {} for c in cohort_names}
+    summary_rows: List[Dict[str, Any]] = []
+    for cohort in cohort_names:
+        arr = delta_arrays[cohort]
+        for b in block_times:
+            bi = block_idx[int(b)]
+            flat = arr[bi, :, :].reshape(-1)
+            if cohort == "jiter" and jit_success_arrays is not None:
+                m = jit_success_arrays[bi, :, :].reshape(-1).astype(bool)
+                flat = flat[m]
+            flat = flat[np.isfinite(flat)]
+            if not bool(args.plot_only_medians):
+                distributions[cohort][int(b)] = flat
+            if flat.size == 0:
+                stats = dict(n=0, mean=np.nan, std=np.nan, median=np.nan, p25=np.nan, p75=np.nan)
+            else:
+                stats = dict(
+                    n=int(flat.size),
+                    mean=float(np.mean(flat)),
+                    std=float(np.std(flat)),
+                    median=float(np.median(flat)),
+                    p25=float(np.percentile(flat, 25.0)),
+                    p75=float(np.percentile(flat, 75.0)),
+                )
+            summary_rows.append(
+                {
+                    "cohort": cohort,
+                    "block_time": int(b),
+                    **stats,
+                }
+            )
+
+    summary_df = pd.DataFrame(summary_rows)
+    summary_csv = out_root / f"dLVR_summary_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.csv"
+    summary_df.to_csv(summary_csv, index=False)
+
+    # fig_title = f"ΔLVR per block vs block_time (runs={int(args.runs)}, skip_step={skip_step})"
+    if args.plot_only_medians:
+        medians_by_cohort: Dict[str, List[float]] = {}
+        for cohort in cohort_names:
+            cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
+            medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
+        fig = _build_medians_only_figure(
+            medians_by_cohort,
+            cohort_specs=enabled_cohorts,
+            block_times=block_times,
+            # title=fig_title,
+        )
+        html_path = out_root / (
+            f"dLVR_medians_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.html"
+        )
+        png_path = out_root / (
+            f"dLVR_medians_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.png"
+        )
+    else:
+        fig = _build_violin_figure(
+            distributions,
+            cohort_specs=enabled_cohorts,
+            block_times=block_times,
+            # title=fig_title,
+        )
+        html_path = out_root / (
+            f"dLVR_violin_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.html"
+        )
+        png_path = out_root / (
+            f"dLVR_violin_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.png"
+        )
+
+    fig.write_html(html_path)
+
+    try:
+        fig.write_image(png_path)
+    except Exception as exc:  # pragma: no cover
+        print(f"[warn] PNG export failed (is kaleido installed?): {exc}")
+
+    if not args.keep_run_artifacts:
+        shutil.rmtree(run_tmp_root, ignore_errors=True)
+        try:
+            tmp_base.rmdir()
+        except OSError:
+            pass
+
+    print(f"[LVR_vs_blocksize] wrote: {npz_path}")
+    print(f"[LVR_vs_blocksize] wrote: {summary_csv}")
+    print(f"[LVR_vs_blocksize] wrote: {html_path}")
+    if png_path.exists():
+        print(f"[LVR_vs_blocksize] wrote: {png_path}")
+
+
+if __name__ == "__main__":
+    main()

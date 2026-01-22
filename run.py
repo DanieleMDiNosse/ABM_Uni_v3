@@ -365,8 +365,6 @@ def simulate(
             missing.append("cex_heston_sigma_v")
         if cex_heston_rho is None:
             missing.append("cex_heston_rho")
-        if cex_heston_v0 is None:
-            missing.append("cex_heston_v0")
         if missing:
             raise ValueError(
                 "cex_sigma_mode='heston' requires parameters: " + ", ".join(missing)
