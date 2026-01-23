@@ -2280,12 +2280,24 @@ def simulate(
     lp_fee_value_total_series = []     # F_t (cumulative fees, marked to m_t)
     lp_fee_value_active_series = []
     lp_fee_value_passive_series = []
+    # Cumulative fee counters in token units (no mark-to-market).
+    # These are useful for constructing *per-block fee flow value*:
+    #   ΔF_flow,t = (Δfees0_earned,t) * m_t + (Δfees1_earned,t)
+    # which avoids revaluing previously earned token0 fees when m moves.
+    lp_fees0_earned_total_series: List[float] = []
+    lp_fees1_earned_total_series: List[float] = []
+    lp_fees0_earned_active_series: List[float] = []
+    lp_fees1_earned_active_series: List[float] = []
+    lp_fees0_earned_passive_series: List[float] = []
+    lp_fees1_earned_passive_series: List[float] = []
     lp_lvr_total_series = []           # F_t - hedged = LVR_t
     lp_lvr_active_series = []
     lp_lvr_passive_series = []
     jiter_wallet_series: List[float] = []
     jiter_wealth_series: List[float] = []
     jiter_fee_value_series: List[float] = []
+    jiter_fees0_earned_series: List[float] = []
+    jiter_fees1_earned_series: List[float] = []
     jiter_position_value_series: List[float] = []
     jiter_pnl_series: List[float] = []
     jiter_flash_fee_paid_series: List[float] = []
@@ -2417,12 +2429,20 @@ def simulate(
         lp_fee_value_total_series = _NullList()
         lp_fee_value_active_series = _NullList()
         lp_fee_value_passive_series = _NullList()
+        lp_fees0_earned_total_series = _NullList()
+        lp_fees1_earned_total_series = _NullList()
+        lp_fees0_earned_active_series = _NullList()
+        lp_fees1_earned_active_series = _NullList()
+        lp_fees0_earned_passive_series = _NullList()
+        lp_fees1_earned_passive_series = _NullList()
         lp_lvr_total_series = _NullList()
         lp_lvr_active_series = _NullList()
         lp_lvr_passive_series = _NullList()
         jiter_wallet_series = _NullList()
         jiter_wealth_series = _NullList()
         jiter_fee_value_series = _NullList()
+        jiter_fees0_earned_series = _NullList()
+        jiter_fees1_earned_series = _NullList()
         jiter_position_value_series = _NullList()
         jiter_pnl_series = _NullList()
         jiter_flash_fee_paid_series = _NullList()
@@ -4173,6 +4193,12 @@ def simulate(
         lp_fee_value_total = 0.0       # F_t (cumulative fees, marked to m_t)
         lp_fee_value_active = 0.0
         lp_fee_value_passive = 0.0
+        lp_fees0_earned_total = 0.0    # cumulative token0 fees earned (no MtM)
+        lp_fees1_earned_total = 0.0    # cumulative token1 fees earned (no MtM)
+        lp_fees0_earned_active = 0.0
+        lp_fees1_earned_active = 0.0
+        lp_fees0_earned_passive = 0.0
+        lp_fees1_earned_passive = 0.0
         lp_wallet_total = 0.0
         lp_wallet_active = 0.0
         lp_wallet_passive = 0.0
@@ -4181,6 +4207,8 @@ def simulate(
         lp_wealth_passive = 0.0
         jiter_wallet_now = 0.0
         jiter_fee_value_now = 0.0
+        jiter_fees0_earned_now = 0.0
+        jiter_fees1_earned_now = 0.0
         jiter_position_value_now = 0.0
         jiter_wealth_now = 0.0
         jiter_pnl_now = 0.0
@@ -4195,6 +4223,8 @@ def simulate(
                     + float(getattr(lp, "wallet_y", 0.0))
                 )
                 jiter_fee_value_now = lp_total_fee_earned_value_y(lp, ref.m)
+                jiter_fees0_earned_now = float(getattr(lp, "fees0_earned", 0.0))
+                jiter_fees1_earned_now = float(getattr(lp, "fees1_earned", 0.0))
                 jiter_position_value_now = lp_total_position_value_y(lp, pool.S, ref.m)
                 jiter_wealth_now = lp_wealth_y(lp, pool.S, ref.m)
                 jiter_flash_fee_paid_now = float(getattr(lp, "flash_fees_paid_y", 0.0))
@@ -4229,6 +4259,10 @@ def simulate(
             lp_rebal_value_total += rebal_value_now
             lp_fee_value_total += fee_value_now
             lp_wealth_total += wealth_now
+            fees0_earned = float(getattr(lp, "fees0_earned", 0.0))
+            fees1_earned = float(getattr(lp, "fees1_earned", 0.0))
+            lp_fees0_earned_total += fees0_earned
+            lp_fees1_earned_total += fees1_earned
 
             if lp.is_passive:
                 lp_total_passive += hedged_pnl
@@ -4236,6 +4270,8 @@ def simulate(
                 lp_rebal_passive += rb.cumulative_R
                 lp_rebal_value_passive += rebal_value_now
                 lp_fee_value_passive += fee_value_now
+                lp_fees0_earned_passive += fees0_earned
+                lp_fees1_earned_passive += fees1_earned
                 lp_wallet_passive += wallet_value_y
                 lp_wealth_passive += wealth_now
             elif lp.is_active_narrow:
@@ -4244,6 +4280,8 @@ def simulate(
                 lp_rebal_active += rb.cumulative_R
                 lp_rebal_value_active += rebal_value_now
                 lp_fee_value_active += fee_value_now
+                lp_fees0_earned_active += fees0_earned
+                lp_fees1_earned_active += fees1_earned
                 lp_wallet_active += wallet_value_y
                 lp_wealth_active += wealth_now
         lp_lvr_total = lp_fee_value_total - lp_total
@@ -4264,12 +4302,20 @@ def simulate(
         lp_fee_value_total_series.append(lp_fee_value_total)
         lp_fee_value_active_series.append(lp_fee_value_active)
         lp_fee_value_passive_series.append(lp_fee_value_passive)
+        lp_fees0_earned_total_series.append(lp_fees0_earned_total)
+        lp_fees1_earned_total_series.append(lp_fees1_earned_total)
+        lp_fees0_earned_active_series.append(lp_fees0_earned_active)
+        lp_fees1_earned_active_series.append(lp_fees1_earned_active)
+        lp_fees0_earned_passive_series.append(lp_fees0_earned_passive)
+        lp_fees1_earned_passive_series.append(lp_fees1_earned_passive)
         lp_lvr_total_series.append(lp_lvr_total)
         lp_lvr_active_series.append(lp_lvr_active)
         lp_lvr_passive_series.append(lp_lvr_passive)
         jiter_wallet_series.append(jiter_wallet_now)
         jiter_wealth_series.append(jiter_wealth_now)
         jiter_fee_value_series.append(jiter_fee_value_now)
+        jiter_fees0_earned_series.append(jiter_fees0_earned_now)
+        jiter_fees1_earned_series.append(jiter_fees1_earned_now)
         jiter_position_value_series.append(jiter_position_value_now)
         jiter_pnl_series.append(jiter_pnl_now)
         jiter_flash_fee_paid_series.append(jiter_flash_fee_paid_now)
@@ -4551,6 +4597,12 @@ def simulate(
     lp_fee_value_total_series = np.array(lp_fee_value_total_series)
     lp_fee_value_active_series = np.array(lp_fee_value_active_series)
     lp_fee_value_passive_series = np.array(lp_fee_value_passive_series)
+    lp_fees0_earned_total_series = np.array(lp_fees0_earned_total_series)
+    lp_fees1_earned_total_series = np.array(lp_fees1_earned_total_series)
+    lp_fees0_earned_active_series = np.array(lp_fees0_earned_active_series)
+    lp_fees1_earned_active_series = np.array(lp_fees1_earned_active_series)
+    lp_fees0_earned_passive_series = np.array(lp_fees0_earned_passive_series)
+    lp_fees1_earned_passive_series = np.array(lp_fees1_earned_passive_series)
     lp_lvr_total_series = np.array(lp_lvr_total_series)
     lp_lvr_active_series = np.array(lp_lvr_active_series)
     lp_lvr_passive_series = np.array(lp_lvr_passive_series)
@@ -4563,6 +4615,8 @@ def simulate(
     jiter_wallet_series = np.array(jiter_wallet_series)
     jiter_wealth_series = np.array(jiter_wealth_series)
     jiter_fee_value_series = np.array(jiter_fee_value_series)
+    jiter_fees0_earned_series = np.array(jiter_fees0_earned_series)
+    jiter_fees1_earned_series = np.array(jiter_fees1_earned_series)
     jiter_position_value_series = np.array(jiter_position_value_series)
     jiter_pnl_series = np.array(jiter_pnl_series)
     jiter_flash_fee_paid_series = np.array(jiter_flash_fee_paid_series)
@@ -4756,6 +4810,12 @@ def simulate(
         "lp_fee_value_total_series": lp_fee_value_total_series.tolist(),
         "lp_fee_value_active_series": lp_fee_value_active_series.tolist(),
         "lp_fee_value_passive_series": lp_fee_value_passive_series.tolist(),
+        "lp_fees0_earned_total_series": lp_fees0_earned_total_series.tolist(),
+        "lp_fees1_earned_total_series": lp_fees1_earned_total_series.tolist(),
+        "lp_fees0_earned_active_series": lp_fees0_earned_active_series.tolist(),
+        "lp_fees1_earned_active_series": lp_fees1_earned_active_series.tolist(),
+        "lp_fees0_earned_passive_series": lp_fees0_earned_passive_series.tolist(),
+        "lp_fees1_earned_passive_series": lp_fees1_earned_passive_series.tolist(),
         "lp_lvr_total_series": lp_lvr_total_series.tolist(),
         "lp_lvr_active_series": lp_lvr_active_series.tolist(),
         "lp_lvr_passive_series": lp_lvr_passive_series.tolist(),
@@ -4777,6 +4837,8 @@ def simulate(
         "jiter_wallet_series": jiter_wallet_series.tolist(),
         "jiter_wealth_series": jiter_wealth_series.tolist(),
         "jiter_fee_value_series": jiter_fee_value_series.tolist(),
+        "jiter_fees0_earned_series": jiter_fees0_earned_series.tolist(),
+        "jiter_fees1_earned_series": jiter_fees1_earned_series.tolist(),
         "jiter_position_value_series": jiter_position_value_series.tolist(),
         "jiter_pnl_series": jiter_pnl_series.tolist(),
         "jiter_flash_fee_paid_series": jiter_flash_fee_paid_series.tolist(),
