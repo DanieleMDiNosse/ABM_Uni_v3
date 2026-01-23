@@ -345,27 +345,6 @@ def _run_one_seed(
     for key in extra_series_keys:
         if key == "fee_series":
             payload[key] = _slice_series(out.get(key, []), skip_step)
-        elif key == "dLVR_over_dFees_series":
-            # Compute ΔLVR / ΔFees using *total* LP series.
-            # We exclude blocks with non-positive ΔFees because lp_fee_value_* is marked-to-market
-            # and can decrease when the numeraire price (m_t) falls, even if raw fee amounts grow.
-            lvr_total = np.asarray(out.get("lp_lvr_total_series", []), dtype=float)
-            fee_value_total = np.asarray(out.get("lp_fee_value_total_series", []), dtype=float)
-            n = min(int(lvr_total.size), int(fee_value_total.size))
-            if n <= 0:
-                payload[key] = np.array([], dtype=float)
-            else:
-                lvr_total = lvr_total[:n]
-                fee_value_total = fee_value_total[:n]
-                d_lvr = np.diff(lvr_total, prepend=0.0)
-                d_fees = np.diff(fee_value_total, prepend=0.0)
-                d_lvr = d_lvr[int(skip_step) :]
-                d_fees = d_fees[int(skip_step) :]
-                ratio = np.full_like(d_lvr, np.nan, dtype=float)
-                eps = 1e-18
-                mask = np.isfinite(d_lvr) & np.isfinite(d_fees) & (d_fees > eps)
-                ratio[mask] = d_lvr[mask] / d_fees[mask]
-                payload[key] = ratio
         elif key == "smart_router_dex_share_series":
             payload[key] = _slice_sr_dex_share(
                 out.get("smart_router_dex_share_series", []),
@@ -521,11 +500,7 @@ def main() -> None:
 
         # Stash keys into params so worker can avoid pickling specs objects.
         base_params["_pnl_keys"] = pnl_keys
-        base_params["_extra_series_keys"] = [
-            "fee_series",
-            "smart_router_dex_share_series",
-            "dLVR_over_dFees_series",
-        ]
+        base_params["_extra_series_keys"] = ["fee_series", "smart_router_dex_share_series"]
 
         skip_step = int(base_params.get("skip_step", 0))
         # fee_mode = str(base_params.get("fee_mode")).lower()
@@ -702,89 +677,6 @@ def main() -> None:
         png_path = png_dir / f"{base_name}_{os.getpid()}.png"
         html_path = html_dir / f"{base_name}_{os.getpid()}.html"
         save_plotly_figure(fig, png_path, html_path, source="run_multiple")
-
-        # Median(ΔLVR/ΔFees) across seeds, as a time series.
-        # This is a "fee coverage" metric: values near 1 mean fees are just offsetting LVR;
-        # values well below 1 mean fees comfortably cover LVR; values >1 imply net negative
-        # hedged PnL in that block (since ΔPnL = ΔFees - ΔLVR by construction in run.py).
-        ratio_key = "dLVR_over_dFees_series"
-        ratio_lens = [int(r[ratio_key].size) for r in results if isinstance(r.get(ratio_key), np.ndarray)]
-        if ratio_lens:
-            ratio_min_len = min(ratio_lens)
-        else:
-            ratio_min_len = 0
-
-        if ratio_min_len > 0:
-            x_ratio = np.arange(skip_step, skip_step + int(ratio_min_len), dtype=int)
-            ratio_mats = np.stack([r[ratio_key][:ratio_min_len] for r in results], axis=0)
-
-            # Robust aggregation across seeds (fat tails / occasional NaNs from ΔFees<=0 filtering).
-            median_ratio = np.nanmedian(ratio_mats, axis=0)
-            q25, q75 = np.nanpercentile(ratio_mats, [25.0, 75.0], axis=0)
-
-            # Plot median + IQR band.
-            r_fill, g_fill, b_fill = _hex_to_rgb("#111827")
-            fill = f"rgba({r_fill},{g_fill},{b_fill},0.18)"
-
-            ratio_fig = go.Figure()
-            ratio_fig.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"))
-            ratio_fig.add_hline(y=1.0, line=dict(color="#6b7280", width=1, dash="dash"))
-            ratio_fig.add_trace(
-                go.Scatter(
-                    x=x_ratio,
-                    y=q25,
-                    mode="lines",
-                    line=dict(width=0),
-                    showlegend=False,
-                    hoverinfo="skip",
-                )
-            )
-            ratio_fig.add_trace(
-                go.Scatter(
-                    x=x_ratio,
-                    y=q75,
-                    mode="lines",
-                    line=dict(width=0),
-                    fill="tonexty",
-                    fillcolor=fill,
-                    showlegend=False,
-                    hoverinfo="skip",
-                    name="IQR",
-                )
-            )
-            ratio_fig.add_trace(
-                go.Scatter(
-                    x=x_ratio,
-                    y=median_ratio,
-                    mode="lines",
-                    name="Median(ΔLVR/ΔFees)",
-                    line=dict(width=2, color="#111827"),
-                )
-            )
-            ratio_fig.update_layout(
-                template="plotly_white",
-                title=f"Median(ΔLVR/ΔFees) across seeds ({fee_mode})",
-                xaxis_title="Blocks",
-                yaxis_title="ΔLVR / ΔFees",
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    x=0,
-                    font=dict(size=18, color="black"),
-                ),
-                font=dict(size=18, color="black"),
-                title_font=dict(size=18, color="black"),
-                xaxis=dict(title_font=dict(size=18), tickfont=dict(size=18)),
-                yaxis=dict(title_font=dict(size=18), tickfont=dict(size=18)),
-            )
-
-            ratio_base_name = (
-                f"lvr_over_fees_median_{fee_mode}_{stem}_runs{args.runs}_LPpassiveshare{lp_share_val}_pjit{p_jit_val}"
-            )
-            ratio_png_path = png_dir / f"{ratio_base_name}_{os.getpid()}.png"
-            ratio_html_path = html_dir / f"{ratio_base_name}_{os.getpid()}.html"
-            save_plotly_figure(ratio_fig, ratio_png_path, ratio_html_path, source="run_multiple")
 
         fee_values = _concat_series(results, "fee_series")
         sr_share_values = _concat_series(results, "smart_router_dex_share_series")

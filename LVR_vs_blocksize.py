@@ -12,6 +12,8 @@ This script:
 5) Produces violin plots of the ΔLVR distributions vs B, with a line connecting
    the per-violin medians. Separate panels are produced for active LPs, passive
    LPs, and (if enabled) the Jiter agent.
+6) Additionally, computes the per-block "fee coverage" ratio ΔLVR / ΔFees and
+   produces analogous plots for its distribution and medians vs B.
 
 Outputs are written under:
   `abm_results/scenarios/<scenario_stem>/lvr_vs_blocksize/`
@@ -180,6 +182,54 @@ def _delta_after_skip(values: Sequence[float], *, skip_step: int) -> np.ndarray:
     return delta
 
 
+def _ratio_after_skip(
+    numer_cum: Sequence[float],
+    denom_cum: Sequence[float],
+    *,
+    skip_step: int,
+    eps: float = 1e-18,
+) -> np.ndarray:
+    """Compute per-block ratio Δnumer / Δdenom after skipping a transient prefix.
+
+    Parameters:
+        numer_cum: Cumulative numerator series (e.g., LVR_t) over blocks (length ~= T).
+        denom_cum: Cumulative denominator series (e.g., fee_value_t) over blocks (length ~= T).
+        skip_step: Number of initial blocks to omit (burn-in).
+        eps: Small positive threshold to treat denominators as non-positive.
+
+    Returns:
+        np.ndarray: Ratio series after burn-in (float). Values are NaN when Δdenom <= eps
+        or when non-finite values are encountered.
+
+    Notes:
+        This is used to compute the "fee coverage" ratio:
+            ΔLVR_t / ΔFees_t
+        where both LVR and Fees are measured in token1 value (marked-to-market).
+        We intentionally exclude blocks with non-positive ΔFees because fee value can
+        decrease when the numeraire price moves, which makes the ratio ambiguous.
+    """
+    a = np.asarray(numer_cum, dtype=float)
+    b = np.asarray(denom_cum, dtype=float)
+    n = min(int(a.size), int(b.size))
+    if n <= 0:
+        return np.array([], dtype=float)
+    a = a[:n]
+    b = b[:n]
+
+    s0 = max(0, min(int(skip_step), int(n)))
+    a = a[s0:]
+    b = b[s0:]
+    if a.size < 2 or b.size < 2:
+        return np.array([], dtype=float)
+
+    da = np.diff(a)
+    db = np.diff(b)
+    ratio = np.full_like(da, np.nan, dtype=float)
+    mask = np.isfinite(da) & np.isfinite(db) & (db > float(eps))
+    ratio[mask] = da[mask] / db[mask]
+    return ratio
+
+
 def _compute_jiter_lvr_cumulative(out: Mapping[str, Any]) -> np.ndarray:
     """Reconstruct Jiter cumulative LVR from returned accounting series.
 
@@ -251,7 +301,7 @@ def _run_one(
     keep_run_artifacts: bool,
     cohort_names: Sequence[str],
 ) -> Dict[str, Any]:
-    """Worker: run one simulation and return ΔLVR series per enabled cohort.
+    """Worker: run one simulation and return ΔLVR and ΔLVR/ΔFees series per enabled cohort.
 
     Parameters:
         seed: RNG seed for the simulation.
@@ -262,7 +312,8 @@ def _run_one(
         cohort_names: Cohort names to return (subset of {"active","passive","jiter"}).
 
     Returns:
-        Dict[str, Any]: A payload with keys: block_time, seed, and `dLVR_<cohort>`.
+        Dict[str, Any]: A payload with keys: block_time, seed, `dLVR_<cohort>`,
+        and `dLVR_over_dFees_<cohort>`.
 
     Notes:
         We call `run.simulate()` directly to keep results in-memory. We set
@@ -290,19 +341,32 @@ def _run_one(
     }
 
     if "active" in cohort_names:
-        payload["dLVR_active"] = _delta_after_skip(out.get("lp_lvr_active_series", []), skip_step=skip_step)
+        lvr_cum = out.get("lp_lvr_active_series", [])
+        fee_cum = out.get("lp_fee_value_active_series", [])
+        payload["dLVR_active"] = _delta_after_skip(lvr_cum, skip_step=skip_step)
+        payload["dLVR_over_dFees_active"] = _ratio_after_skip(lvr_cum, fee_cum, skip_step=skip_step)
     if "passive" in cohort_names:
-        payload["dLVR_passive"] = _delta_after_skip(out.get("lp_lvr_passive_series", []), skip_step=skip_step)
+        lvr_cum = out.get("lp_lvr_passive_series", [])
+        fee_cum = out.get("lp_fee_value_passive_series", [])
+        payload["dLVR_passive"] = _delta_after_skip(lvr_cum, skip_step=skip_step)
+        payload["dLVR_over_dFees_passive"] = _ratio_after_skip(lvr_cum, fee_cum, skip_step=skip_step)
     if "jiter" in cohort_names:
         jiter_lvr_cum = _compute_jiter_lvr_cumulative(out)
+        jiter_fee_cum = np.asarray(out.get("jiter_fee_value_series", []), dtype=float)
         # Align to the activity series length so the success mask matches ΔLVR indexing.
         act_cum = np.asarray(out.get("jiter_activity_cum", []), dtype=float)
-        if act_cum.size > 0 and jiter_lvr_cum.size > 0:
-            n = min(int(jiter_lvr_cum.size), int(act_cum.size))
+        if jiter_lvr_cum.size > 0:
+            n = int(jiter_lvr_cum.size)
+            if act_cum.size > 0:
+                n = min(n, int(act_cum.size))
+            if jiter_fee_cum.size > 0:
+                n = min(n, int(jiter_fee_cum.size))
             jiter_lvr_cum = jiter_lvr_cum[:n]
+            jiter_fee_cum = jiter_fee_cum[:n]
         # Keep unconditional per-block ΔLVR for storage; apply conditional filtering
         # (successful JIT blocks) downstream when computing medians/distributions.
         payload["dLVR_jiter"] = _delta_after_skip(jiter_lvr_cum, skip_step=skip_step)
+        payload["dLVR_over_dFees_jiter"] = _ratio_after_skip(jiter_lvr_cum, jiter_fee_cum, skip_step=skip_step)
         payload["jit_success_mask"] = _jit_success_mask_after_skip(
             out, skip_step=skip_step, n_steps=int(jiter_lvr_cum.size)
         )
@@ -318,24 +382,26 @@ def _build_violin_figure(
     *,
     cohort_specs: Sequence[CohortSpec],
     block_times: Sequence[int],
+    yaxis_title: str = "ΔLVR",
     # title: str,
 ) -> go.Figure:
-    """Create violin plots of ΔLVR distributions vs block size, with medians line.
+    """Create violin plots of per-block distributions vs block size, with medians line.
 
     Parameters:
-        distributions: Mapping cohort -> block_time -> 1D ΔLVR samples.
+        distributions: Mapping cohort -> block_time -> 1D samples for the plotted metric.
         cohort_specs: Enabled cohort specifications (label/color).
         block_times: Block size grid in display order.
+        yaxis_title: Y-axis label (metric name).
 
     Returns:
         go.Figure: Plotly figure with one row per cohort.
 
     Notes:
-        Each violin is built from the pooled ΔLVR samples across all runs for a
+        Each violin is built from the pooled samples across all runs for a
         given block size.
     """
     n_rows = max(1, len(cohort_specs))
-    subplot_titles = [spec.label for spec in cohort_specs] if cohort_specs else ["ΔLVR"]
+    subplot_titles = [spec.label for spec in cohort_specs] if cohort_specs else [yaxis_title]
     fig = make_subplots(
         rows=n_rows,
         cols=1,
@@ -395,7 +461,7 @@ def _build_violin_figure(
             col=1,
         )
 
-        fig.update_yaxes(title_text="ΔLVR", row=row_idx, col=1)
+        fig.update_yaxes(title_text=yaxis_title, row=row_idx, col=1)
 
     fig.update_xaxes(
         title_text="B",
@@ -420,6 +486,7 @@ def _build_medians_only_figure(
     *,
     cohort_specs: Sequence[CohortSpec],
     block_times: Sequence[int],
+    yaxis_title: str = "ΔLVR",
     # title: str,
 ) -> go.Figure:
     """Create a median-only plot vs block size (no violins).
@@ -428,17 +495,17 @@ def _build_medians_only_figure(
         medians: Mapping cohort -> sequence of median values aligned with `block_times`.
         cohort_specs: Enabled cohort specifications (label/color).
         block_times: Block size grid in display order.
-        title: Figure title.
+        yaxis_title: Y-axis label (metric name).
 
     Returns:
         go.Figure: Plotly figure with one row per cohort.
 
     Notes:
-        The plotted median is the median of pooled ΔLVR samples across all runs
-        (and all post-transient blocks) for each block size B.
+        The plotted median is the median of pooled samples across all runs (and all
+        post-transient blocks) for each block size B.
     """
     n_rows = max(1, len(cohort_specs))
-    subplot_titles = [spec.label for spec in cohort_specs] if cohort_specs else ["ΔLVR"]
+    subplot_titles = [spec.label for spec in cohort_specs] if cohort_specs else [yaxis_title]
     fig = make_subplots(
         rows=n_rows,
         cols=1,
@@ -474,7 +541,7 @@ def _build_medians_only_figure(
             row=row_idx,
             col=1,
         )
-        fig.update_yaxes(title_text="ΔLVR", row=row_idx, col=1)
+        fig.update_yaxes(title_text=yaxis_title, row=row_idx, col=1)
 
     fig.update_xaxes(
         title_text="B",
@@ -621,6 +688,10 @@ def main() -> None:
         c.name: np.full((len(block_times), len(seeds), expected_delta_len), np.nan, dtype=float)
         for c in enabled_cohorts
     }
+    ratio_arrays: Dict[str, np.ndarray] = {
+        c.name: np.full((len(block_times), len(seeds), expected_delta_len), np.nan, dtype=float)
+        for c in enabled_cohorts
+    }
     jit_success_arrays: Optional[np.ndarray]
     if "jiter" in cohort_names:
         jit_success_arrays = np.zeros((len(block_times), len(seeds), expected_delta_len), dtype=np.uint8)
@@ -675,6 +746,15 @@ def main() -> None:
                 continue
             n = min(int(vals.size), int(expected_delta_len))
             delta_arrays[cohort][bi, si, :n] = vals[:n]
+        for cohort in cohort_names:
+            key = f"dLVR_over_dFees_{cohort}"
+            if key not in r:
+                continue
+            vals = np.asarray(r[key], dtype=float)
+            if vals.size == 0 or expected_delta_len <= 0:
+                continue
+            n = min(int(vals.size), int(expected_delta_len))
+            ratio_arrays[cohort][bi, si, :n] = vals[:n]
         if jit_success_arrays is not None and "jit_success_mask" in r:
             mask = np.asarray(r["jit_success_mask"], dtype=bool)
             if mask.size > 0 and expected_delta_len > 0:
@@ -694,6 +774,7 @@ def main() -> None:
     }
     for cohort in cohort_names:
         npz_payload[f"dLVR_{cohort}"] = delta_arrays[cohort]
+        npz_payload[f"dLVR_over_dFees_{cohort}"] = ratio_arrays[cohort]
     if jit_success_arrays is not None:
         npz_payload["jit_success_mask"] = jit_success_arrays
     np.savez_compressed(npz_path, **npz_payload)
@@ -735,6 +816,45 @@ def main() -> None:
     summary_csv = out_root / f"dLVR_summary_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.csv"
     summary_df.to_csv(summary_csv, index=False)
 
+    # Build distributions/stats for ΔLVR/ΔFees ("fee coverage") ratio.
+    ratio_distributions: Dict[str, Dict[int, np.ndarray]] = {c: {} for c in cohort_names}
+    ratio_summary_rows: List[Dict[str, Any]] = []
+    for cohort in cohort_names:
+        arr = ratio_arrays[cohort]
+        for b in block_times:
+            bi = block_idx[int(b)]
+            flat = arr[bi, :, :].reshape(-1)
+            if cohort == "jiter" and jit_success_arrays is not None:
+                m = jit_success_arrays[bi, :, :].reshape(-1).astype(bool)
+                flat = flat[m]
+            flat = flat[np.isfinite(flat)]
+            if not bool(args.plot_only_medians):
+                ratio_distributions[cohort][int(b)] = flat
+            if flat.size == 0:
+                stats = dict(n=0, mean=np.nan, std=np.nan, median=np.nan, p25=np.nan, p75=np.nan)
+            else:
+                stats = dict(
+                    n=int(flat.size),
+                    mean=float(np.mean(flat)),
+                    std=float(np.std(flat)),
+                    median=float(np.median(flat)),
+                    p25=float(np.percentile(flat, 25.0)),
+                    p75=float(np.percentile(flat, 75.0)),
+                )
+            ratio_summary_rows.append(
+                {
+                    "cohort": cohort,
+                    "block_time": int(b),
+                    **stats,
+                }
+            )
+
+    ratio_summary_df = pd.DataFrame(ratio_summary_rows)
+    ratio_summary_csv = out_root / (
+        f"dLVR_over_dFees_summary_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.csv"
+    )
+    ratio_summary_df.to_csv(ratio_summary_csv, index=False)
+
     # fig_title = f"ΔLVR per block vs block_time (runs={int(args.runs)}, skip_step={skip_step})"
     if args.plot_only_medians:
         medians_by_cohort: Dict[str, List[float]] = {}
@@ -745,6 +865,7 @@ def main() -> None:
             medians_by_cohort,
             cohort_specs=enabled_cohorts,
             block_times=block_times,
+            yaxis_title="ΔLVR",
             # title=fig_title,
         )
         html_path = out_root / (
@@ -753,11 +874,29 @@ def main() -> None:
         png_path = out_root / (
             f"dLVR_medians_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.png"
         )
+
+        ratio_medians_by_cohort: Dict[str, List[float]] = {}
+        for cohort in cohort_names:
+            cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
+            ratio_medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
+        ratio_fig = _build_medians_only_figure(
+            ratio_medians_by_cohort,
+            cohort_specs=enabled_cohorts,
+            block_times=block_times,
+            yaxis_title="ΔLVR/ΔFees",
+        )
+        ratio_html_path = out_root / (
+            f"dLVR_over_dFees_medians_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.html"
+        )
+        ratio_png_path = out_root / (
+            f"dLVR_over_dFees_medians_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.png"
+        )
     else:
         fig = _build_violin_figure(
             distributions,
             cohort_specs=enabled_cohorts,
             block_times=block_times,
+            yaxis_title="ΔLVR",
             # title=fig_title,
         )
         html_path = out_root / (
@@ -767,10 +906,28 @@ def main() -> None:
             f"dLVR_violin_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.png"
         )
 
+        ratio_fig = _build_violin_figure(
+            ratio_distributions,
+            cohort_specs=enabled_cohorts,
+            block_times=block_times,
+            yaxis_title="ΔLVR/ΔFees",
+        )
+        ratio_html_path = out_root / (
+            f"dLVR_over_dFees_violin_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.html"
+        )
+        ratio_png_path = out_root / (
+            f"dLVR_over_dFees_violin_vs_block_time_{fee_mode_label}_{config_path.stem}_runs{int(args.runs)}_pid{pid}.png"
+        )
+
     fig.write_html(html_path)
+    ratio_fig.write_html(ratio_html_path)
 
     try:
         fig.write_image(png_path)
+    except Exception as exc:  # pragma: no cover
+        print(f"[warn] PNG export failed (is kaleido installed?): {exc}")
+    try:
+        ratio_fig.write_image(ratio_png_path)
     except Exception as exc:  # pragma: no cover
         print(f"[warn] PNG export failed (is kaleido installed?): {exc}")
 
@@ -786,6 +943,10 @@ def main() -> None:
     print(f"[LVR_vs_blocksize] wrote: {html_path}")
     if png_path.exists():
         print(f"[LVR_vs_blocksize] wrote: {png_path}")
+    print(f"[LVR_vs_blocksize] wrote: {ratio_summary_csv}")
+    print(f"[LVR_vs_blocksize] wrote: {ratio_html_path}")
+    if ratio_png_path.exists():
+        print(f"[LVR_vs_blocksize] wrote: {ratio_png_path}")
 
 
 if __name__ == "__main__":
