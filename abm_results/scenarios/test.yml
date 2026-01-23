@@ -1,5 +1,5 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: toxicity
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
@@ -106,7 +106,7 @@ simulate:
 
   ##### JIT LP (Jiter) #####
   # Bernoulli arrival probability per block (Jiter runs only when block_time > 1)
-  p_jit: 1
+  p_jit: 0
   # Target up to top-N swaps by input size per arriving block
   N_jit: 3
   # Target share of active liquidity to temporarily add in a narrow band (0-1)

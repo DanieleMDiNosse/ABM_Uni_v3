@@ -224,3 +224,6 @@ data/
 
 # .tex
 *.tex
+
+# .npz
+*.npz
