@@ -16,6 +16,7 @@ How it works
    `--skip-step` burn-in), aggregate across runs, and plot the requested layers
    (default: medians only):
    - `--plot-medians`: per-B medians (pooled across runs/blocks)
+   - `--plot-95-interval`: central 95% interval (2.5..97.5 percentiles; pooled across runs/blocks)
    - `--plot-means`: per-B means (pooled across runs/blocks)
    - `--plot-violin-plot`: per-B distributions (violin plots; pooled across runs/blocks)
 
@@ -627,7 +628,10 @@ def _build_violin_figure(
     block_times: Sequence[int],
     yaxis_title: str = "ΔLVR",
     plot_medians: bool = True,
+    plot_95_interval: bool = False,
     plot_means: bool = False,
+    width_per_col: int = 520,
+    height: int = 520,
     # title: str,
 ) -> go.Figure:
     """Create violin plots of per-block distributions vs block size.
@@ -638,38 +642,51 @@ def _build_violin_figure(
         block_times: Block size grid in display order.
         yaxis_title: Y-axis label (metric name).
         plot_medians: If True, overlay a median line (computed from pooled samples).
+        plot_95_interval: If True and `plot_medians` is True, overlay a central 95% interval
+            (2.5th..97.5th percentiles) around the median points.
         plot_means: If True, overlay a mean line (computed from pooled samples).
+        width_per_col: Plot width per cohort column (pixels).
+        height: Plot height (pixels).
 
     Returns:
-        go.Figure: Plotly figure with one row per cohort.
+        go.Figure: Plotly figure with one column per cohort.
 
     Notes:
         Each violin is built from the pooled samples across all runs for a
         given block size. Medians/means are computed on the pooled samples.
     """
-    n_rows = max(1, len(cohort_specs))
+    n_cols = max(1, len(cohort_specs))
+    fig_width = int(max(900, width_per_col * n_cols))
     subplot_titles = [spec.label for spec in cohort_specs] if cohort_specs else [yaxis_title]
     fig = make_subplots(
-        rows=n_rows,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
+        rows=1,
+        cols=n_cols,
+        shared_yaxes=True,
+        horizontal_spacing=0.06,
         subplot_titles=subplot_titles,
     )
 
     x_categories = [str(int(b)) for b in block_times]
     show_legend = bool(plot_means)
 
-    for row_idx, spec in enumerate(cohort_specs, start=1):
+    for col_idx, spec in enumerate(cohort_specs, start=1):
         per_b = distributions.get(spec.name, {})
 
         medians: List[float] = []
+        p2_5s: List[float] = []
+        p97_5s: List[float] = []
         means: List[float] = []
         for b in block_times:
             vals = np.asarray(per_b.get(int(b), np.array([], dtype=float)), dtype=float)
             vals = vals[np.isfinite(vals)]
             med = float(np.median(vals)) if vals.size > 0 else float("nan")
             medians.append(med)
+            if vals.size > 0:
+                p2_5, p97_5 = [float(x) for x in np.percentile(vals, [2.5, 97.5])]
+            else:
+                p2_5, p97_5 = float("nan"), float("nan")
+            p2_5s.append(p2_5)
+            p97_5s.append(p97_5)
             means.append(float(np.mean(vals)) if vals.size > 0 else float("nan"))
 
             fig.add_trace(
@@ -685,25 +702,50 @@ def _build_violin_figure(
                     meanline_visible=False,
                     scalemode="width",
                 ),
-                row=row_idx,
-                col=1,
+                row=1,
+                col=col_idx,
             )
 
         if bool(plot_medians):
+            error_y = None
+            customdata = None
+            hovertemplate = "B=%{x}<br>median=%{y:.6g}<extra></extra>"
+            if bool(plot_95_interval):
+                err_plus: List[Optional[float]] = []
+                err_minus: List[Optional[float]] = []
+                customdata = []
+                for med, lo, hi in zip(medians, p2_5s, p97_5s):
+                    if np.isfinite(med) and np.isfinite(lo) and np.isfinite(hi):
+                        err_plus.append(float(hi - med))
+                        err_minus.append(float(med - lo))
+                    else:
+                        err_plus.append(None)
+                        err_minus.append(None)
+                    customdata.append([float(lo), float(hi)])
+                error_y = dict(type="data", symmetric=False, array=err_plus, arrayminus=err_minus)
+                hovertemplate = (
+                    "B=%{x}<br>"
+                    "median=%{y:.6g}<br>"
+                    "p2.5=%{customdata[0]:.6g}<br>"
+                    "p97.5=%{customdata[1]:.6g}"
+                    "<extra></extra>"
+                )
             fig.add_trace(
                 go.Scatter(
                     x=x_categories,
                     y=medians,
                     mode="lines+markers",
                     name="Median",
-                    showlegend=show_legend and row_idx == 1,
+                    showlegend=show_legend and col_idx == 1,
                     legendgroup="median",
                     line=dict(color="black", width=2),
                     marker=dict(color="black", size=6),
-                    hovertemplate="B=%{x}<br>median=%{y:.6g}<extra></extra>",
+                    error_y=error_y,
+                    customdata=customdata,
+                    hovertemplate=hovertemplate,
                 ),
-                row=row_idx,
-                col=1,
+                row=1,
+                col=col_idx,
             )
 
         if bool(plot_means):
@@ -713,41 +755,36 @@ def _build_violin_figure(
                     y=means,
                     mode="lines+markers",
                     name="Mean",
-                    showlegend=show_legend and row_idx == 1,
+                    showlegend=show_legend and col_idx == 1,
                     legendgroup="mean",
                     line=dict(color="#D55E00", width=2, dash="dot"),
                     marker=dict(color="#D55E00", size=7, symbol="x"),
                     hovertemplate="B=%{x}<br>mean=%{y:.6g}<extra></extra>",
                 ),
-                row=row_idx,
-                col=1,
+                row=1,
+                col=col_idx,
             )
 
         fig.add_hline(
             y=0.0,
             line=dict(color="gray", width=1, dash="dash"),
-            row=row_idx,
-            col=1,
+            row=1,
+            col=col_idx,
         )
+        if col_idx == 1:
+            fig.update_yaxes(title_text=yaxis_title, row=1, col=col_idx)
 
-        fig.update_yaxes(title_text=yaxis_title, row=row_idx, col=1)
-
-    fig.update_xaxes(
-        title_text="B",
-        categoryorder="array",
-        categoryarray=x_categories,
-        row=n_rows,
-        col=1,
-    )
+    fig.update_xaxes(title_text="B", categoryorder="array", categoryarray=x_categories)
     fig.update_layout(
         template="plotly_white",
         # title=title,
         violinmode="group",
         showlegend=show_legend,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-        font=dict(size=16, color="black"),
+        font=dict(size=18, color="black"),
         margin=dict(t=120, b=80),
-        height=380 * n_rows,
+        width=fig_width,
+        height=int(height),
     )
     return fig
 
@@ -756,11 +793,16 @@ def _build_medians_only_figure(
     medians: Mapping[str, Sequence[float]],
     *,
     means: Optional[Mapping[str, Sequence[float]]] = None,
+    p2_5: Optional[Mapping[str, Sequence[float]]] = None,
+    p97_5: Optional[Mapping[str, Sequence[float]]] = None,
     cohort_specs: Sequence[CohortSpec],
     block_times: Sequence[int],
     yaxis_title: str = "ΔLVR",
     plot_medians: bool = True,
+    plot_95_interval: bool = False,
     plot_means: bool = False,
+    width_per_col: int = 520,
+    height: int = 460,
     # title: str,
 ) -> go.Figure:
     """Create a median/mean plot vs block size (no violins).
@@ -768,52 +810,87 @@ def _build_medians_only_figure(
     Parameters:
         medians: Mapping cohort -> sequence of median values aligned with `block_times`.
         means: Optional mapping cohort -> sequence of mean values aligned with `block_times`.
+        p2_5: Optional mapping cohort -> sequence of 2.5th percentile values aligned with `block_times`.
+        p97_5: Optional mapping cohort -> sequence of 97.5th percentile values aligned with `block_times`.
         cohort_specs: Enabled cohort specifications (label/color).
         block_times: Block size grid in display order.
         yaxis_title: Y-axis label (metric name).
         plot_medians: If True, plot the median line.
+        plot_95_interval: If True and `plot_medians` is True, plot the central 95% interval
+            (2.5th..97.5th percentiles) around the median points.
         plot_means: If True, plot the mean line.
+        width_per_col: Plot width per cohort column (pixels).
+        height: Plot height (pixels).
 
     Returns:
-        go.Figure: Plotly figure with one row per cohort.
+        go.Figure: Plotly figure with one column per cohort.
 
     Notes:
         The plotted median is the median of pooled samples across all runs (and all
         post-transient blocks) for each block size B.
     """
-    n_rows = max(1, len(cohort_specs))
+    n_cols = max(1, len(cohort_specs))
+    fig_width = int(max(900, width_per_col * n_cols))
     subplot_titles = [spec.label for spec in cohort_specs] if cohort_specs else [yaxis_title]
     fig = make_subplots(
-        rows=n_rows,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
+        rows=1,
+        cols=n_cols,
+        shared_yaxes=True,
+        horizontal_spacing=0.06,
         subplot_titles=subplot_titles,
     )
 
     x_categories = [str(int(b)) for b in block_times]
     show_legend = bool(plot_means)
 
-    for row_idx, spec in enumerate(cohort_specs, start=1):
+    for col_idx, spec in enumerate(cohort_specs, start=1):
         y = list(medians.get(spec.name, []))
         if len(y) != len(x_categories):
             y = [float("nan")] * len(x_categories)
 
         if bool(plot_medians):
+            error_y = None
+            customdata = None
+            hovertemplate = "B=%{x}<br>median=%{y:.6g}<extra></extra>"
+            if bool(plot_95_interval) and p2_5 is not None and p97_5 is not None:
+                y_lo = list(p2_5.get(spec.name, []))
+                y_hi = list(p97_5.get(spec.name, []))
+                if len(y_lo) == len(x_categories) and len(y_hi) == len(x_categories):
+                    err_plus: List[Optional[float]] = []
+                    err_minus: List[Optional[float]] = []
+                    customdata = []
+                    for med, lo, hi in zip(y, y_lo, y_hi):
+                        if np.isfinite(med) and np.isfinite(lo) and np.isfinite(hi):
+                            err_plus.append(float(hi - med))
+                            err_minus.append(float(med - lo))
+                        else:
+                            err_plus.append(None)
+                            err_minus.append(None)
+                        customdata.append([float(lo), float(hi)])
+                    error_y = dict(type="data", symmetric=False, array=err_plus, arrayminus=err_minus)
+                    hovertemplate = (
+                        "B=%{x}<br>"
+                        "median=%{y:.6g}<br>"
+                        "p2.5=%{customdata[0]:.6g}<br>"
+                        "p97.5=%{customdata[1]:.6g}"
+                        "<extra></extra>"
+                    )
             fig.add_trace(
                 go.Scatter(
                     x=x_categories,
                     y=y,
                     mode="lines+markers",
                     name="Median",
-                    showlegend=show_legend and row_idx == 1,
+                    showlegend=show_legend and col_idx == 1,
                     legendgroup="median",
                     line=dict(color="black", width=2),
                     marker=dict(color="black", size=6),
-                    hovertemplate="B=%{x}<br>median=%{y:.6g}<extra></extra>",
+                    error_y=error_y,
+                    customdata=customdata,
+                    hovertemplate=hovertemplate,
                 ),
-                row=row_idx,
-                col=1,
+                row=1,
+                col=col_idx,
             )
 
         if bool(plot_means):
@@ -826,39 +903,35 @@ def _build_medians_only_figure(
                     y=y_mean,
                     mode="lines+markers",
                     name="Mean",
-                    showlegend=show_legend and row_idx == 1,
+                    showlegend=show_legend and col_idx == 1,
                     legendgroup="mean",
                     line=dict(color="#D55E00", width=2, dash="dot"),
                     marker=dict(color="#D55E00", size=7, symbol="x"),
                     hovertemplate="B=%{x}<br>mean=%{y:.6g}<extra></extra>",
                 ),
-                row=row_idx,
-                col=1,
+                row=1,
+                col=col_idx,
             )
 
         fig.add_hline(
             y=0.0,
             line=dict(color="gray", width=1, dash="dash"),
-            row=row_idx,
-            col=1,
+            row=1,
+            col=col_idx,
         )
-        fig.update_yaxes(title_text=yaxis_title, row=row_idx, col=1)
+        if col_idx == 1:
+            fig.update_yaxes(title_text=yaxis_title, row=1, col=col_idx)
 
-    fig.update_xaxes(
-        title_text="B",
-        categoryorder="array",
-        categoryarray=x_categories,
-        row=n_rows,
-        col=1,
-    )
+    fig.update_xaxes(title_text="B", categoryorder="array", categoryarray=x_categories)
     fig.update_layout(
         template="plotly_white",
         # title=title,
         showlegend=show_legend,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-        font=dict(size=16, color="black"),
+        font=dict(size=18, color="black"),
         margin=dict(t=120, b=80),
-        height=320 * n_rows,
+        width=fig_width,
+        height=int(height),
     )
     return fig
 
@@ -921,6 +994,15 @@ def parse_args() -> argparse.Namespace:
         "--plot_medians",
         action="store_true",
         help="Plot per-B medians (line). Enabled by default; flag kept for explicitness.",
+    )
+    p.add_argument(
+        "--plot-95-interval",
+        "--plot_95_interval",
+        action="store_true",
+        help=(
+            "When plotting medians, overlay the central 95% interval of the pooled samples "
+            "(2.5th..97.5th percentiles) as error bars. Ignored if medians are not plotted."
+        ),
     )
     p.add_argument(
         "--plot-means",
@@ -1040,6 +1122,7 @@ def main() -> None:
     args = parse_args()
     plot_violin = bool(getattr(args, "plot_violin_plot", False))
     plot_means = bool(getattr(args, "plot_means", False))
+    plot_95_interval = bool(getattr(args, "plot_95_interval", False))
     # Default: always plot medians; other layers are optional.
     plot_medians = True
 
@@ -1136,7 +1219,7 @@ def main() -> None:
         print(f"[LVR_vs_blocksize] seeds:  {seeds[0]}..{seeds[-1]} (n={len(seeds)})")
 
         lvr_yaxis_title = "ΔLVR (block)" if str(fee_definition) == "flow" else "ΔLVR"
-        ratio_yaxis_title = "ΔLVR/ΔFees (flow)" if str(fee_definition) == "flow" else "ΔLVR/ΔFees (mtm)"
+        ratio_yaxis_title = "ΔLVR/ΔFees" if str(fee_definition) == "flow" else "ΔLVR/ΔFees (mtm)"
 
         # Build distributions per (cohort, B) by pooling across seeds and time.
         distributions: Dict[str, Dict[int, np.ndarray]] = {c: {} for c in cohort_names}
@@ -1153,15 +1236,27 @@ def main() -> None:
                 if bool(plot_violin):
                     distributions[cohort][int(b)] = flat
                 if flat.size == 0:
-                    stats = dict(n=0, mean=np.nan, std=np.nan, median=np.nan, p25=np.nan, p75=np.nan)
+                    stats = dict(
+                        n=0,
+                        mean=np.nan,
+                        std=np.nan,
+                        median=np.nan,
+                        p2_5=np.nan,
+                        p25=np.nan,
+                        p75=np.nan,
+                        p97_5=np.nan,
+                    )
                 else:
+                    p2_5, p25, p75, p97_5 = [float(x) for x in np.percentile(flat, [2.5, 25.0, 75.0, 97.5])]
                     stats = dict(
                         n=int(flat.size),
                         mean=float(np.mean(flat)),
                         std=float(np.std(flat)),
                         median=float(np.median(flat)),
-                        p25=float(np.percentile(flat, 25.0)),
-                        p75=float(np.percentile(flat, 75.0)),
+                        p2_5=p2_5,
+                        p25=p25,
+                        p75=p75,
+                        p97_5=p97_5,
                     )
                 summary_rows.append(
                     {
@@ -1193,15 +1288,29 @@ def main() -> None:
                     if bool(plot_violin):
                         ratio_distributions[cohort][int(b)] = flat
                     if flat.size == 0:
-                        stats = dict(n=0, mean=np.nan, std=np.nan, median=np.nan, p25=np.nan, p75=np.nan)
+                        stats = dict(
+                            n=0,
+                            mean=np.nan,
+                            std=np.nan,
+                            median=np.nan,
+                            p2_5=np.nan,
+                            p25=np.nan,
+                            p75=np.nan,
+                            p97_5=np.nan,
+                        )
                     else:
+                        p2_5, p25, p75, p97_5 = [
+                            float(x) for x in np.percentile(flat, [2.5, 25.0, 75.0, 97.5])
+                        ]
                         stats = dict(
                             n=int(flat.size),
                             mean=float(np.mean(flat)),
                             std=float(np.std(flat)),
                             median=float(np.median(flat)),
-                            p25=float(np.percentile(flat, 25.0)),
-                            p75=float(np.percentile(flat, 75.0)),
+                            p2_5=p2_5,
+                            p25=p25,
+                            p75=p75,
+                            p97_5=p97_5,
                         )
                     ratio_summary_rows.append(
                         {
@@ -1223,13 +1332,25 @@ def main() -> None:
                 cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
                 medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
                 means_by_cohort[cohort] = [float(x) for x in cohort_df["mean"].to_list()]
+            p2_5_by_cohort: Optional[Dict[str, List[float]]] = None
+            p97_5_by_cohort: Optional[Dict[str, List[float]]] = None
+            if bool(plot_95_interval) and bool(plot_medians):
+                p2_5_by_cohort = {}
+                p97_5_by_cohort = {}
+                for cohort in cohort_names:
+                    cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
+                    p2_5_by_cohort[cohort] = [float(x) for x in cohort_df["p2_5"].to_list()]
+                    p97_5_by_cohort[cohort] = [float(x) for x in cohort_df["p97_5"].to_list()]
             fig = _build_medians_only_figure(
                 medians_by_cohort,
                 means=means_by_cohort,
+                p2_5=p2_5_by_cohort,
+                p97_5=p97_5_by_cohort,
                 cohort_specs=enabled_cohorts,
                 block_times=block_times,
                 yaxis_title=lvr_yaxis_title,
                 plot_medians=bool(plot_medians),
+                plot_95_interval=bool(plot_95_interval),
                 plot_means=bool(plot_means),
             )
             html_path = out_root / f"dLVR_{plot_label}_vs_block_time_{label_stub}_runs{runs}_pid{pid}.html"
@@ -1245,13 +1366,25 @@ def main() -> None:
                     cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
                     ratio_medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
                     ratio_means_by_cohort[cohort] = [float(x) for x in cohort_df["mean"].to_list()]
+                ratio_p2_5_by_cohort: Optional[Dict[str, List[float]]] = None
+                ratio_p97_5_by_cohort: Optional[Dict[str, List[float]]] = None
+                if bool(plot_95_interval) and bool(plot_medians):
+                    ratio_p2_5_by_cohort = {}
+                    ratio_p97_5_by_cohort = {}
+                    for cohort in ratio_cohort_names:
+                        cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
+                        ratio_p2_5_by_cohort[cohort] = [float(x) for x in cohort_df["p2_5"].to_list()]
+                        ratio_p97_5_by_cohort[cohort] = [float(x) for x in cohort_df["p97_5"].to_list()]
                 ratio_fig = _build_medians_only_figure(
                     ratio_medians_by_cohort,
                     means=ratio_means_by_cohort,
+                    p2_5=ratio_p2_5_by_cohort,
+                    p97_5=ratio_p97_5_by_cohort,
                     cohort_specs=ratio_enabled_cohorts,
                     block_times=block_times,
                     yaxis_title=ratio_yaxis_title,
                     plot_medians=bool(plot_medians),
+                    plot_95_interval=bool(plot_95_interval),
                     plot_means=bool(plot_means),
                 )
                 ratio_html_path = out_root / (
@@ -1265,6 +1398,7 @@ def main() -> None:
                 block_times=block_times,
                 yaxis_title=lvr_yaxis_title,
                 plot_medians=bool(plot_medians),
+                plot_95_interval=bool(plot_95_interval),
                 plot_means=bool(plot_means),
             )
             html_path = out_root / f"dLVR_{plot_label}_vs_block_time_{label_stub}_runs{runs}_pid{pid}.html"
@@ -1280,6 +1414,7 @@ def main() -> None:
                     block_times=block_times,
                     yaxis_title=ratio_yaxis_title,
                     plot_medians=bool(plot_medians),
+                    plot_95_interval=bool(plot_95_interval),
                     plot_means=bool(plot_means),
                 )
                 ratio_html_path = out_root / (
@@ -1349,7 +1484,7 @@ def main() -> None:
     fee_mode_label = str(base_params.get("fee_mode", "unknown"))
     fee_def_label = str(args.fee_definition)
     lvr_yaxis_title = "ΔLVR (block)" if fee_def_label == "flow" else "ΔLVR"
-    ratio_yaxis_title = "ΔLVR/ΔFees (flow)" if fee_def_label == "flow" else "ΔLVR/ΔFees (mtm)"
+    ratio_yaxis_title = "ΔLVR/ΔFees" if fee_def_label == "flow" else "ΔLVR/ΔFees (mtm)"
     pid = int(os.getpid())
 
     # Temp root for per-run artifacts (logs, etc.). Each worker uses a unique folder.
@@ -1481,15 +1616,27 @@ def main() -> None:
             if bool(plot_violin):
                 distributions[cohort][int(b)] = flat
             if flat.size == 0:
-                stats = dict(n=0, mean=np.nan, std=np.nan, median=np.nan, p25=np.nan, p75=np.nan)
+                stats = dict(
+                    n=0,
+                    mean=np.nan,
+                    std=np.nan,
+                    median=np.nan,
+                    p2_5=np.nan,
+                    p25=np.nan,
+                    p75=np.nan,
+                    p97_5=np.nan,
+                )
             else:
+                p2_5, p25, p75, p97_5 = [float(x) for x in np.percentile(flat, [2.5, 25.0, 75.0, 97.5])]
                 stats = dict(
                     n=int(flat.size),
                     mean=float(np.mean(flat)),
                     std=float(np.std(flat)),
                     median=float(np.median(flat)),
-                    p25=float(np.percentile(flat, 25.0)),
-                    p75=float(np.percentile(flat, 75.0)),
+                    p2_5=p2_5,
+                    p25=p25,
+                    p75=p75,
+                    p97_5=p97_5,
                 )
             summary_rows.append(
                 {
@@ -1520,15 +1667,27 @@ def main() -> None:
             if bool(plot_violin):
                 ratio_distributions[cohort][int(b)] = flat
             if flat.size == 0:
-                stats = dict(n=0, mean=np.nan, std=np.nan, median=np.nan, p25=np.nan, p75=np.nan)
+                stats = dict(
+                    n=0,
+                    mean=np.nan,
+                    std=np.nan,
+                    median=np.nan,
+                    p2_5=np.nan,
+                    p25=np.nan,
+                    p75=np.nan,
+                    p97_5=np.nan,
+                )
             else:
+                p2_5, p25, p75, p97_5 = [float(x) for x in np.percentile(flat, [2.5, 25.0, 75.0, 97.5])]
                 stats = dict(
                     n=int(flat.size),
                     mean=float(np.mean(flat)),
                     std=float(np.std(flat)),
                     median=float(np.median(flat)),
-                    p25=float(np.percentile(flat, 25.0)),
-                    p75=float(np.percentile(flat, 75.0)),
+                    p2_5=p2_5,
+                    p25=p25,
+                    p75=p75,
+                    p97_5=p97_5,
                 )
             ratio_summary_rows.append(
                 {
@@ -1553,13 +1712,25 @@ def main() -> None:
             cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
             medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
             means_by_cohort[cohort] = [float(x) for x in cohort_df["mean"].to_list()]
+        p2_5_by_cohort = None
+        p97_5_by_cohort = None
+        if bool(plot_95_interval) and bool(plot_medians):
+            p2_5_by_cohort = {}
+            p97_5_by_cohort = {}
+            for cohort in cohort_names:
+                cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
+                p2_5_by_cohort[cohort] = [float(x) for x in cohort_df["p2_5"].to_list()]
+                p97_5_by_cohort[cohort] = [float(x) for x in cohort_df["p97_5"].to_list()]
         fig = _build_medians_only_figure(
             medians_by_cohort,
             means=means_by_cohort,
+            p2_5=p2_5_by_cohort,
+            p97_5=p97_5_by_cohort,
             cohort_specs=enabled_cohorts,
             block_times=block_times,
             yaxis_title=lvr_yaxis_title,
             plot_medians=bool(plot_medians),
+            plot_95_interval=bool(plot_95_interval),
             plot_means=bool(plot_means),
             # title=fig_title,
         )
@@ -1576,13 +1747,25 @@ def main() -> None:
             cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
             ratio_medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
             ratio_means_by_cohort[cohort] = [float(x) for x in cohort_df["mean"].to_list()]
+        ratio_p2_5_by_cohort = None
+        ratio_p97_5_by_cohort = None
+        if bool(plot_95_interval) and bool(plot_medians):
+            ratio_p2_5_by_cohort = {}
+            ratio_p97_5_by_cohort = {}
+            for cohort in cohort_names:
+                cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
+                ratio_p2_5_by_cohort[cohort] = [float(x) for x in cohort_df["p2_5"].to_list()]
+                ratio_p97_5_by_cohort[cohort] = [float(x) for x in cohort_df["p97_5"].to_list()]
         ratio_fig = _build_medians_only_figure(
             ratio_medians_by_cohort,
             means=ratio_means_by_cohort,
+            p2_5=ratio_p2_5_by_cohort,
+            p97_5=ratio_p97_5_by_cohort,
             cohort_specs=enabled_cohorts,
             block_times=block_times,
             yaxis_title=ratio_yaxis_title,
             plot_medians=bool(plot_medians),
+            plot_95_interval=bool(plot_95_interval),
             plot_means=bool(plot_means),
         )
         ratio_html_path = out_root / (
@@ -1598,6 +1781,7 @@ def main() -> None:
             block_times=block_times,
             yaxis_title=lvr_yaxis_title,
             plot_medians=bool(plot_medians),
+            plot_95_interval=bool(plot_95_interval),
             plot_means=bool(plot_means),
             # title=fig_title,
         )
@@ -1614,6 +1798,7 @@ def main() -> None:
             block_times=block_times,
             yaxis_title=ratio_yaxis_title,
             plot_medians=bool(plot_medians),
+            plot_95_interval=bool(plot_95_interval),
             plot_means=bool(plot_means),
         )
         ratio_html_path = out_root / (
