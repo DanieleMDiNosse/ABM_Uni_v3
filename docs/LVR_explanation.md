@@ -7,143 +7,228 @@ nav_order: 4
 
 ## 1. What is LVR?
 
-**Loss-Versus-Rebalancing (LVR)** is a metric introduced by Milionis, Moallemi, and Roughgarden (2023) to quantify the cost of providing liquidity in an Automated Market Maker (AMM). It represents the "adverse selection" cost incurred by Liquidity Providers (LPs) when arbitrageurs trade against the pool to align its price with an external market (CEX).
+**Loss-Versus-Rebalancing (LVR)** is a metric introduced by Milionis, Moallemi, and Roughgarden (2023) to quantify the *structural* cost borne by liquidity providers in an Automated Market Maker (AMM).
 
-### Mathematical Definition
+The key idea is that AMMs are *passive*: they post a price that becomes stale whenever the
+external market moves. Arbitrageurs then “pick off” the pool by trading until the AMM price
+realigns with the external reference price. LVR measures the cumulative value extracted by
+these arbitrage trades (equivalently: the opportunity cost of providing liquidity versus a
+frictionless benchmark that trades at the external price).
 
-In a continuous-time setting, the instantaneous LVR is defined as:
+### Intuition: the rebalancing benchmark
 
-$$
-LVR_t = \frac{1}{2} \sigma_t^2 P_t
-$$
+To isolate liquidity-provision economics from market risk, LVR compares the LP’s outcome to a
+**rebalancing benchmark** with two defining properties:
 
-Where:
-*   $\sigma_t$ is the instantaneous volatility of the asset price.
-*   $P_t$ is the price of the asset.
+- **Inventory matching:** at every instant $t$, the benchmark holds the same inventory of token0
+  as the LP/AMM, denoted $x_t$.
+- **Frictionless execution:** whenever $x_t$ changes (because trades move the pool along its curve),
+  the benchmark executes that same inventory change at the *external* reference price $m_t$ (CEX mid),
+  rather than at the stale AMM price $P^{DEX}_t$.
 
-The cumulative LVR over a period $[0, T]$ is the integral of this instantaneous cost:
+Because the benchmark executes the same sequence of inventory changes but at better prices
+(sell at $m_t > P^{DEX}_t$ when price rises, buy at $m_t < P^{DEX}_t$ when price falls), its value
+is higher. That “missing value” is LVR.
 
-$$
-LVR_{[0, T]} = \int_0^T \frac{1}{2} \sigma_t^2 P_t \, dt
-$$
+In much of the LVR literature (and in this repo’s accounting), it is convenient to keep **fees**
+as an explicit separate term. Let:
 
-### Intuition: The Rebalancing Benchmark
+- $V_t^{LP}$ be total LP wealth (wallet + mark-to-market of open positions) valued at $m_t$,
+- $F_t$ be cumulative fees earned (in both tokens) valued at $m_t$,
+- $V_t^{reb}$ be the value of the rebalancing benchmark.
 
-LVR can be understood by comparing the LP's portfolio to a **Rebalancing Benchmark**.
-
-*   **LP Portfolio ($V_t^{LP}$):** The value of the assets held in the AMM pool. This portfolio's composition changes automatically as the price moves (selling as price rises, buying as price falls).
-*   **Rebalancing Benchmark ($V_t^{Rebal}$):** A hypothetical self-financing portfolio that replicates the LP's exposure (delta) but trades at the external market price (CEX). It holds the same amount of the risky asset ($x_t$) as the LP but executes trades at the "fair" CEX price rather than the "stale" AMM price.
-
-The difference in value between these two portfolios (excluding fees collected by the LP) is exactly the LVR:
-
-$$
-V_T^{Rebal} - V_T^{LP} = LVR_{[0, T]} - \text{Fees}_{[0, T]}
-$$
-
-Or, rearranging to isolate LVR:
+Then the defining decomposition is:
 
 $$
-LVR_{[0, T]} = (V_T^{Rebal} - V_T^{LP}) + \text{Fees}_{[0, T]}
+\boxed{
+V_t^{LP} = V_t^{reb} + F_t - \mathrm{LVR}_t.
+}
 $$
 
-In the absence of fees, the LP always loses relative to the benchmark because the LP sells to arbitrageurs at a price lower than the CEX price (when price rises) or buys at a price higher than the CEX price (when price falls).
+Equivalently,
 
-## 2. How LVR is Computed in the ABM
+$$
+\mathrm{LVR}_t = V_t^{reb} + F_t - V_t^{LP}.
+$$
+
+Note: if you define $V_t^{LP}$ *excluding* fees, then the simpler identity
+$\mathrm{LVR}_t = V_t^{reb} - V_t^{LP}$ is recovered.
+
+---
+
+## 2. Continuous-time LVR formulas (theory / intuition)
+
+Milionis et al. show that when the external reference price $m_t$ follows a diffusion with
+instantaneous volatility $\sigma_t$, LVR accumulates according to the volatility and the AMM’s
+**marginal liquidity**.
+
+Over a time interval $[0,T]$:
+
+$$
+\mathrm{LVR}_{[0,T]}
+= \int_0^T \frac{\sigma_t^2 m_t^2}{2}\, \left|x^{*\prime}(m_t)\right|\, dt,
+$$
+
+where:
+- $x^*(p)$ is the AMM inventory of token0 as a function of price $p$ (the “demand curve”),
+- $\left|x^{*\prime}(p)\right| = \left|\frac{dx}{dp}\right|$ is the *marginal liquidity*, i.e. how
+  aggressively the AMM trades against price changes.
+
+### Specialization to Uniswap v3 (within an active range)
+
+In Uniswap v3, within a tick range where liquidity $L_t$ is active and with square-root price
+$s=\sqrt{p}$, token0 inventory takes the form:
+
+$$
+x(s) = L_t\left(\frac{1}{s} - \frac{1}{s_b}\right),
+$$
+
+where $s_b$ is the upper square-root price bound of the active range.
+
+Using $p=s^2$ and the chain rule:
+
+$$
+\left|\frac{dx}{dp}\right|
+= \left|\frac{dx}{ds}\frac{ds}{dp}\right|
+= \left|\left(-\frac{L_t}{s^2}\right)\left(\frac{1}{2\sqrt{p}}\right)\right|
+= \frac{L_t}{2p\sqrt{p}}.
+$$
+
+Plugging into the general formula (with $p=m_t$) yields the *instantaneous* Uniswap v3 LVR rate:
+
+$$
+\boxed{
+\ell_t^{v3}
+= \frac{\sigma_t^2 L_t \sqrt{m_t}}{4}.
+}
+$$
+
+Key intuition:
+- LVR scales **linearly** in active liquidity $L_t$,
+- **quadratically** in volatility $\sigma_t$,
+- and increases with the price level through $\sqrt{m_t}$.
+
+Crucially, because $L_t$ is *concentrated* liquidity, a position only incurs LVR when the
+reference price lies inside its active tick range (when its active liquidity is $>0$).
+
+---
+
+## 3. How LVR is computed in this ABM (discrete-time benchmark)
 
 The Agent-Based Model (ABM) computes LVR using the **Rebalancing Benchmark** approach. This is the most accurate way to measure LVR in a simulation because it captures the exact path-dependent losses from discrete trades and price jumps, rather than relying on a theoretical approximation (like $\sigma^2$).
 
-### Implementation Details
+### Rebalancing benchmark in discrete time
 
-The computation is handled by the `RebalancerState` class in `agents.py` and updated in `run.py`.
+Fix an LP and index blocks by $t=0,1,2,\dots$. Let $m_t$ be the CEX mid at the **end of block**
+$t$. Let:
 
-#### A. Tracking the Benchmark Value
+- $x_t$ be the LP’s *total exposure in token0* at time $t$ (summed over all its AMM positions),
+- $y_t$ be its cash holdings in token1.
 
-The benchmark portfolio consists of:
-1.  **Risky Asset ($x_{prev}$):** The amount of token0 held by the LP.
-2.  **Cash ($\mathrm{cash}_y$):** The amount of token1 (numéraire) held.
+The LP’s mark-to-market wealth is:
 
-The benchmark value is updated in two ways:
+$$
+V_t^{LP} = x_t m_t + y_t.
+$$
 
-1.  **Price Moves (Passive Holding):**
-    When the CEX price ($M$) moves from $M_{old}$ to $M_{new}$, the value of the risky asset holding changes. The simulation tracks the cumulative PnL from these moves in `cumulative_R`:
-    ```python
-    # run.py: _accrue_price_move
-    delta = M_new - rb.last_M
-    rb.cumulative_R += rb.x_prev * delta
-    ```
-    This approximates the integral $\int x_t dM_t$.
+We construct a benchmark portfolio $(x_t^{reb}, y_t^{reb})$ such that:
+- it always holds the same token0 exposure as the LP: $x_t^{reb} = x_t$,
+- it trades only at the CEX mid $m_t$,
+- it is self-financing.
 
-2.  **Rebalancing Trades (Active Trading):**
-    When the LP's exposure ($x$) changes (due to minting/burning or price moves within the pool), the benchmark "rebalances" to match the new target exposure ($x_{target}$). It buys or sells the difference $(x_{target} - x_{prev})$ at the current CEX price ($M_{now}$).
-    ```python
-    # run.py: _rebalance_lp_to_target
-    dx = x_target - rb.x_prev
-    rb.cash_y -= dx * M_now  # Buy/sell at fair market price
-    rb.x_prev = x_target
-    ```
-    This ensures the benchmark always matches the LP's delta.
+Initialize at $t=0$ with $V_0^{reb} = V_0^{LP}$.
 
-#### B. Calculating LVR (Fee-LVR)
+Then update it in two ways:
 
-At the end of each step, the simulation computes wealth, fees, and the benchmark value, then stores the hedged outcome directly for each LP:
+1. **Price moves (passive holding).** When $m_{t-1} \to m_t$ while holding $x_{t-1}^{reb}$:
+   $$
+   V_t^{reb} = V_{t-1}^{reb} + x_{t-1}^{reb}(m_t - m_{t-1}).
+   $$
+2. **Rebalancing trades (active adjustments).** Whenever the LP exposure changes within block $t$
+   from $x_{t-}^{LP}$ to $x_{t+}^{LP}$ due to AMM interactions (mint/burn, or swaps moving price
+   within/outside ranges), the benchmark trades at $m_t$ to match:
+   $$
+   x_{t+}^{reb} = x_{t+}^{LP},
+   \qquad
+   y_{t+}^{reb} = y_{t-}^{reb} - (x_{t+}^{reb} - x_{t-}^{reb})m_t.
+   $$
+
+By construction, the benchmark value is always:
+
+$$
+V_t^{reb} = x_t^{reb} m_t + y_t^{reb}.
+$$
+
+### Mapping to the implementation (`run.py`)
+
+The computation is handled by `RebalancerState` in `agents.py` and updated inside `run.py`.
+
+The benchmark’s *price-move accrual* is implemented by `_accrue_price_move`:
 
 ```python
-# run.py (simplified)
-wealth_now = lp_wealth_y(lp, pool.S, ref.m)                 # V^{LP}_t
-fee_value_now = lp_total_fee_earned_value_y(lp, ref.m)      # F_t
-rebal_value_now = rb.initial_rebal_value_y + rb.cumulative_R  # V^{reb}_t
-
-hedged_pnl = wealth_now - rebal_value_now                   # Fees - LVR
-unhedged_pnl = wealth_now - rb.initial_lp_value_y           # V^{LP}_t - V^{LP}_0
-rb.hedged_pnl_cum = hedged_pnl  # per-LP hedged PnL at time t
+# run.py: _accrue_price_move
+delta = M_new - rb.last_M
+rb.cumulative_R += rb.x_prev * delta
+rb.last_M = M_new
 ```
 
-Using $V^{LP}_t = V^{reb}_t + F_t - \text{LVR}_t$ we recover:
+The benchmark’s *rebalancing trade* is implemented by `_rebalance_lp_to_target`:
 
-- **Hedged PnL** (`lp_pnl_*`) = $F_t - \text{LVR}_t$
-- **LVR** (`lp_lvr_*`)        = $F_t - \text{hedged PnL}$
-- **Unhedged PnL** (`lp_unhedged_*`) = $V^{LP}_t - V^{LP}_0$
+```python
+# run.py: _rebalance_lp_to_target
+dx = x_target - rb.x_prev
+rb.cash_y -= dx * M_now
+rb.x_prev = x_target
+```
 
-These quantities are written for total/active/passive cohorts and plotted in the default dashboards.
+The benchmark value used for PnL bookkeeping is:
 
-#### C. Wealth Conservation in LP Operations
+$$
+V_t^{reb} = V_0^{reb} + R_t
+\quad\text{with}\quad
+R_t := \sum_{k\le t} x_{k-1}^{reb}(m_k - m_{k-1}),
+$$
 
-To ensure the $V_T^{LP}$ term (LP Wealth) is tracked correctly across rebalancing events, the simulation enforces strict wealth conservation during `burn` and `mint` operations in the mempool execution path.
+which corresponds to:
+```python
+rebal_value_now = rb.initial_rebal_value_y + rb.cumulative_R
+```
 
-In the current implementation, LPs are **cash-budgeted**: strategic LP wallets are held in token1 only (`wallet_y`). Any token0 obtained from burning is immediately converted into token1 on the CEX.
+At end-of-block, the simulator computes:
+- LP wealth (mark-to-market) $V_t^{LP}$ via `lp_wealth_y(lp, pool.S, ref.m)`,
+- fee value $F_t$ via `lp_total_fee_earned_value_y(lp, ref.m)`,
+- benchmark value $V_t^{reb}$ via `rb.initial_rebal_value_y + rb.cumulative_R`.
 
-1.  **Burning:** When a position is burned, its **underlying token amounts** (principal) plus its **accrued fees** are returned, and any token0 is converted to token1 at the reference price used for mempool execution:
-    ```python
-    # run.py: burn_any (simplified)
-    amt0, amt1 = pos.current_amounts(pool.S)
-    amt0_total = amt0 + pos.fees0
-    amt1_total = amt1 + pos.fees1
+It then records the *hedged PnL*:
 
-    lp.wallet_y += amt1_total + amt0_total * m_ref
-    delta_a_cex_this += -amt0_total  # sell token0 on CEX (impact applied end-of-block)
-    ```
+$$
+\mathrm{PnL}^{hedged}_t
+:=
+V_t^{LP} - V_t^{reb}
+= F_t - \mathrm{LVR}_t,
+$$
 
-2.  **Minting:** When a new position is minted (via `lp_mint` or `lp_recenter` intents), the LP’s cash budget determines the maximum feasible liquidity in the chosen range, and the token0 purchase needed for the deposit is modeled as a CEX trade:
-    ```python
-    # run.py: _execute_cash_budgeted_mint (simplified)
-    a0, a1 = minted_amounts_at_S(1.0, sa, sb, agent_S_ref)
-    L_max = wallet_y / (a0 * m_ref + a1)
-    L_new = eta * L_max
+so LVR is recovered as the identity:
 
-    amt0, amt1 = minted_amounts_at_S(L_new, sa, sb, agent_S_ref)
-    lp.wallet_y -= amt0 * m_ref + amt1
-    delta_a_cex_this += +amt0  # buy token0 on CEX (impact applied end-of-block)
-    ```
+$$
+\boxed{
+\mathrm{LVR}_t = F_t - \mathrm{PnL}^{hedged}_t.
+}
+$$
 
-All mint/recenter operations route through the mempool accounting and use the explicit cash debits above, preserving wealth conservation.
+---
 
-By ensuring that `Wealth = Wallet + Open_Positions` is invariant during rebalancing in mempool execution, the simulation guarantees that changes in the hedged LP PnL series (`lp_pnl_*`) reflect only genuine economic performance (Fees - LVR) and not accounting artifacts.
+## 4. Outputs and diagnostics
 
-## 3. Outputs and Diagnostics
+The main per-block series are (each split into `total` / `active` / `passive` cohorts):
 
-- `lp_fee_value_*_series` tracks $F_t$ (fees marked to the CEX price).
-- `lp_rebal_value_*_series` tracks $V^{reb}_t$; `lp_rebal_*_series` is its PnL path.
-- `lp_pnl_*` (hedged) and `lp_lvr_*` are complementary: `lp_lvr_* = fee_value_* - lp_pnl_*`.
-- `lp_wallet_*` and `lp_wealth_*` expose realized wallet value vs. wealth including open positions; all are split into active/passive/total cohorts.
+- `lp_fee_value_*_series`: $F_t$ (cumulative fees, valued at $m_t$).
+- `lp_rebal_value_*_series`: $V_t^{reb}$ (benchmark value).
+- `lp_rebal_*_series`: $R_t = V_t^{reb} - V_0^{reb}$ (benchmark PnL path).
+- `lp_pnl_*`: hedged PnL $V_t^{LP} - V_t^{reb} = F_t - \mathrm{LVR}_t$.
+- `lp_lvr_*_series`: LVR, computed as `lp_fee_value_*_series - lp_pnl_*`.
+- `lp_unhedged_*`: unhedged PnL $V_t^{LP} - V_0^{LP}$.
 
-The batch runners (e.g. `run_parameter_grid_2d_violin_parallel.py`, `run_parameter_surface_*`) consume these series to compare fee modes and parameter choices.
+These are the quantities typically plotted in the dashboards and consumed by batch runners such as
+`run_multiple.py`, `run_parameter_surface_nd_pnl_fee_dashboard.py`, and
+`build_parameter_surface_nd_pnl_fee_dashboard.py`.
