@@ -1000,7 +1000,7 @@ def parse_args() -> argparse.Namespace:
         "--plot_95_interval",
         action="store_true",
         help=(
-            "When plotting medians, overlay the central 95% interval of the pooled samples "
+            "When plotting medians, overlay the central 95 percent interval of the pooled samples "
             "(2.5th..97.5th percentiles) as error bars. Ignored if medians are not plotted."
         ),
     )
