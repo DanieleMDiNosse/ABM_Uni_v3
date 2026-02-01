@@ -3085,7 +3085,9 @@ def simulate(
         return float(np.exp(np.random.normal(loc=trader_mean, scale=trader_sigma)))
 
     # ------------------ Main loop ------------------
-    for t in tqdm(range(T), desc="Simulating ABM", unit=" step"):
+    # tqdm is convenient for interactive runs but adds overhead and emits output
+    # even when `verbose=False`; disable it in that case.
+    for t in tqdm(range(T), desc="Simulating ABM", unit=" step", disable=not verbose):
         agent_S_ref = validated_S
         agent_tick_ref = validated_tick
         cex_ref_for_agents = validated_cex

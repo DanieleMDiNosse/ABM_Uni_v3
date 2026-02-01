@@ -1,21 +1,25 @@
 """
 Utility functions, constants, and helper classes for the ABM simulation.
 """
-#from __future__ import annotations
+from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Tuple, List, Optional
+from typing import Any, Dict, Tuple, List, Optional, TYPE_CHECKING
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import animation
 from tqdm import tqdm
 import yaml
 import inspect
 
 from miscellaneous.numba_accel import _current_amounts_impl
+
+if TYPE_CHECKING:  # pragma: no cover
+    from matplotlib.axes import Axes
+else:
+    # Runtime fallback to avoid import-time dependency on matplotlib for type hints.
+    Axes = Any  # type: ignore[misc,assignment]
 
 # =============================================================================
 # Plot styling (global)
@@ -24,12 +28,27 @@ TITLE_FONT_SIZE = 16
 LABEL_FONT_SIZE = 14
 LEGEND_FONT_SIZE = 12
 
-plt.rcParams.update({
-    "axes.titlesize": TITLE_FONT_SIZE,
-    "axes.labelsize": LABEL_FONT_SIZE,
-    "legend.fontsize": LEGEND_FONT_SIZE,
-})
-plt.rcParams["axes.grid"] = True
+def _lazy_import_matplotlib():
+    """
+    Import matplotlib components on demand.
+
+    Notes
+    -----
+    - `matplotlib.pyplot` import is slow and unnecessary for non-visual runs; this
+      keeps simulation-only workflows snappy.
+    """
+    import matplotlib.pyplot as plt  # local import to avoid startup cost
+    from matplotlib import animation
+
+    plt.rcParams.update(
+        {
+            "axes.titlesize": TITLE_FONT_SIZE,
+            "axes.labelsize": LABEL_FONT_SIZE,
+            "legend.fontsize": LEGEND_FONT_SIZE,
+        }
+    )
+    plt.rcParams["axes.grid"] = True
+    return plt, animation
 
 
 # =============================================================================
@@ -389,7 +408,7 @@ def bootstrap_initial_binomial_hill_sharded(
     min_L_per_tick: float = 1e-9,
     tau: int = 20,
     plot: bool = False,
-    ax: Optional[plt.Axes] = None,
+    ax: Optional[Axes] = None,
     title: Optional[str] = None,
     seed_is_passive: bool = True,
 ) -> List:
@@ -461,6 +480,7 @@ def bootstrap_initial_binomial_hill_sharded(
 
     # optional plot (same look as the single-LP version)
     if plot and len(ticks) > 0:
+        plt, _animation = _lazy_import_matplotlib()
         created_fig = False
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 3.5))
@@ -545,6 +565,8 @@ def make_liquidity_gif(
     def active_line_price(tick_i: int) -> float:
         P_lo = float((base_s * (g ** tick_i)) ** 2)
         return P_lo * (g if center_line else 1.0)        # center = geometric mean => ×g
+
+    plt, animation = _lazy_import_matplotlib()
 
     # ----- plot/animate -----
     fig, ax = plt.subplots(figsize=(10, 4))

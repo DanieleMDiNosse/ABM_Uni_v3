@@ -1,0 +1,83 @@
+# Lightweight scenario for profiling `run.py`.
+# Keeps the model structure similar to `test.yml` but reduces runtime and disables plotting.
+fee_mode: static
+simulate:
+  config_name: profile_small
+  liquidity_for_gif: false
+  verbose: false
+  light_mode: false
+  block_time: 5
+  # Keep small enough for iterative profiling runs.
+  T: 800
+  skip_step: 0
+  n_block_SR_ratio: 100
+  seed: 10
+  cex_mu: 0.00
+  cex_sigma_mode: heston
+  cex_sigma: 0.00015
+  cex_sigma_low: 0.0001
+  cex_sigma_high: 0.002
+  cex_sigma_p_LL: 0.999
+  cex_sigma_p_HH: 0.999
+  cex_sigma_regime_init: L
+  cex_sigma_sine_noise: 5e-5
+  cex_sigma_sine_period: 10000
+  cex_sigma_sine_amp: 0.0001
+  cex_sigma_sine_phase: 0.0
+  cex_sigma_floor: 0.0
+  cex_heston_kappa: 1.0
+  cex_heston_theta: 1.0e-8
+  cex_heston_sigma_v: 0.001
+  cex_heston_rho: -0.5
+  cex_heston_v0: 2.25e-8
+
+  smart_trades_per_block: 0.8
+  noise_trades_per_block: 0.8
+  trader_mean: 2.5
+  trader_sigma: 1.5
+  theta_T: 1.0
+  slippage_tolerance: 0.01
+
+  flash_loan_fee: 0.0001
+
+  N_LP: 10
+  passive_lp_share: 0.5
+  narrow_mints_per_block: 0.5
+  passive_mints_per_block: 0.5
+  passive_burns_per_block: 0.5
+  passive_width_pct: 5.0
+  passive_width_ticks: null
+  tau: 5
+  w_min_ticks: 10
+  w_max_ticks: 1774540
+  basis_half_life: 1
+  slope_s: 1
+  binom_n: 70
+  binom_p: 0.5
+  k_out_min: 10
+  k_out_max: 20
+  mint_mu: -1.0
+  mint_sigma: 1.5
+  theta_TP: 0.1
+  theta_SL: 0.20
+
+  p_jit: 1
+  N_jit: 3
+  liquidity_perc_jit: 0.90
+  jit_flash_loan_fee: 0.0001
+
+  initial_binom_N: 450
+  initial_total_L: 500000.0
+
+  visualize: false
+
+  f0: 0.0001
+  f_min: 0.00001
+  f_max: 0.05
+  fee_half_life: 2
+  k_sigma: 1
+  k_basis: 0.0005
+  k_lvr: 0.1
+  fee_step_bps_min: 0.0005
+  fee_step_bps_max: 100.0
+  fee_cooldown: 0

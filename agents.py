@@ -8,7 +8,6 @@ import random
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 import numpy as np
-import matplotlib.pyplot as plt
 
 from utils import (
     EPS_LIQ2, EPS_LIQ, EPS_BOUNDARY, TITLE_FONT_SIZE, LABEL_FONT_SIZE,
