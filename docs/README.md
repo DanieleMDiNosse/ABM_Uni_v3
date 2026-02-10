@@ -20,14 +20,15 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
 - **Rich agent roster**: smart router, noise trader, arbitrageur, strategic LP cohorts (passive + active narrow), and a JIT MEV-style LP (“Jiter”).
 - **Block-aware mempool**: the simulator runs in mempool execution mode (`block_time` micro-steps per block; the current implementation requires `block_time > 1`). It freezes the validated snapshot, runs `block_time` micro-steps that diffuse the CEX and probabilistically enqueue smart/noise intents, then enqueues a single arb intent plus LP intents (burn/recenter/mint) and replays the shuffled mempool (arb first) against the live pool.
 - **Validated price snapshots**: at the end of every block the simulator freezes both the DEX state (tick/S) and a CEX mark. Swap intents (smart/noise) and the arbitrage target are formed off this “last validated” snapshot (`agent_S_ref`, `agent_tick_ref`, `cex_ref_for_agents`), while the CEX path still diffuses during micro-steps for the rebalancing benchmark, fee signals, and some LP diagnostics. All intents are executed together at the block boundary via the mempool replay.
-- **Dynamic fee controller** with four modes:
+- **Dynamic fee controller** with five modes (see **[Fee Schedules](fee_schedules.md)** for formulas):
   - `static` fixes the fee at `f0`.
-  - `volatility` adds a multiple of EWMA(|log-return|).
-  - `toxicity` adds a multiple of the fee-adjusted log basis (in ticks).
+  - `volatility_cex` sets the fee based on an EWMA realized-volatility estimate from the **CEX** price series.
+  - `volatility_dex` sets the fee based on an EWMA realized-volatility estimate from the **DEX** price series.
+  - `toxicity` sets the fee based on the fee-adjusted log basis (in ticks).
   - `lvr_fee_ewma` applies a feedback update based on an EWMA of the per-step (LVR - fees) gap normalized by DEX notional.
   Fee moves are clipped by `fee_step_bps_min/max` and gated by `fee_cooldown`.
 - **Liquidity bootstrapping**: simulations always start from an evolved/sharded binomial hill that allocates `initial_total_L` across synthetic *seed* LPs (`is_seed=True`) that provide background liquidity and can optionally be plotted; these seed LPs are excluded from the strategic LP cohorts and PnL statistics.
-- **LP width rule**: narrow LPs size their ranges off an EWMA of the fee-adjusted basis plus a configurable binomial noise term (`binom_n`, `binom_p`), then clamp to `[w_min_ticks, w_max_ticks]`.
+- **LP width rule**: narrow LPs size their ranges off an EWMA of `|log-return|` of the CEX mid (`ref.m`) with half-life `basis_half_life`, plus a configurable binomial noise term (`binom_n`, `binom_p`), then clamp to `[w_min_ticks, w_max_ticks]`.
 - **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (per block), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python run.py --config ...`).
 
 For the *detailed* and math-accurate description of each agent’s decision rules and execution logic, see:
@@ -46,7 +47,7 @@ For the *detailed* and math-accurate description of each agent’s decision rule
   - or **Heston-like stochastic volatility** (`cex_sigma_mode: heston`), where the variance `v_t = σ_t^2` follows a mean-reverting square-root process with parameters `cex_heston_kappa`, `cex_heston_theta`, `cex_heston_sigma_v`, correlation `cex_heston_rho`, and optional initial variance `cex_heston_v0` (falling back to `cex_sigma^2` when omitted).
   The center for the noisy-sine mode defaults to `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` when provided); in scenarios using `noisy_sine` the amplitude is typically specified explicitly via `cex_sigma_sine_amp`. The active path is returned as `cex_sigma_series` and `cex_regime_series`.
 - In non-Heston modes the diffusion step uses `m ← m · exp(cex_mu - 0.5 · σ_t^2 + σ_t · z)` with `z ~ N(0,1)`, so `σ_t` is interpreted directly as the per-microstep volatility (no squaring). In Heston mode, the variance `v_t` and price `m_t` are updated jointly with correlated Gaussian shocks while keeping `σ_t = sqrt(v_t)` in the returned series.
-- The CEX diffuses during intra-block micro-steps (`ref.diffuse_only()`), while permanent impact from **net CEX order flow** (smart-router CEX legs + arbitrage hedges) is applied once at the end via `ref.apply_impact_only(Δa_cex)`. This decouples diffusion from impact and matches the code in `run.py`.
+- The CEX diffuses during intra-block micro-steps (`ref.diffuse_only()`). Permanent impact is applied **immediately** every time an action “touches the CEX” (smart-router CEX legs, arb hedge legs, LP mint/burn conversions, JIT burn conversion) via `ref.apply_impact_only(Δa)`.
 
 #### Heston Volatility Mode (details)
 - **Continuous-time model** (conceptual): in Heston mode the CEX price `m_t` and variance `v_t` are thought of as solving
@@ -185,7 +186,7 @@ simulate:
 
 Any argument of `simulate(...)` can be overridden in the YAML. Keep `fee_mode` in sync with the controller you intend to test.
 
-For a key-by-key description of the telemetry returned by `simulate(...)` (prices, PnLs, fees, LP wealth, activity, etc.), see `docs/simulation_outputs.md`.
+For a key-by-key description of the telemetry returned by `simulate(...)` (prices, PnLs, fees, LP wealth, activity, etc.), see **[Simulation Outputs](simulation_outputs.md)**.
 
 ---
 
@@ -203,9 +204,7 @@ Outputs:
 ---
 
 ## Batch Runners & Analysis Helpers
-- There is no dedicated multi-seed “run all scenarios” script tracked in this repo; for multi-seed comparisons, either vary `seed` in the YAMLs and call `python run.py --config ...`, or import `run.simulate` + `utils.load_simulation_parameters` in a small driver and override `seed` / `results_root` programmatically, or use the parameter-grid runners below.
-- `run_parameter_grid_2d_violin_parallel.py`: parallel 2D parameter sweeps (fee sensitivity + another axis) with cached CSVs and 3D violin plots under `abm_results/grid_search/plots_3d/`.
-- `run_parameter_surface_3d_k_sigma_slider.py`: larger parameter sweeps that cache results and write interactive Plotly outputs under `abm_results/grid_search/`.
+- `run_multiple.py`: run a single scenario config over many seeds (parallel) and plot mean ± std bands for agent PnL series under `abm_results/scenarios/<scenario>/multi_runs/{html,png}/`.
 - `run_parameter_surface_nd_pnl_fee_dashboard.py`: ND parameter sweeps (cache-only) writing CSV + metadata under `abm_results/grid_search/dashboard_nd/data/`.
 - `build_parameter_surface_nd_pnl_fee_dashboard.py`: build the standalone HTML dashboard from the cached CSV under `abm_results/grid_search/dashboard_nd/html/`.
 - `sigma_calibration.py`: derive realistic per-second `cex_sigma` from Binance 1s ETH/USDC data (CSV/Parquet/pickle) and optionally persist the computed series.

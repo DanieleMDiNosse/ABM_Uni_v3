@@ -1506,22 +1506,49 @@ def plotting_results(
     fig7.update_yaxes(title_text=secondary_label, secondary_y=True)
     _save_plotly("7_fee", fig7)
 
-    # ----- 8) Normalized LVR diagnostics (per-block) -----
-    # Rationale: raw ΔLVR (token1/block) mixes "toxicity" with activity effects (volume, block aggregation).
-    # Normalizing by DEX notional and by fees yields (i) LVR-per-volume and (ii) fee-coverage metrics that
-    # are more comparable across fee modes / block sizes.
+    # ----- 8) Normalized LVR diagnostics (50-block smoothed) -----
+    # Rationale: per-block normalization can spike when denominators are tiny.
+    # We smooth both metrics with rolling sums over a fixed window:
+    #   1) 1e4 * sum_50(ΔLVR) / sum_50(DEX notional)
+    #   2) sum_50(ΔLVR) / sum_50(ΔFees)
+    # This keeps units unchanged while reducing denominator-noise artifacts.
     eps = 1e-18
+    smooth_blocks = 50
     d_lvr_total_v = np.diff(lp_lvr_total_series, prepend=0.0)[s0:]
     d_fee_value_total_v = np.diff(lp_fee_value_total_series, prepend=0.0)[s0:]
 
+    def _rolling_sum_strict(values: np.ndarray, window: int) -> np.ndarray:
+        """Return trailing window sums where all points in-window are finite."""
+        if window <= 0:
+            raise ValueError(f"window must be positive, got {window}")
+        if values.size == 0:
+            return np.array([], dtype=float)
+        kernel = np.ones(window, dtype=float)
+        finite_mask = np.isfinite(values)
+        values_safe = np.where(finite_mask, values, 0.0)
+        summed = np.convolve(values_safe, kernel, mode="full")[: values.size]
+        finite_count = np.convolve(finite_mask.astype(float), kernel, mode="full")[: values.size]
+        out = np.full(values.shape, np.nan, dtype=float)
+        full_window = finite_count >= float(window)
+        out[full_window] = summed[full_window]
+        return out
+
+    d_lvr_sum_v = _rolling_sum_strict(d_lvr_total_v, smooth_blocks)
+    d_fee_sum_v = _rolling_sum_strict(d_fee_value_total_v, smooth_blocks)
+    dex_notional_sum_v = _rolling_sum_strict(dex_notional_y_series_v, smooth_blocks)
+
     lvr_per_notional_bps = np.full_like(d_lvr_total_v, np.nan, dtype=float)
-    mask_notional = np.isfinite(d_lvr_total_v) & np.isfinite(dex_notional_y_series_v) & (dex_notional_y_series_v > eps)
-    lvr_per_notional_bps[mask_notional] = 1e4 * d_lvr_total_v[mask_notional] / dex_notional_y_series_v[mask_notional]
+    mask_notional = (
+        np.isfinite(d_lvr_sum_v)
+        & np.isfinite(dex_notional_sum_v)
+        & (dex_notional_sum_v > eps)
+    )
+    lvr_per_notional_bps[mask_notional] = 1e4 * d_lvr_sum_v[mask_notional] / dex_notional_sum_v[mask_notional]
 
     lvr_over_fees = np.full_like(d_lvr_total_v, np.nan, dtype=float)
-    # Use only blocks with positive fee-value increment; fee value is marked-to-market and can drop if m_t falls.
-    mask_fees = np.isfinite(d_lvr_total_v) & np.isfinite(d_fee_value_total_v) & (d_fee_value_total_v > eps)
-    lvr_over_fees[mask_fees] = d_lvr_total_v[mask_fees] / d_fee_value_total_v[mask_fees]
+    # Use only windows with positive fee-value sum; fee value is marked-to-market and can drop when m_t falls.
+    mask_fees = np.isfinite(d_lvr_sum_v) & np.isfinite(d_fee_sum_v) & (d_fee_sum_v > eps)
+    lvr_over_fees[mask_fees] = d_lvr_sum_v[mask_fees] / d_fee_sum_v[mask_fees]
 
     fig8 = make_subplots(
         rows=2,
@@ -1529,10 +1556,10 @@ def plotting_results(
         horizontal_spacing=0.10,
         vertical_spacing=0.12,
         subplot_titles=(
-            "LVR / DEX notional (bps) — time series",
-            "LVR / Fees (ΔLVR/ΔFees) — time series",
-            "LVR / DEX notional (bps) — distribution",
-            "LVR / Fees (ΔLVR/ΔFees) — distribution",
+            f"LVR / DEX notional (bps) — {smooth_blocks}-block summed",
+            f"LVR / Fees (ΔLVR/ΔFees) — {smooth_blocks}-block summed",
+            f"LVR / DEX notional (bps) — {smooth_blocks}-block summed distribution",
+            f"LVR / Fees (ΔLVR/ΔFees) — {smooth_blocks}-block summed distribution",
         ),
     )
     fig8.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=1, col=1)
@@ -1541,10 +1568,10 @@ def plotting_results(
             x=steps_list,
             y=lvr_per_notional_bps,
             mode="lines",
-            name="LVR/notional (bps)",
+            name=f"LVR/notional (bps, sum_{smooth_blocks})",
             line=dict(width=1.6, color="#111827"),
             showlegend=False,
-            hovertemplate="t=%{x}<br>bps=%{y:.4g}<extra></extra>",
+            hovertemplate=f"t=%{{x}}<br>{smooth_blocks}-block bps=%{{y:.4g}}<extra></extra>",
         ),
         row=1,
         col=1,
@@ -1556,10 +1583,10 @@ def plotting_results(
             x=steps_list,
             y=lvr_over_fees,
             mode="lines",
-            name="LVR/fees",
+            name=f"LVR/fees (sum_{smooth_blocks})",
             line=dict(width=1.6, color="#111827"),
             showlegend=False,
-            hovertemplate="t=%{x}<br>ratio=%{y:.4g}<extra></extra>",
+            hovertemplate=f"t=%{{x}}<br>{smooth_blocks}-block ratio=%{{y:.4g}}<extra></extra>",
         ),
         row=1,
         col=2,
@@ -1596,7 +1623,7 @@ def plotting_results(
     fig8.update_yaxes(title_text="Count", type="log", row=2, col=2)
     fig8.update_layout(
         template="plotly_white",
-        title="Normalized LVR diagnostics (per-block)",
+        title=f"Normalized LVR diagnostics ({smooth_blocks}-block summed)",
         bargap=0.05,
     )
     _save_plotly("8_normalized_lvr", fig8)
@@ -1798,6 +1825,11 @@ def simulate(
     n_block_SR_ratio: int = 100,
     results_root: Optional[str | Path] = None,
     verbose: bool = True,
+    # === Live streaming hooks (webapp) ===
+    live_sink: Optional[Any] = None,
+    live_every: int = 25,
+    stop_event: Optional[Any] = None,
+    log_flush_every: int = 200,
 ) -> Dict[str, Any]:
 
     valid_fee_modes = {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma"}
@@ -1969,7 +2001,7 @@ def simulate(
         _vprint(f"[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
         sigma_for_ref = cex_sigma
     _vprint(f"[CONFIG] Initial fee f0: {initial_params.get('f0', 0.0005)*10000:.1f} bps")
-    _vprint(f"[CONFIG] LP passive share: {passive_share:.2%}, N_LP={N_LP}, P JIT={p_jit}\nSmart-Router target: {smart_trades_per_block:.2f} Noise trader target: {noise_trades_per_block:.2f}\n Narrow LP mints/block: {narrow_mints_per_block:.2f} Passive LP mints/block: {passive_mints_per_block:.2f} Passive LP burns/block: {passive_burns_per_block:.2f}\n")
+    _vprint(f"[CONFIG] LP passive share: {passive_share:.2%}, N_LP={N_LP}, P JIT={p_jit}\nSmart-Router target: {smart_trades_per_block:.2f} Noise trader target: {noise_trades_per_block:.2f}\nNarrow LP mints/block: {narrow_mints_per_block:.2f} Passive LP mints/block: {passive_mints_per_block:.2f} Passive LP burns/block: {passive_burns_per_block:.2f}\n")
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
@@ -2336,6 +2368,15 @@ def simulate(
         verbose_log_path_str = str(verbose_log_path)
 
         verbose_log = open(verbose_log_path_str, "a")
+        # Inform an optional live sink where the log file is (so it can be tailed).
+        if live_sink is not None:
+            try:
+                _set_log_path = getattr(live_sink, "set_log_path", None)
+                if callable(_set_log_path):
+                    _set_log_path(verbose_log_path_str)
+            except Exception:
+                # Live UI hooks must never break the simulation.
+                pass
 
         def buffer_log(msg: str) -> None:
             """Accumulate log lines before flushing to disk."""
@@ -3087,7 +3128,20 @@ def simulate(
     # ------------------ Main loop ------------------
     # tqdm is convenient for interactive runs but adds overhead and emits output
     # even when `verbose=False`; disable it in that case.
+    stopped_early = False
     for t in tqdm(range(T), desc="Simulating ABM", unit=" step", disable=not verbose):
+        # Allow external callers (e.g., a web UI) to request early termination.
+        if stop_event is not None:
+            try:
+                is_set = getattr(stop_event, "is_set", None)
+                if callable(is_set) and bool(is_set()):
+                    stopped_early = True
+                    buffer_log(f"[t={t:03d}] STOP requested; terminating early.\n")
+                    break
+            except Exception:
+                # If stop_event is not a multiprocessing Event, ignore.
+                pass
+
         agent_S_ref = validated_S
         agent_tick_ref = validated_tick
         cex_ref_for_agents = validated_cex
@@ -3571,7 +3625,6 @@ def simulate(
                         sb=sb,
                         amt0_init=float(amt0),
                         amt1_init=float(amt1),
-                        hodl0_value_y=float(amt0) * cex_ref_for_agents + float(amt1),
                     )
                     # Treat JIT as flash-funded: allow token wallets to go negative.
                     jiter_agent.wallet_x = float(getattr(jiter_agent, "wallet_x", 0.0)) - float(amt0)
@@ -4453,6 +4506,52 @@ def simulate(
         )
         buffer_log(log_line + "\n")
 
+        # Optional periodic flushing so logs become visible while the simulation is still running.
+        if not light_mode and verbose_log is not None:
+            try:
+                flush_every = int(log_flush_every)
+            except (TypeError, ValueError):
+                flush_every = 0
+            if flush_every > 0 and (t % flush_every == 0):
+                flush_log_buffer()
+                try:
+                    verbose_log.flush()
+                except Exception:
+                    pass
+
+        # Stream a compact row of metrics for live dashboards (duck-typed sink).
+        if live_sink is not None:
+            try:
+                live_every_i = int(live_every)
+            except (TypeError, ValueError):
+                live_every_i = 0
+            if live_every_i > 0 and (t % live_every_i == 0):
+                _record_step = getattr(live_sink, "record_step", None)
+                if callable(_record_step):
+                    try:
+                        _record_step(
+                            dict(
+                                t=int(t),
+                                dex_price=float(pool.price),
+                                cex_price=float(ref.m),
+                                band_lo=float(band_lo_target[-1]) if band_lo_target else None,
+                                band_hi=float(band_hi_target[-1]) if band_hi_target else None,
+                                sr_pnl_step=float(sr_acc.pnl),
+                                noise_pnl_step=float(noise_acc.pnl),
+                                arb_pnl_step=float(arb_pnl_this),
+                                lp_pnl_active=float(lp_total_active),
+                                lp_pnl_passive=float(lp_total_passive),
+                                jiter_pnl=float(jiter_pnl_now),
+                                fee=float(pool.f),
+                                fee_sigma=float(fee_sigma_series[-1]) if fee_sigma_series else None,
+                                fee_basis_ticks=float(fee_basis_ticks_series[-1]) if fee_basis_ticks_series else None,
+                                fee_signal=float(fee_signal_series[-1]) if fee_signal_series else None,
+                            )
+                        )
+                    except Exception:
+                        pass
+        # --- end live hooks ---
+
         if liquidity_for_gif:
             liq_history.append(dict(pool.liquidity_net))
         tick_history.append(pool.tick)
@@ -4526,6 +4625,8 @@ def simulate(
             original_text = verbose_path.read_text()
         except FileNotFoundError:
             original_text = ""
+        if stopped_early:
+            summary_lines.insert(1, "stopped_early = True")
         verbose_path.write_text("\n".join(summary_lines) + original_text)
 
     if light_mode:

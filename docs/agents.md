@@ -22,7 +22,7 @@ The most important “global semantics” to understand before reading any indiv
   - `Y` / token1: “USDC-like”
 - Prices:
   - `m = ref.m`: CEX mid price in `Y per X`
-  - `S = pool.S`: DEX sqrt-price, so `P = pool.price = S²` is also `Y per X`
+  - `S = pool.S`: DEX sqrt-price, so $P = S^2$ (i.e., `P = pool.price`) is also `Y per X`
 - Fees:
   - `f = pool.f`: taker fee
   - `r = pool.r = 1 - f`: fee multiplier used in quotes/swaps (fee-on-input)
@@ -114,13 +114,15 @@ The mempool is a Python list of dictionaries `mempool_orders`. These are the ord
   - The arb target uses the **validated** CEX snapshot `arb_ref_m = cex_ref_for_agents` (end of previous block), not the intra-block diffused `ref.m`.
   - The arb intent is inserted once per block and executed **first** in the mempool replay.
 - **No-arb band** (as implemented):
-  - Let taker fee `f_t = pool.f`, `r_t = 1 - f_t`, and `flash_loan_mult = 1 + flash_loan_fee`.
-  - The arb band is constructed from the snapshot `m_ref = cex_ref_for_agents` as:
-    $$
-      P^{\min} = \frac{m_{\text{ref}}\,r_t}{1+\phi},\qquad
-      P^{\max} = \frac{m_{\text{ref}}(1+\phi)}{r_t}.
-    $$
-  - A tiny tolerance is used around the band (`1e-9`) to avoid noisy flip-flopping.
+  Let taker fee `f_t = pool.f`, `r_t = 1 - f_t`, and `flash_loan_mult = 1 + flash_loan_fee`.
+  The arb band is constructed from the snapshot `m_ref = cex_ref_for_agents` as:
+
+  $$
+  P^{\min} = \frac{m_{\text{ref}}\,r_t}{1+\phi},\qquad
+  P^{\max} = \frac{m_{\text{ref}}(1+\phi)}{r_t}.
+  $$
+
+  A tiny tolerance is used around the band (`1e-9`) to avoid noisy flip-flopping.
 - **Profitability filter (pre-trade)**:
   - The arb **previews** the full path on a cloned pool and computes an *expected* net profit that includes flash funding.
   - The arb is skipped if the preview direction is `None` or if `expected_profit <= 0`.
@@ -156,7 +158,7 @@ Both trader types share the same size distribution and micro-step arrival proces
   - `n_smart ~ Poisson(smart_trades_per_block / block_time)`
   - `n_noise ~ Poisson(noise_trades_per_block / block_time)`
 - **Size** (token1 notional):
-  - `Y_notional ~ exp(N(trader_mean, trader_sigma²))`
+  - $Y_{\text{notional}} \sim \exp\!\bigl(\mathcal{N}(\mu, \sigma^2)\bigr)$, with $\mu = \texttt{trader\_mean}$ and $\sigma = \texttt{trader\_sigma}$
 - **Direction**:
   - Randomly chosen each intent: `side ∈ {X_to_Y, Y_to_X}`
 
@@ -188,7 +190,7 @@ Both trader types share the same size distribution and micro-step arrival proces
 - **Execution-time slippage gate (implemented)**:
   - At mempool replay, the engine re-quotes the live pool and **skips** if `final_quote <= min_output` (note the inclusive `<=`).
   - `min_output` is computed at submission from a *baseline* that uses:
-    - the **validated DEX snapshot price** `agent_S_ref²`, and
+    - the **validated DEX snapshot price** `agent_S_ref^2` (i.e., $S_{\text{ref}}^2$), and
     - the **current pool fee** via `pool.r`.
     - Baseline for `X_to_Y`: `dx * pool.r * (agent_S_ref^2)`.
     - Baseline for `Y_to_X`: `(dy * pool.r) / (agent_S_ref^2)`.
@@ -213,7 +215,7 @@ Both trader types share the same size distribution and micro-step arrival proces
 ## Liquidity Providers (strategic passive + active narrow)
 - LP objects: `LPAgent`, `Position`; management logic in `run.py` via mempool intents `lp_mint`, `lp_burn`, `lp_recenter`.
 - **Scheduling / eligibility**:
-  - Each non-JIT LP has a review clock (`next_review`) drawn from a geometric distribution with mean `tau`. Only “due” LPs can act.
+  - Each non-JIT LP has a review clock (`next_review`) drawn from a geometric distribution with mean $\tau$. Only “due” LPs can act.
   - After burns, LPs enter a cooldown (random 3–8 blocks) during which they are not selected as “due” (and therefore will not schedule new actions). Cooldown is enforced block-to-block; it does not retroactively cancel already-enqueued intents in the current mempool.
   - Block-level Poisson targets schedule actions among eligible LPs:
     - `narrow_mints_per_block`, `passive_mints_per_block`, `passive_burns_per_block`.
@@ -221,7 +223,7 @@ Both trader types share the same size distribution and micro-step arrival proces
   - **Active narrow** (`is_active_narrow=True`, `is_passive=False`): can TP/SL burn and recenter; uses the dynamic `w_ticks` width signal for new mints and recenters.
   - **Passive** (`is_passive=True`): does not TP/SL burn or recenter; can be randomly burned (`passive_burns_per_block`) and can mint with a passive width rule.
   - **Seed/background LPs** (`is_seed=True`): created by `bootstrap_initial_binomial_hill_sharded(...)` to provide initial liquidity; excluded from cohort PnL/wealth aggregates but otherwise behave like passive LPs in scheduling.
-- **Initialization (implemented)**:
+- **Initialization**:
   - **Active vs passive composition**:
     - The simulation assigns *exactly* `round((1 - passive_lp_share) * N_LP)` LPs as “active narrow” by shuffling LP indices once (seeded RNG) and taking the first `target_active`.
     - The remaining LPs are marked passive.
@@ -293,31 +295,35 @@ Both trader types share the same size distribution and micro-step arrival proces
 ## Narrow-LP width signal (implemented)
 This is the signal used for **new narrow mints** and **recenters**.
 
-- The engine updates an EWMA of **absolute** CEX log-returns once per block:
+The engine updates an EWMA of **absolute** CEX log-returns once per block:
 
-  $$
-  v_t = \left|\log m_t - \log m_{t-1}\right|,\qquad D_t = \text{EWMA}(v_t;\, \tau_{\text{hl}})
-  $$
-  where $\tau_{\text{hl}} = \texttt{basis\_half\_life}$ is the half-life parameter.
-- Convert to “ticks” units using `TICK_LN = log(1.0001)`:
+$$
+v_t = \left|\log m_t - \log m_{t-1}\right|,\qquad D_t = \text{EWMA}(v_t;\, \tau_{\text{hl}})
+$$
+where $\tau_{\text{hl}} = \texttt{basis\_half\_life}$ is the half-life parameter.
 
-  $$
-  \sigma^{\text{ticks}}_t = D_t / \log(1.0001)
-  $$
-- Add mean-zero binomial noise (in tick units, snapped to spacing):
+Convert to “ticks” units using `TICK_LN = log(1.0001)`:
 
-  $$
-  K_t \sim \text{Binomial}(n_b, p_b),\quad
-  \varepsilon_t = (K_t - n_b p_b)\cdot \Delta_{\text{tick}}
-  $$
-  where $n_b = \texttt{binom\_n}$, $p_b = \texttt{binom\_p}$, and $\Delta_{\text{tick}} = \texttt{tick\_spacing}$.
-- Width before snapping:
+$$
+\sigma^{\text{ticks}}_t = D_t / \log(1.0001)
+$$
 
-  $$
-  w^{\text{raw}}_t = w_{\min} + s \cdot \sigma^{\text{ticks}}_t + \varepsilon_t
-  $$
-  where $s = \texttt{slope\_s}$ is the volatility-to-width scaling factor.
-- Then the code snaps to the tick grid and clamps to `[w_min_ticks, w_max_ticks]` in *band units* (multiples of `tick_spacing`).
+Add mean-zero binomial noise (in tick units, snapped to spacing):
+
+$$
+K_t \sim \text{Binomial}(n_b, p_b),\quad
+\varepsilon_t = (K_t - n_b p_b)\cdot \Delta_{\text{tick}}
+$$
+where $n_b = \texttt{binom\_n}$, $p_b = \texttt{binom\_p}$, and $\Delta_{\text{tick}} = \texttt{tick\_spacing}$.
+
+Width before snapping:
+
+$$
+w^{\text{raw}}_t = w_{\min} + s \cdot \sigma^{\text{ticks}}_t + \varepsilon_t
+$$
+where $s = \texttt{slope\_s}$ is the volatility-to-width scaling factor.
+
+Then the code snaps to the tick grid and clamps to `[w_min_ticks, w_max_ticks]` in *band units* (multiples of `tick_spacing`).
 
 ---
 

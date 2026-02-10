@@ -132,7 +132,7 @@ class ReferenceMarket:
     mu: float           # drift (per step) of log-returns
     sigma: float        # vol (per step) of log-returns
     kappa: float        # impact scale (price units per A^(1+xi))
-    xi: float = 0.0     # impact exponent (xi = 0 => linear in |Δa|)
+    xi: float = 0.5     # impact exponent (xi = 1 => linear in |Δa|)
     sigma_mode: str = "static"   # "static" | "regime" | "noisy_sine" | "heston"
     sigma_low: Optional[float] = None
     sigma_high: Optional[float] = None
@@ -351,7 +351,7 @@ class ReferenceMarket:
         Apply the permanent impact component without diffusion. Returns the impact used.
         """
         impact = self.kappa * math.copysign(
-            abs(delta_a_cex_signed) ** (1.0 + self.xi),
+            abs(delta_a_cex_signed) ** (self.xi),
             delta_a_cex_signed,
         )
         self.m = max(1e-12, self.m + impact)

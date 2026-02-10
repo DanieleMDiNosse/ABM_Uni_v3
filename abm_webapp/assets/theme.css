@@ -1,0 +1,87 @@
+:root {
+  --bg: #0b1220;
+  --panel: #111827;
+  --panel-2: #0f172a;
+  --border: #334155;
+  --text: #e5e7eb;
+  --muted: #9ca3af;
+  --blue: #2563eb;
+  --red: #b91c1c;
+  --gray: #6b7280;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  margin: 0;
+}
+
+textarea,
+input {
+  background-color: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+}
+
+button {
+  background-color: var(--blue);
+  color: white;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+button#stop-btn {
+  background-color: var(--red);
+}
+
+button#reset-btn {
+  background-color: var(--gray);
+}
+
+button:hover {
+  filter: brightness(1.05);
+}
+
+/* Dropdown (react-select) */
+.Select-control {
+  background-color: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.Select-menu-outer {
+  background-color: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.Select-value-label,
+.Select-placeholder,
+.Select-input,
+.Select-arrow-zone {
+  color: var(--text) !important;
+}
+
+.VirtualizedSelectOption {
+  background-color: var(--panel) !important;
+  color: var(--text) !important;
+}
+
+.VirtualizedSelectFocusedOption {
+  background-color: var(--panel-2) !important;
+}
+
+/* Tabs */
+.tab {
+  background-color: var(--panel) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.tab--selected {
+  background-color: var(--panel-2) !important;
+  border-bottom: 2px solid var(--blue) !important;
+}
+

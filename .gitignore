@@ -183,6 +183,7 @@ cython_debug/
 # folder
 abm_results/html/*
 abm_results/png/*
+abm_results/web_runs/
 animation_frames/*
 
 # personal notebook

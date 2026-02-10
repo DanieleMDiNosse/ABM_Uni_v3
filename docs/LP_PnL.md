@@ -1,6 +1,6 @@
 ---
 title: LP PnL
-nav_order: 3
+nav_order: 5
 ---
 
 # PnL Measurement for Uniswap v3 Liquidity Providers
