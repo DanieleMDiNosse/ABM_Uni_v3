@@ -5,13 +5,15 @@ nav_order: 9
 
 # Live simulation webapp (single user)
 
-This repository now includes a small Dash webapp that can run `run.simulate()` in a separate process and stream:
+This repository includes a Dash webapp that runs `run.simulate()` in a separate process and streams live diagnostics:
 
-- CEX + DEX prices with the no-arbitrage band
-- PnL per block
-- Cumulative PnL
-- Fee controller signal + fee distribution
-- A live tail of the simulation log file
+- CEX + DEX prices with no-arbitrage fee band and return distributions
+- Per-block and cumulative PnL panels for smart/noise/arb/LP/Jiter cohorts
+- Fee controller telemetry (signal alignment + fee distribution)
+- LP decomposition (hedged vs unhedged), fee value, and cumulative LVR
+- Normalized LVR diagnostics from streamed per-step deltas
+- Execution activity and smart-router DEX routing-share analytics
+- Live tail of the simulation log file
 
 ## Install
 

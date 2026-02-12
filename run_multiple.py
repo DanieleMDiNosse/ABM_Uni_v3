@@ -405,6 +405,7 @@ def parse_args() -> argparse.Namespace:
     Examples:
         >>> args = parse_args()
     """
+    valid_fee_modes = ("static", "toxicity", "volatility_cex", "volatility_dex")
     p = argparse.ArgumentParser(description="Run N seeds and plot mean±std PnL bands.")
     p.add_argument("--config", required=True, type=Path, help="Path to the YAML scenario config. Required.")
     p.add_argument("--runs", type=int, default=10, help="Number of runs/seeds. Default is 10.")
@@ -434,6 +435,16 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=2.0,
         help="Shaded band = ±mult*std. Default 2.0 (±2σ).",
+    )
+    p.add_argument(
+        "--fee-modes",
+        nargs="+",
+        default=list(valid_fee_modes),
+        choices=list(valid_fee_modes),
+        help=(
+            "Fee modes to run. Provide one or more values. "
+            "Default runs all supported modes."
+        ),
     )
     return p.parse_args()
 
@@ -468,7 +479,7 @@ def main() -> None:
     _, base_params = load_simulation_parameters(config_path, simulate_func=simulate)
     base_params = dict(base_params)
 
-    fee_modes = ["static", "toxicity", "volatility_cex", "volatility_dex"]
+    fee_modes = [str(mode).lower() for mode in args.fee_modes]
 
     scenario_root = scenario_output_root(config_path)
     out_root = scenario_root / "multi_runs"
@@ -678,111 +689,193 @@ def main() -> None:
         html_path = html_dir / f"{base_name}_{os.getpid()}.html"
         save_plotly_figure(fig, png_path, html_path, source="run_multiple")
 
-        fee_values = _concat_series(results, "fee_series")
         sr_share_values = _concat_series(results, "smart_router_dex_share_series")
-
-        dist_fig = make_subplots(
-            rows=1,
-            cols=2,
-            subplot_titles=(
-                f"Fee distribution",
-                f"Smart-router DEX share distribution",
-            ),
-        )
-        dist_fig.add_trace(
-            go.Histogram(
-                x=fee_values,
-                name="Fee",
-                marker=dict(color="#1f77b4"),
-                opacity=0.85,
-                showlegend=False,
-            ),
-            row=1,
-            col=1,
-        )
-        dist_fig.add_trace(
-            go.Histogram(
-                x=sr_share_values,
-                name="Smart-router DEX share",
-                marker=dict(color="#ff7f0e"),
-                opacity=0.85,
-                showlegend=False,
-            ),
-            row=1,
-            col=2,
-        )
-        # Mark mean DEX share for quick reference.
-        sr_mean = np.mean(sr_share_values[np.isfinite(sr_share_values)]) if sr_share_values.size else None
-        if sr_mean is not None and np.isfinite(sr_mean):
-            dist_fig.add_shape(
-                type="line",
-                x0=float(sr_mean),
-                x1=float(sr_mean),
-                y0=0,
-                y1=1,
-                xref="x2",
-                yref="y2 domain",
-                line=dict(color="firebrick", width=2, dash="dash"),
+        if str(fee_mode).lower() == "static":
+            dist_fig = make_subplots(
+                rows=1,
+                cols=1,
+                subplot_titles=("Smart-router DEX share distribution",),
+            )
+            dist_fig.add_trace(
+                go.Histogram(
+                    x=sr_share_values,
+                    name="Smart-router DEX share",
+                    marker=dict(color="#ff7f0e"),
+                    opacity=0.85,
+                    showlegend=False,
+                ),
+                row=1,
+                col=1,
             )
 
-        _add_quartile_legend_traces(
-            dist_fig,
-            values=fee_values,
-            label_prefix="Fee",
-            color="#1f77b4",
-            row=1,
-            col=1,
-        )
-        _add_quartile_legend_traces(
-            dist_fig,
-            values=sr_share_values,
-            label_prefix="SR DEX share",
-            color="#ff7f0e",
-            row=1,
-            col=2,
-        )
-
-        if fee_values.size == 0:
-            dist_fig.add_annotation(
-                text="No fee data",
-                showarrow=False,
-                x=0.5,
-                y=0.5,
-                xref="x1 domain",
-                yref="y1 domain",
+            # Mark mean DEX share for quick reference.
+            sr_mean = (
+                np.mean(sr_share_values[np.isfinite(sr_share_values)])
+                if sr_share_values.size
+                else None
             )
-        if sr_share_values.size == 0:
-            dist_fig.add_annotation(
-                text="No smart-router DEX share data",
-                showarrow=False,
-                x=0.5,
-                y=0.5,
-                xref="x2 domain",
-                yref="y2 domain",
+            if sr_mean is not None and np.isfinite(sr_mean):
+                dist_fig.add_shape(
+                    type="line",
+                    x0=float(sr_mean),
+                    x1=float(sr_mean),
+                    y0=0,
+                    y1=1,
+                    # For the first (and only) subplot, Plotly uses "x"/"y"
+                    # (not "x1"/"y1") for axis references.
+                    xref="x",
+                    yref="y domain",
+                    line=dict(color="firebrick", width=2, dash="dash"),
+                )
+
+            _add_quartile_legend_traces(
+                dist_fig,
+                values=sr_share_values,
+                label_prefix="SR DEX share",
+                color="#ff7f0e",
+                row=1,
+                col=1,
             )
 
-        dist_fig.update_layout(
-            template="plotly_white",
-            title=dict(
-                text=f"Fee and smart-router DEX share ({fee_mode})",
-                y=0.98,
-                yanchor="top",
-            ),
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=1.15,
-                xanchor="center",
-                x=0.5,
+            if sr_share_values.size == 0:
+                dist_fig.add_annotation(
+                    text="No smart-router DEX share data",
+                    showarrow=False,
+                    x=0.5,
+                    y=0.5,
+                    xref="x domain",
+                    yref="y domain",
+                )
+
+            dist_fig.update_layout(
+                template="plotly_white",
+                title=dict(
+                    text=f"Smart-router DEX share ({fee_mode})",
+                    y=0.98,
+                    yanchor="top",
+                ),
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=1.15,
+                    xanchor="center",
+                    x=0.5,
+                    font=dict(size=18, color="black"),
+                ),
                 font=dict(size=18, color="black"),
-            ),
-            font=dict(size=18, color="black"),
-            margin=dict(t=180, b=80),
-        )
-        dist_fig.update_xaxes(title_text="Fee", row=1, col=1)
-        dist_fig.update_xaxes(title_text="DEX share", row=1, col=2)
-        dist_fig.update_yaxes(title_text="Count", row=1, col=1)
-        dist_fig.update_yaxes(title_text="Count", row=1, col=2)
+                margin=dict(t=180, b=80),
+            )
+            dist_fig.update_xaxes(title_text="DEX share", row=1, col=1)
+            dist_fig.update_yaxes(title_text="Count", row=1, col=1)
+        else:
+            fee_values = _concat_series(results, "fee_series")
+
+            dist_fig = make_subplots(
+                rows=1,
+                cols=2,
+                subplot_titles=(
+                    "Fee distribution",
+                    "Smart-router DEX share distribution",
+                ),
+            )
+            dist_fig.add_trace(
+                go.Histogram(
+                    x=fee_values,
+                    name="Fee",
+                    marker=dict(color="#1f77b4"),
+                    opacity=0.85,
+                    showlegend=False,
+                ),
+                row=1,
+                col=1,
+            )
+            dist_fig.add_trace(
+                go.Histogram(
+                    x=sr_share_values,
+                    name="Smart-router DEX share",
+                    marker=dict(color="#ff7f0e"),
+                    opacity=0.85,
+                    showlegend=False,
+                ),
+                row=1,
+                col=2,
+            )
+            # Mark mean DEX share for quick reference.
+            sr_mean = (
+                np.mean(sr_share_values[np.isfinite(sr_share_values)])
+                if sr_share_values.size
+                else None
+            )
+            if sr_mean is not None and np.isfinite(sr_mean):
+                dist_fig.add_shape(
+                    type="line",
+                    x0=float(sr_mean),
+                    x1=float(sr_mean),
+                    y0=0,
+                    y1=1,
+                    xref="x2",
+                    yref="y2 domain",
+                    line=dict(color="firebrick", width=2, dash="dash"),
+                )
+
+            _add_quartile_legend_traces(
+                dist_fig,
+                values=fee_values,
+                label_prefix="Fee",
+                color="#1f77b4",
+                row=1,
+                col=1,
+            )
+            _add_quartile_legend_traces(
+                dist_fig,
+                values=sr_share_values,
+                label_prefix="SR DEX share",
+                color="#ff7f0e",
+                row=1,
+                col=2,
+            )
+
+            if fee_values.size == 0:
+                dist_fig.add_annotation(
+                    text="No fee data",
+                    showarrow=False,
+                    x=0.5,
+                    y=0.5,
+                    xref="x1 domain",
+                    yref="y1 domain",
+                )
+            if sr_share_values.size == 0:
+                dist_fig.add_annotation(
+                    text="No smart-router DEX share data",
+                    showarrow=False,
+                    x=0.5,
+                    y=0.5,
+                    xref="x2 domain",
+                    yref="y2 domain",
+                )
+
+            dist_fig.update_layout(
+                template="plotly_white",
+                title=dict(
+                    text=f"Fee and smart-router DEX share ({fee_mode})",
+                    y=0.98,
+                    yanchor="top",
+                ),
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=1.15,
+                    xanchor="center",
+                    x=0.5,
+                    font=dict(size=18, color="black"),
+                ),
+                font=dict(size=18, color="black"),
+                margin=dict(t=180, b=80),
+            )
+            dist_fig.update_xaxes(title_text="Fee", row=1, col=1)
+            dist_fig.update_xaxes(title_text="DEX share", row=1, col=2)
+            dist_fig.update_yaxes(title_text="Count", row=1, col=1)
+            dist_fig.update_yaxes(title_text="Count", row=1, col=2)
 
         dist_base_name = (
             f"fee_{fee_mode}_{stem}_runs{args.runs}_LPpassiveshare{lp_share_val}_pjit{p_jit_val}"

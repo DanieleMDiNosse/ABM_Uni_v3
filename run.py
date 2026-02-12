@@ -8,7 +8,6 @@ import argparse
 import math
 import os
 import random
-import inspect
 from datetime import datetime
 from tqdm import tqdm
 from pathlib import Path
@@ -79,6 +78,8 @@ def plotting_results(
     lp_unhedged_active_series: np.ndarray,
     lp_unhedged_passive_series: np.ndarray,
     lp_fee_value_total_series: np.ndarray,
+    lp_fees0_earned_total_series: np.ndarray,
+    lp_fees1_earned_total_series: np.ndarray,
     lp_lvr_total_series: np.ndarray,
     dex_notional_y_series: np.ndarray,
     fee_series: List[float],
@@ -148,8 +149,8 @@ def plotting_results(
         Block-level PnL/wealth series (arrays) produced by the simulation.
     lp_pnl_active_series, lp_pnl_passive_series, lp_unhedged_active_series, lp_unhedged_passive_series
         LP PnL series (arrays) produced by the simulation.
-    lp_fee_value_total_series, lp_lvr_total_series, dex_notional_y_series
-        LP fee value, LP LVR (both cumulative, token1 value), and DEX notional (absolute token1 volume) per block.
+    lp_fee_value_total_series, lp_fees0_earned_total_series, lp_fees1_earned_total_series, lp_lvr_total_series, dex_notional_y_series
+        LP fee value (cumulative, marked-to-market), LP fee amounts earned (cumulative, token0/token1), LP LVR (cumulative, token1 value), and DEX notional (absolute token1 volume) per block.
     fee_series, fee_sigma_series, fee_basis_ticks_series, fee_signal_series, cex_sigma_series
         Fee controller diagnostic series (arrays/lists) produced by the simulation.
     arb_y_series, sr_y_series, noise_y_series
@@ -216,6 +217,8 @@ def plotting_results(
     ...     lp_unhedged_active_series=np.zeros(3),
     ...     lp_unhedged_passive_series=np.zeros(3),
     ...     lp_fee_value_total_series=np.zeros(3),
+    ...     lp_fees0_earned_total_series=np.zeros(3),
+    ...     lp_fees1_earned_total_series=np.zeros(3),
     ...     lp_lvr_total_series=np.zeros(3),
     ...     dex_notional_y_series=np.zeros(3),
     ...     fee_series=[0.0005, 0.0005, 0.0005],
@@ -1506,49 +1509,68 @@ def plotting_results(
     fig7.update_yaxes(title_text=secondary_label, secondary_y=True)
     _save_plotly("7_fee", fig7)
 
-    # ----- 8) Normalized LVR diagnostics (50-block smoothed) -----
-    # Rationale: per-block normalization can spike when denominators are tiny.
-    # We smooth both metrics with rolling sums over a fixed window:
-    #   1) 1e4 * sum_50(ΔLVR) / sum_50(DEX notional)
-    #   2) sum_50(ΔLVR) / sum_50(ΔFees)
-    # This keeps units unchanged while reducing denominator-noise artifacts.
+    # ----- 8) Normalized LVR diagnostics (rolling median + per-block) -----
+    # Plot both:
+    #   1) a trailing-window rolling median (stride = 1 block), and
+    #   2) the per-block metric.
+    #
+    # IMPORTANT: use a *flow-based* per-block LVR definition so the metric reflects only
+    # what happened *in the block* (no mark-to-market revaluation of previously earned
+    # token0 fees when m_t moves):
+    #   ΔF_flow,t = (Δfees0_earned,t) * m_t + (Δfees1_earned,t)
+    #   ΔLVR_t    = ΔF_flow,t - ΔPnL_hedged,t
     eps = 1e-18
     smooth_blocks = 50
-    d_lvr_total_v = np.diff(lp_lvr_total_series, prepend=0.0)[s0:]
-    d_fee_value_total_v = np.diff(lp_fee_value_total_series, prepend=0.0)[s0:]
+    d_fees0_earned_total_v = np.diff(lp_fees0_earned_total_series, prepend=0.0)[s0:]
+    d_fees1_earned_total_v = np.diff(lp_fees1_earned_total_series, prepend=0.0)[s0:]
+    fee_flow_value_y_v = d_fees0_earned_total_v * M_series_v + d_fees1_earned_total_v
+    # Total hedged PnL = active + passive (seed LPs are excluded from both cohorts).
+    pnl_active = np.asarray(lp_pnl_active_series, dtype=float)
+    pnl_passive = np.asarray(lp_pnl_passive_series, dtype=float)
+    n_pnl = min(int(pnl_active.size), int(pnl_passive.size))
+    pnl_total = pnl_active[:n_pnl] + pnl_passive[:n_pnl]
+    d_pnl_total_v = np.diff(pnl_total, prepend=0.0)[s0:]
+    d_lvr_total_v = fee_flow_value_y_v - d_pnl_total_v
 
-    def _rolling_sum_strict(values: np.ndarray, window: int) -> np.ndarray:
-        """Return trailing window sums where all points in-window are finite."""
+    def _rolling_median_strict(values: np.ndarray, window: int) -> np.ndarray:
+        """Return trailing window medians where all points in-window are finite."""
         if window <= 0:
             raise ValueError(f"window must be positive, got {window}")
-        if values.size == 0:
-            return np.array([], dtype=float)
-        kernel = np.ones(window, dtype=float)
-        finite_mask = np.isfinite(values)
-        values_safe = np.where(finite_mask, values, 0.0)
-        summed = np.convolve(values_safe, kernel, mode="full")[: values.size]
-        finite_count = np.convolve(finite_mask.astype(float), kernel, mode="full")[: values.size]
+        values = np.asarray(values, dtype=float)
         out = np.full(values.shape, np.nan, dtype=float)
-        full_window = finite_count >= float(window)
-        out[full_window] = summed[full_window]
+        if values.size < window:
+            return out
+        for i in range(window - 1, values.size):
+            window_vals = values[i - window + 1 : i + 1]
+            # if np.isfinite(window_vals).all():
+            out[i] = float(np.nanmedian(window_vals))
         return out
 
-    d_lvr_sum_v = _rolling_sum_strict(d_lvr_total_v, smooth_blocks)
-    d_fee_sum_v = _rolling_sum_strict(d_fee_value_total_v, smooth_blocks)
-    dex_notional_sum_v = _rolling_sum_strict(dex_notional_y_series_v, smooth_blocks)
-
-    lvr_per_notional_bps = np.full_like(d_lvr_total_v, np.nan, dtype=float)
-    mask_notional = (
-        np.isfinite(d_lvr_sum_v)
-        & np.isfinite(dex_notional_sum_v)
-        & (dex_notional_sum_v > eps)
+    # Per-block normalized metrics
+    lvr_per_notional_bps_block = np.full_like(d_lvr_total_v, np.nan, dtype=float)
+    mask_notional_block = (
+        np.isfinite(d_lvr_total_v)
+        & np.isfinite(dex_notional_y_series_v)
+        & (dex_notional_y_series_v > eps)
     )
-    lvr_per_notional_bps[mask_notional] = 1e4 * d_lvr_sum_v[mask_notional] / dex_notional_sum_v[mask_notional]
+    lvr_per_notional_bps_block[mask_notional_block] = (
+        1e4 * d_lvr_total_v[mask_notional_block] / dex_notional_y_series_v[mask_notional_block]
+    )
 
-    lvr_over_fees = np.full_like(d_lvr_total_v, np.nan, dtype=float)
-    # Use only windows with positive fee-value sum; fee value is marked-to-market and can drop when m_t falls.
-    mask_fees = np.isfinite(d_lvr_sum_v) & np.isfinite(d_fee_sum_v) & (d_fee_sum_v > eps)
-    lvr_over_fees[mask_fees] = d_lvr_sum_v[mask_fees] / d_fee_sum_v[mask_fees]
+    lvr_over_fee_flow_block = np.full_like(d_lvr_total_v, np.nan, dtype=float)
+    # Use earned fee-flow in token1 terms (token0 fees valued at m_t).
+    mask_fee_flow_block = (
+        np.isfinite(d_lvr_total_v)
+        & np.isfinite(fee_flow_value_y_v)
+        & (fee_flow_value_y_v > eps)
+    )
+    lvr_over_fee_flow_block[mask_fee_flow_block] = (
+        d_lvr_total_v[mask_fee_flow_block] / fee_flow_value_y_v[mask_fee_flow_block]
+    )
+
+    # Rolling medians of the per-block metrics (one value per block; trailing window).
+    lvr_per_notional_bps_med = _rolling_median_strict(lvr_per_notional_bps_block, smooth_blocks)
+    lvr_over_fee_flow_med = _rolling_median_strict(lvr_over_fee_flow_block, smooth_blocks)
 
     fig8 = make_subplots(
         rows=2,
@@ -1556,44 +1578,72 @@ def plotting_results(
         horizontal_spacing=0.10,
         vertical_spacing=0.12,
         subplot_titles=(
-            f"LVR / DEX notional (bps) — {smooth_blocks}-block summed",
-            f"LVR / Fees (ΔLVR/ΔFees) — {smooth_blocks}-block summed",
-            f"LVR / DEX notional (bps) — {smooth_blocks}-block summed distribution",
-            f"LVR / Fees (ΔLVR/ΔFees) — {smooth_blocks}-block summed distribution",
+            f"ΔLVR / DEX notional (bps) — {smooth_blocks}-block rolling median",
+            f"ΔLVR / Fee flow (ΔLVR/ΔF_flow) — {smooth_blocks}-block rolling median",
+            f"ΔLVR / DEX notional (bps) — {smooth_blocks}-block rolling median distribution",
+            f"ΔLVR / Fee flow (ΔLVR/ΔF_flow) — {smooth_blocks}-block rolling median distribution",
         ),
     )
     fig8.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=1, col=1)
     fig8.add_trace(
         go.Scatter(
             x=steps_list,
-            y=lvr_per_notional_bps,
+            y=lvr_per_notional_bps_med,
             mode="lines",
-            name=f"LVR/notional (bps, sum_{smooth_blocks})",
-            line=dict(width=1.6, color="#111827"),
+            name=f"ΔLVR/notional (bps, {smooth_blocks}-block median)",
+            line=dict(width=2.0, color="#111827"),
             showlegend=False,
-            hovertemplate=f"t=%{{x}}<br>{smooth_blocks}-block bps=%{{y:.4g}}<extra></extra>",
+            hovertemplate=f"t=%{{x}}<br>{smooth_blocks}-block median bps=%{{y:.4g}}<extra></extra>",
         ),
         row=1,
         col=1,
     )
+    # fig8.add_trace(
+    #     go.Scatter(
+    #         x=steps_list,
+    #         y=lvr_per_notional_bps_block,
+    #         mode="lines",
+    #         name="ΔLVR/notional (bps, per-block)",
+    #         line=dict(width=1.0, color="#9ca3af"),
+    #         opacity=0.45,
+    #         showlegend=False,
+    #         hovertemplate="t=%{x}<br>per-block bps=%{y:.4g}<extra></extra>",
+    #     ),
+    #     row=1,
+    #     col=1,
+    # )
     fig8.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=1, col=2)
     fig8.add_hline(y=1.0, line=dict(color="#6b7280", width=1, dash="dash"), row=1, col=2)
     fig8.add_trace(
         go.Scatter(
             x=steps_list,
-            y=lvr_over_fees,
+            y=lvr_over_fee_flow_med,
             mode="lines",
-            name=f"LVR/fees (sum_{smooth_blocks})",
-            line=dict(width=1.6, color="#111827"),
+            name=f"ΔLVR/fee flow ({smooth_blocks}-block median)",
+            line=dict(width=2.0, color="#111827"),
             showlegend=False,
-            hovertemplate=f"t=%{{x}}<br>{smooth_blocks}-block ratio=%{{y:.4g}}<extra></extra>",
+            hovertemplate=f"t=%{{x}}<br>{smooth_blocks}-block median ratio=%{{y:.4g}}<extra></extra>",
         ),
         row=1,
         col=2,
     )
+    # fig8.add_trace(
+    #     go.Scatter(
+    #         x=steps_list,
+    #         y=lvr_over_fee_flow_block,
+    #         mode="lines",
+    #         name="ΔLVR/fee flow (per-block)",
+    #         line=dict(width=1.0, color="#9ca3af"),
+    #         opacity=0.45,
+    #         showlegend=False,
+    #         hovertemplate="t=%{x}<br>per-block ratio=%{y:.4g}<extra></extra>",
+    #     ),
+    #     row=1,
+    #     col=2,
+    # )
     fig8.add_trace(
         go.Histogram(
-            x=_finite(lvr_per_notional_bps),
+            x=_finite(lvr_per_notional_bps_med),
             nbinsx=80,
             marker_color="#111827",
             opacity=0.85,
@@ -1604,7 +1654,7 @@ def plotting_results(
     )
     fig8.add_trace(
         go.Histogram(
-            x=_finite(lvr_over_fees),
+            x=_finite(lvr_over_fee_flow_med),
             nbinsx=80,
             marker_color="#111827",
             opacity=0.85,
@@ -1623,7 +1673,7 @@ def plotting_results(
     fig8.update_yaxes(title_text="Count", type="log", row=2, col=2)
     fig8.update_layout(
         template="plotly_white",
-        title=f"Normalized LVR diagnostics ({smooth_blocks}-block summed)",
+        title=f"Normalized LVR diagnostics ({smooth_blocks}-block rolling median)",
         bargap=0.05,
     )
     _save_plotly("8_normalized_lvr", fig8)
@@ -1642,9 +1692,6 @@ from utils import (
     EPS_PRICE_CHANGE,
     TICK_LN,
     clamp,
-    TITLE_FONT_SIZE,
-    LABEL_FONT_SIZE,
-    LEGEND_FONT_SIZE,
     make_liquidity_gif,
     load_simulation_parameters,
     scenario_output_root,
@@ -2743,15 +2790,6 @@ def simulate(
         if not math.isfinite(z) or z <= 0.0:
             return 0.0
         return min(1.0, z)
-    
-    # def _draw_wallet_utilization_factor() -> float:
-    #     """
-    #     Draw η in (0, 1] controlling wallet utilization for a mint attempt.
-
-    #     Paper spec: Z ~ LogNormal(mint_mu, mint_sigma), η = min(1, Z).
-    #     """
-    #     z = float(np.random.lognormal(mint_mu, mint_sigma))
-    #     return z / (1.0 + z)
 
     def _max_feasible_liquidity_from_cash(
         *,
@@ -4534,6 +4572,7 @@ def simulate(
                                 t=int(t),
                                 dex_price=float(pool.price),
                                 cex_price=float(ref.m),
+                                cex_sigma=float(ref.sigma),
                                 band_lo=float(band_lo_target[-1]) if band_lo_target else None,
                                 band_hi=float(band_hi_target[-1]) if band_hi_target else None,
                                 sr_pnl_step=float(sr_acc.pnl),
@@ -4541,7 +4580,20 @@ def simulate(
                                 arb_pnl_step=float(arb_pnl_this),
                                 lp_pnl_active=float(lp_total_active),
                                 lp_pnl_passive=float(lp_total_passive),
+                                lp_unhedged_active=float(lp_unhedged_active),
+                                lp_unhedged_passive=float(lp_unhedged_passive),
+                                lp_fee_value_total=float(lp_fee_value_total),
+                                lp_lvr_total=float(lp_lvr_total),
                                 jiter_pnl=float(jiter_pnl_now),
+                                dex_notional_y=float(dex_notional_y_this),
+                                d_lvr_total=float(delta_lvr_total),
+                                d_fee_value_total=float(delta_fee_value_total),
+                                trader_exec_count=int(_trader_execs),
+                                arb_exec_count=int(_arb_execs),
+                                sr_exec_count=int(sr_acc.execs),
+                                noise_exec_count=int(noise_acc.execs),
+                                sr_cex_exec_count=int(sr_cex_execs_this),
+                                sr_dex_exec_count=int(sr_dex_execs_this),
                                 fee=float(pool.f),
                                 fee_sigma=float(fee_sigma_series[-1]) if fee_sigma_series else None,
                                 fee_basis_ticks=float(fee_basis_ticks_series[-1]) if fee_basis_ticks_series else None,
@@ -4628,6 +4680,18 @@ def simulate(
         if stopped_early:
             summary_lines.insert(1, "stopped_early = True")
         verbose_path.write_text("\n".join(summary_lines) + original_text)
+
+    # Persist DEX price series for downstream analysis in each scenario folder.
+    output_data_dir = results_root_path / "output_data"
+    output_data_dir.mkdir(parents=True, exist_ok=True)
+    np.save(
+        output_data_dir / "dex_price_end_of_block.npy",
+        np.asarray(P_series, dtype=float),
+    )
+    np.save(
+        output_data_dir / "dex_price_intrablock.npy",
+        np.asarray(P_micro, dtype=float),
+    )
 
     if light_mode:
         sr_pnl_steps_arr = np.asarray(sr_pnl_steps, dtype=float)
@@ -4810,6 +4874,8 @@ def simulate(
             lp_unhedged_active_series=lp_unhedged_active_series,
             lp_unhedged_passive_series=lp_unhedged_passive_series,
             lp_fee_value_total_series=lp_fee_value_total_series,
+            lp_fees0_earned_total_series=lp_fees0_earned_total_series,
+            lp_fees1_earned_total_series=lp_fees1_earned_total_series,
             lp_lvr_total_series=lp_lvr_total_series,
             dex_notional_y_series=dex_notional_y_series,
             fee_series=fee_series,

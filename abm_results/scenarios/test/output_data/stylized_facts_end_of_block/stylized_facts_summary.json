@@ -1,0 +1,161 @@
+{
+  "input_price_path": "/home/danielemdn/Documents/repositories/ABM_Uni_v3/abm_results/scenarios/test/output_data/dex_price_end_of_block.npy",
+  "output_dir": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block",
+  "figures_dir": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures",
+  "report_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/stylized_facts_report.md",
+  "sample_size": 13000,
+  "missing_share": 0.0,
+  "horizons": [
+    1,
+    5,
+    10,
+    20
+  ],
+  "acf_max_lag": 120,
+  "leverage_max_lag": 30,
+  "horizon_summary": {
+    "1": {
+      "n_returns": 12999,
+      "mean": 3.5161534116509702e-06,
+      "std": 0.001443052804320981,
+      "skewness": -0.20219809851675652,
+      "kurtosis_excess": 34.71776937660683,
+      "acf_abs_lag1": 0.4399262465419837,
+      "acf_sq_lag1": 0.47989564934667583,
+      "leverage_lag1": -0.07882488073647508
+    },
+    "5": {
+      "n_returns": 2599,
+      "mean": 1.7342221872748046e-05,
+      "std": 0.0019219512047306988,
+      "skewness": -0.2506387820798927,
+      "kurtosis_excess": 13.342518970696474,
+      "acf_abs_lag1": 0.2969437295739673,
+      "acf_sq_lag1": 0.4241822750856562,
+      "leverage_lag1": -0.0966799363963147
+    },
+    "10": {
+      "n_returns": 1299,
+      "mean": 3.337288443767577e-05,
+      "std": 0.0022246942558342237,
+      "skewness": -0.5420357496544354,
+      "kurtosis_excess": 3.2276395929947235,
+      "acf_abs_lag1": 0.14937594271738708,
+      "acf_sq_lag1": 0.27167116629626864,
+      "leverage_lag1": -0.06596402922052098
+    },
+    "20": {
+      "n_returns": 649,
+      "mean": 6.734581105436844e-05,
+      "std": 0.002932298953274051,
+      "skewness": -0.36885081157942373,
+      "kurtosis_excess": 0.9458033477794041,
+      "acf_abs_lag1": 0.03882804428038863,
+      "acf_sq_lag1": 0.056088755315371365,
+      "leverage_lag1": -0.055869326063951924
+    }
+  },
+  "tail_metrics": {
+    "1": {
+      "n": 12999,
+      "kurtosis_excess": 34.71776937660683,
+      "tail_exceed_3sigma_share": 0.020693899530733133,
+      "iqr_outlier_share": 0.07115931994768829,
+      "hill_alpha_upper": {
+        "01pct": 2.8208004415761345,
+        "02pct": 1.989580951961858,
+        "05pct": 1.8110654219621094
+      },
+      "hill_alpha_lower": {
+        "01pct": 2.9884318675635817,
+        "02pct": 2.5324215759984603,
+        "05pct": 1.7907475507665536
+      }
+    },
+    "5": {
+      "n": 2599,
+      "kurtosis_excess": 13.342518970696474,
+      "tail_exceed_3sigma_share": 0.020007695267410544,
+      "iqr_outlier_share": 0.016160061562139283,
+      "hill_alpha_upper": {
+        "01pct": 2.582111521175328,
+        "02pct": 2.304373759839062,
+        "05pct": 2.280798262191407
+      },
+      "hill_alpha_lower": {
+        "01pct": 4.08727199501193,
+        "02pct": 3.5379551027401734,
+        "05pct": 2.6902909015970438
+      }
+    },
+    "10": {
+      "n": 1299,
+      "kurtosis_excess": 3.2276395929947235,
+      "tail_exceed_3sigma_share": 0.015396458814472672,
+      "iqr_outlier_share": 0.004618937644341801,
+      "hill_alpha_upper": {
+        "01pct": 2.947141694555488,
+        "02pct": 2.947141694555488,
+        "05pct": 2.9299055920586565
+      },
+      "hill_alpha_lower": {
+        "01pct": 5.465102032753929,
+        "02pct": 5.465102032753929,
+        "05pct": 4.806904979750969
+      }
+    },
+    "20": {
+      "n": 649,
+      "kurtosis_excess": 0.9458033477794041,
+      "tail_exceed_3sigma_share": 0.01386748844375963,
+      "iqr_outlier_share": 0.0,
+      "hill_alpha_upper": {
+        "01pct": 5.11213333224899,
+        "02pct": 5.11213333224899,
+        "05pct": 5.11213333224899
+      },
+      "hill_alpha_lower": {
+        "01pct": 3.4461801775919,
+        "02pct": 3.4461801775919,
+        "05pct": 3.4461801775919
+      }
+    }
+  },
+  "figures": [
+    {
+      "name": "fat_tails_qq_by_horizon",
+      "html_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/fat_tails_qq_by_horizon.html",
+      "png_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/fat_tails_qq_by_horizon.png",
+      "png_ok": false,
+      "png_error": "Timed out during Plotly PNG export"
+    },
+    {
+      "name": "volatility_clustering_acf_by_horizon",
+      "html_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/volatility_clustering_acf_by_horizon.html",
+      "png_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/volatility_clustering_acf_by_horizon.png",
+      "png_ok": false,
+      "png_error": "Timed out during Plotly PNG export"
+    },
+    {
+      "name": "leverage_lagged_correlation_by_horizon",
+      "html_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/leverage_lagged_correlation_by_horizon.html",
+      "png_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/leverage_lagged_correlation_by_horizon.png",
+      "png_ok": false,
+      "png_error": "Timed out during Plotly PNG export"
+    },
+    {
+      "name": "scaling_kde_logy_by_horizon",
+      "html_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/scaling_kde_logy_by_horizon.html",
+      "png_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/scaling_kde_logy_by_horizon.png",
+      "png_ok": false,
+      "png_error": "Timed out during Plotly PNG export"
+    },
+    {
+      "name": "return_acf_by_horizon",
+      "html_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/return_acf_by_horizon.html",
+      "png_path": "abm_results/scenarios/test/output_data/stylized_facts_end_of_block/figures/return_acf_by_horizon.png",
+      "png_ok": false,
+      "png_error": "Timed out during Plotly PNG export"
+    }
+  ]
+}
