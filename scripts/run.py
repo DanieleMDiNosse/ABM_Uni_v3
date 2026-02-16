@@ -1679,7 +1679,7 @@ def plotting_results(
     _save_plotly("8_normalized_lvr", fig8)
 
 # Import from new module structure
-from utils import (
+from core.utils import (
     build_empty_pool,
     bootstrap_initial_binomial_hill_sharded,
     minted_amounts_at_S,
@@ -1696,7 +1696,7 @@ from utils import (
     load_simulation_parameters,
     scenario_output_root,
 )
-from agents import (
+from core.agents import (
     LPAgent,
     Position,
     lp_token0_exposure,
@@ -1706,7 +1706,7 @@ from agents import (
 )
 from collections import defaultdict
 
-from uniswapv3_pool import V3Pool
+from core.uniswapv3_pool import V3Pool
 
 
 # =============================================================================

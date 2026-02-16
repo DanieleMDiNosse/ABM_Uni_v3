@@ -22,14 +22,14 @@ from typing import Any, Dict
 import numpy as np
 import pytest
 
-from utils import build_empty_pool, minted_amounts_at_S, ReferenceMarket
-from uniswapv3_pool import V3Pool
-from agents import (
+from core.utils import build_empty_pool, minted_amounts_at_S, ReferenceMarket
+from core.uniswapv3_pool import V3Pool
+from core.agents import (
     Position, LPAgent, RebalancerState,
     lp_token0_exposure, lp_wealth_y, lp_total_fee_earned_value_y,
     lp_total_position_value_y, lp_principal_value_y, lp_fee_value_y
 )
-from run import simulate, TraderStepAccumulator
+from scripts.run import simulate, TraderStepAccumulator
 
 
 # =============================================================================

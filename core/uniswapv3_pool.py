@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Tuple, Optional, Callable, List
 from bisect import bisect_right, bisect_left
 
-from utils import EPS_LIQ, EPS_BOUNDARY, EPS_LIQ2
+from core.utils import EPS_LIQ, EPS_BOUNDARY, EPS_LIQ2
 
 
 logger = logging.getLogger(__name__)

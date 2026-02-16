@@ -11,7 +11,7 @@ nav_order: 2
 
 Agent-Based Market (ABM) simulator for a Uniswap v3 style pool. The project focuses on **microstructure effects** such as block mempools, asynchronous LP management, dynamic fee schedules, MEV and realistic arbitrage/trader interactions.
 
-The implementation lives in `run.py` and is configured via YAML files. Example scenario configs in this repo live under `abm_results/scenarios/` (see for example `abm_results/scenarios/test.yml`). Per-scenario results, plots, and verbose logs are written under `abm_results/scenarios/<scenario_name>/`.
+The implementation lives in `scripts/run.py` and is configured via YAML files. Example scenario configs in this repo live under `abm_results/scenarios/` (see for example `abm_results/scenarios/test.yml`). Per-scenario results, plots, and verbose logs are written under `abm_results/scenarios/<scenario_name>/`.
 
 ---
 
@@ -29,7 +29,7 @@ The implementation lives in `run.py` and is configured via YAML files. Example s
   Fee moves are clipped by `fee_step_bps_min/max` and gated by `fee_cooldown`.
 - **Liquidity bootstrapping**: simulations always start from an evolved/sharded binomial hill that allocates `initial_total_L` across synthetic *seed* LPs (`is_seed=True`) that provide background liquidity and can optionally be plotted; these seed LPs are excluded from the strategic LP cohorts and PnL statistics.
 - **LP width rule**: narrow LPs size their ranges off an EWMA of `|log-return|` of the CEX mid (`ref.m`) with half-life `basis_half_life`, plus a configurable binomial noise term (`binom_n`, `binom_p`), then clamp to `[w_min_ticks, w_max_ticks]`.
-- **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (per block), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python run.py --config ...`).
+- **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (per block), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python -m scripts.run --config ...`).
 
 For the *detailed* and math-accurate description of each agent’s decision rules and execution logic, see:
 - **[Agent Behaviour Details](agents.md)**
@@ -37,7 +37,7 @@ For the *detailed* and math-accurate description of each agent’s decision rule
 ---
 
 ### Reference Market (CEX)
-- Implemented as `ReferenceMarket` in `utils.py`.
+- Implemented as `ReferenceMarket` in `core/utils.py`.
 - Modeled as a GBM over the CEX mid-price with drift `cex_mu` and volatility `σ_t`, plus a permanent impact term of the form
   `impact = kappa * sign(Δa) * |Δa|^{1+xi}` applied to the CEX price in token1 units per token0.
 - Volatility can be:
@@ -98,7 +98,7 @@ For the *detailed* and math-accurate description of each agent’s decision rule
 
 ## Simulation Flow
 1. **Initialization**:
-   - Parse CLI (`python run.py --config path/to/config.yml`).
+   - Parse CLI (`python -m scripts.run --config path/to/config.yml`).
    - Load scenario from YAML (see next section).
    - Seed RNGs, build empty pool, generate LP roster, bootstrap liquidity.
 2. **Per step (block)**:
@@ -192,22 +192,22 @@ For a key-by-key description of the telemetry returned by `simulate(...)` (price
 
 ## Running a Scenario
 ```bash
-python run.py --config abm_results/scenarios/test.yml
+python -m scripts.run --config abm_results/scenarios/test.yml
 ```
 
 Outputs:
 - `abm_results/scenarios/<scenario_name>/logs/<pid>_verbose_steps_<fee_mode>_<n>.txt`: human-readable log per step and mempool replay summaries (includes micro-time traces; omitted when `light_mode=True`).
 - `abm_results/scenarios/<scenario_name>/png/` & `abm_results/scenarios/<scenario_name>/html/`: figures summarizing prices, liquidity, agent PnLs (smart vs. noise vs. arb, hedged vs. unhedged LPs), fee path, and width signals. PNG export relies on Kaleido (needs Chrome); HTML files are always written.
 - Optional liquidity GIFs can be generated via `utils.make_liquidity_gif(...)` using the recorded `liq_history` and `tick_history` series.
-- JSON-like dict returned by `simulate` with all recorded series (see tail of `run.py` for exact keys, including wallet vs. wealth, fee signals, and the active CEX volatility/regime path). Micro-step traces are written to the verbose log but are not currently returned in the output dict.
+- JSON-like dict returned by `simulate` with all recorded series (see tail of `scripts/run.py` for exact keys, including wallet vs. wealth, fee signals, and the active CEX volatility/regime path). Micro-step traces are written to the verbose log but are not currently returned in the output dict.
 
 ---
 
 ## Batch Runners & Analysis Helpers
-- `run_multiple.py`: run a single scenario config over many seeds (parallel) and plot mean ± std bands for agent PnL series under `abm_results/scenarios/<scenario>/multi_runs/{html,png}/`.
-- `run_parameter_surface_nd_pnl_fee_dashboard.py`: ND parameter sweeps (cache-only) writing CSV + metadata under `abm_results/grid_search/dashboard_nd/data/`.
-- `build_parameter_surface_nd_pnl_fee_dashboard.py`: build the standalone HTML dashboard from the cached CSV under `abm_results/grid_search/dashboard_nd/html/`.
-- `sigma_calibration.py`: derive realistic per-second `cex_sigma` from Binance 1s ETH/USDC data (CSV/Parquet/pickle) and optionally persist the computed series.
-- `visualize_distributions.py`: generate and save figures for the stochastic components used by the simulator (Heston price/volatility paths, binomial-hill initial liquidity, binomial width noise, log-normal trader and LP mint-size distributions, and geometric LP review clocks), useful for validating input distributions and for documentation figures.
+- `scripts/run_multiple.py`: run a single scenario config over many seeds (parallel) and plot mean ± std bands for agent PnL series under `abm_results/scenarios/<scenario>/multi_runs/{html,png}/`.
+- `scripts/run_parameter_surface_nd_pnl_fee_dashboard.py`: ND parameter sweeps (cache-only) writing CSV + metadata under `abm_results/grid_search/dashboard_nd/data/`.
+- `scripts/build_parameter_surface_nd_pnl_fee_dashboard.py`: build the standalone HTML dashboard from the cached CSV under `abm_results/grid_search/dashboard_nd/html/`.
+- `scripts/sigma_calibration.py`: derive realistic per-second `cex_sigma` from Binance 1s ETH/USDC data (CSV/Parquet/pickle) and optionally persist the computed series.
+- `scripts/visualize_distributions.py`: generate and save figures for the stochastic components used by the simulator (Heston price/volatility paths, binomial-hill initial liquidity, binomial width noise, log-normal trader and LP mint-size distributions, and geometric LP review clocks), useful for validating input distributions and for documentation figures.
 
 For further questions or ideas, open an issue or start a discussion in this repository. Happy simulating!

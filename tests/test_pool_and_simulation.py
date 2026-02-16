@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 import pytest
 
-from run import simulate
+from scripts.run import simulate
 
 
 def _base_simulate_kwargs(tmp_path, **overrides: Any) -> Dict[str, Any]:

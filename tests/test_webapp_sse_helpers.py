@@ -68,10 +68,15 @@ def test_live_callback_uses_inputs_only_no_state() -> None:
 
 
 
-def test_run_update_counter_increments_only_on_change() -> None:
+def test_tier_render_tracking_detects_new_data() -> None:
     key = "unit-test-run"
-    webapp_app._clear_run_update_counter(key)
-    assert webapp_app._bump_run_update_counter(key, changed=False) == 0
-    assert webapp_app._bump_run_update_counter(key, changed=True) == 1
-    assert webapp_app._bump_run_update_counter(key, changed=False) == 1
-    assert webapp_app._bump_run_update_counter(key, changed=True) == 2
+    webapp_app._clear_tier_tracking(key)
+    # First call with version=1 should render (new data, no previous render)
+    assert webapp_app._should_render_tier(key, "medium", 1, min_interval_s=0.0) is True
+    # Same version again should NOT render (already rendered)
+    assert webapp_app._should_render_tier(key, "medium", 1, min_interval_s=0.0) is False
+    # New version should render
+    assert webapp_app._should_render_tier(key, "medium", 2, min_interval_s=0.0) is True
+    # force=True should always render even with same version
+    assert webapp_app._should_render_tier(key, "medium", 2, min_interval_s=0.0, force=True) is True
+    webapp_app._clear_tier_tracking(key)

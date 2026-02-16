@@ -21,9 +21,9 @@ from typing import Dict, Tuple
 import numpy as np
 import pytest
 
-from utils import build_empty_pool, minted_amounts_at_S, EPS_LIQ, EPS_BOUNDARY
-from uniswapv3_pool import V3Pool, BoundaryIndex
-from agents import Position
+from core.utils import build_empty_pool, minted_amounts_at_S, EPS_LIQ, EPS_BOUNDARY
+from core.uniswapv3_pool import V3Pool, BoundaryIndex
+from core.agents import Position
 
 
 # =============================================================================

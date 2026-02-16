@@ -5,7 +5,7 @@ nav_order: 8
 
 # Simulation Outputs (`simulate(...)`)
 
-This page documents the keys returned by `run.simulate(...)`.
+This page documents the keys returned by `scripts.run.simulate(...)`.
 
 ## Two output modes
 

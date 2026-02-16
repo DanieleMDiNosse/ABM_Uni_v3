@@ -13,7 +13,7 @@ from tqdm import tqdm
 import yaml
 import inspect
 
-from miscellaneous.numba_accel import _current_amounts_impl
+from core.numba_accel import _current_amounts_impl
 
 if TYPE_CHECKING:  # pragma: no cover
     from matplotlib.axes import Axes
@@ -386,7 +386,7 @@ def minted_amounts_at_S(L: float, sa: float, sb: float, S: float) -> Tuple[float
 
 def build_empty_pool():
     """Build an empty pool with no initial liquidity."""
-    from uniswapv3_pool import V3Pool
+    from core.uniswapv3_pool import V3Pool
     f = 0.003
     g = np.sqrt(1.0001)
     m0 = 2000.0
@@ -417,7 +417,7 @@ def bootstrap_initial_binomial_hill_sharded(
     Each seed LP has its own review clock; all have mintProb=0, is_active_narrow=False,
     and optionally behave as passive LPs (seed_is_passive=True).
     """
-    from agents import LPAgent, Position
+    from core.agents import LPAgent, Position
     assert num_seed_lps >= 1
     center_tick = pool._snap(pool.tick)
     S_entry = pool.S
@@ -631,7 +631,7 @@ def load_simulation_parameters(config_path: Path, simulate_func=None) -> Tuple[s
     labeling outputs; if omitted, the fee mode is used as the label.
     """
     if simulate_func is None:
-        from .run import simulate as simulate_func
+        from scripts.run import simulate as simulate_func
     
     if not config_path.exists():
         raise FileNotFoundError(f"Missing configuration file: {config_path}")

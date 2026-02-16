@@ -1,6 +1,6 @@
 import pytest
 
-from run_multiple import _resolve_pnl_specs
+from scripts.run_multiple import _resolve_pnl_specs
 
 
 def _pnl_keys(params):

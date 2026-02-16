@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 # Silence tqdm for cleaner profiling output
-import run as run_module
+from scripts import run as run_module
 def _silent_tqdm(iterable=None, **kwargs):
     if iterable is None:
         class DummyTqdm:

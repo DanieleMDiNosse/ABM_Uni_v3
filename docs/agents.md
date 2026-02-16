@@ -5,7 +5,7 @@ nav_order: 3
 
 # Agent Behaviour Details
 
-This page documents the *implemented* agent logic in `run.py`.
+This page documents the *implemented* agent logic in `scripts/run.py`.
 It is intentionally “code-first”: when in doubt, trust the implementation over any paper/spec.
 
 The most important “global semantics” to understand before reading any individual agent:
@@ -213,7 +213,7 @@ Both trader types share the same size distribution and micro-step arrival proces
 ---
 
 ## Liquidity Providers (strategic passive + active narrow)
-- LP objects: `LPAgent`, `Position`; management logic in `run.py` via mempool intents `lp_mint`, `lp_burn`, `lp_recenter`.
+- LP objects: `LPAgent`, `Position`; management logic in `scripts/run.py` via mempool intents `lp_mint`, `lp_burn`, `lp_recenter`.
 - **Scheduling / eligibility**:
   - Each non-JIT LP has a review clock (`next_review`) drawn from a geometric distribution with mean $\tau$. Only “due” LPs can act.
   - After burns, LPs enter a cooldown (random 3–8 blocks) during which they are not selected as “due” (and therefore will not schedule new actions). Cooldown is enforced block-to-block; it does not retroactively cancel already-enqueued intents in the current mempool.
@@ -351,7 +351,7 @@ At `jit_mint` execution time (i.e., after any earlier mempool orders have potent
 - Start from the current active tick band.
 - If `pool.S` is extremely close to the band boundary in the swap direction, shift one tick into the direction the swap will move (up for `Y_to_X`, down for `X_to_Y`). This prevents a near-zero denominator in the sizing formulas.
 
-### Mint size selection (`L_target`) — the procedure used in `run.py`
+### Mint size selection (`L_target`) — the procedure used in `scripts/run.py`
 All quantities below are evaluated at `jit_mint` execution time:
 - `S_now = pool.S`, `tick_now = pool.tick` (current DEX state)
 - `m_exec = ref.m` (current CEX price used to value principal/fees in token1)
@@ -468,7 +468,7 @@ $$
 
 ## Rebalancing benchmark (LVR bookkeeping) — how LP “hedged PnL” is computed
 
-This model computes loss-versus-rebalancing (LVR) by comparing each LP’s wealth to a *delta-hedged benchmark* tracked in `LPAgent.rebalancer` (`RebalancerState` in `agents.py`).
+This model computes loss-versus-rebalancing (LVR) by comparing each LP’s wealth to a *delta-hedged benchmark* tracked in `LPAgent.rebalancer` (`RebalancerState` in `core/agents.py`).
 
 Key mechanics:
 - **Benchmark token0 exposure**:
@@ -496,14 +496,14 @@ Key mechanics:
 
 ## CEX impact model (ReferenceMarket)
 
-Whenever an agent “touches the CEX”, `run.py` applies **permanent additive impact** immediately:
+Whenever an agent “touches the CEX”, `scripts/run.py` applies **permanent additive impact** immediately:
 - The signed CEX trade size is `Δa` in **token0 units**:
   - `Δa > 0`: buy token0 (pushes `m` up)
   - `Δa < 0`: sell token0 (pushes `m` down)
-- Impact function (from `ReferenceMarket.apply_impact_only` in `utils.py`):
+- Impact function (from `ReferenceMarket.apply_impact_only` in `core/utils.py`):
   - `impact = kappa * sign(Δa) * |Δa|^(1 + xi)`
   - `m ← max(1e-12, m + impact)`
-- In `run.py`, `kappa` is set when constructing the reference market (currently `kappa = 1e-3`).
+- In `scripts/run.py`, `kappa` is set when constructing the reference market (currently `kappa = 1e-3`).
 
 Diffusion is separate and happens via `ref.diffuse_only()` during the micro-step loop:
 - In non-Heston modes, this is a GBM-style multiplicative update `m ← m * exp( … )` using `mu` and the current `sigma`.

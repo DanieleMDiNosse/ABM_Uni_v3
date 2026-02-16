@@ -23,14 +23,14 @@ empirically grounded in the historical ETH/USDC volatility.
 
 ---
 
-## Reference Implementation (`sigma_calibration.py`)
+## Reference Implementation (`scripts/sigma_calibration.py`)
 
-The full workflow below is implemented in `sigma_calibration.py`. Run it on
+The full workflow below is implemented in `scripts/sigma_calibration.py`. Run it on
 your raw Binance CSV to produce the 1-second volatility series, percentile
 table, and low/high regime medians:
 
 ```bash
-python sigma_calibration.py /path/to/ETHUSDC_1s.csv \
+python -m scripts.sigma_calibration /path/to/ETHUSDC_1s.csv \
     --window-seconds 600 \
     --low-quantile 0.20 \
     --high-quantile 0.80 \
@@ -60,7 +60,7 @@ realized volatility, quantile extraction).
 
 ## 1. How `cex_sigma` Enters the Model
 
-In `utils.py`, the reference CEX is modeled as:
+In `core/utils.py`, the reference CEX is modeled as:
 
 ```python
 class ReferenceMarket:

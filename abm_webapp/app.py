@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 import yaml
 from plotly.subplots import make_subplots
 
-from abm_webapp.storage import RunStatus, read_metrics, read_status, tail_text_file
+from abm_webapp.storage import RunStatus, read_metrics, read_status, tail_text_file, scan_and_recover, TERMINAL_STATES as _DB_TERMINAL_STATES
 from abm_webapp.worker import run_simulation_process
 
 PLOTLY_TEMPLATE = "plotly_dark"
@@ -32,7 +32,7 @@ LOG_DELTA_MAX_BYTES = 65_536
 LOG_TEXT_MAX_CHARS = 120_000
 MEDIUM_FIG_UPDATE_EVERY = 2
 HEAVY_FIG_UPDATE_EVERY = 5
-TERMINAL_RUN_STATES = {"finished", "stopped", "error"}
+TERMINAL_RUN_STATES = {"finished", "stopped", "error", "abandoned"}
 
 # Dark-theme palette (high contrast on low-luminance backgrounds).
 CLR_DEX = "#2DD4BF"
@@ -63,33 +63,60 @@ def _empty_fig() -> go.Figure:
 class _MetricsCacheEntry:
     rows: List[Dict[str, Any]]
     last_t: int
+    data_version: int  # monotonically increasing; bumped whenever new rows arrive
 
 
 _METRICS_CACHE: Dict[str, _MetricsCacheEntry] = {}
 _METRICS_CACHE_LOCK = threading.Lock()
-_RUN_UPDATE_COUNTER: Dict[str, int] = {}
-_RUN_UPDATE_COUNTER_LOCK = threading.Lock()
+
+# Per-tier, per-run tracking: maps (run_root_key, tier) → last data_version rendered.
+_TIER_LAST_RENDERED: Dict[Tuple[str, str], int] = {}
+_TIER_LAST_RENDERED_LOCK = threading.Lock()
+# Per-tier, per-run wall-clock of the last render.
+_TIER_LAST_RENDER_TIME: Dict[Tuple[str, str], float] = {}
 
 
-def _clear_run_update_counter(run_root_key: Optional[str] = None) -> None:
-    """Clear per-run live update counters used for tiered figure refresh cadence."""
-    with _RUN_UPDATE_COUNTER_LOCK:
+def _clear_tier_tracking(run_root_key: Optional[str] = None) -> None:
+    """Clear per-tier render tracking for a specific run or all runs."""
+    with _TIER_LAST_RENDERED_LOCK:
         if run_root_key is None:
-            _RUN_UPDATE_COUNTER.clear()
+            _TIER_LAST_RENDERED.clear()
+            _TIER_LAST_RENDER_TIME.clear()
         else:
-            _RUN_UPDATE_COUNTER.pop(run_root_key, None)
+            for tier in ("medium", "heavy"):
+                _TIER_LAST_RENDERED.pop((run_root_key, tier), None)
+                _TIER_LAST_RENDER_TIME.pop((run_root_key, tier), None)
 
 
-def _bump_run_update_counter(run_root_key: str, *, changed: bool) -> int:
-    """Increment and return per-run update counter when data changed."""
-    with _RUN_UPDATE_COUNTER_LOCK:
-        current = int(_RUN_UPDATE_COUNTER.get(run_root_key, 0))
-        if changed:
-            current += 1
-            _RUN_UPDATE_COUNTER[run_root_key] = current
-        else:
-            _RUN_UPDATE_COUNTER.setdefault(run_root_key, current)
-        return current
+def _should_render_tier(
+    run_root_key: str,
+    tier: str,
+    current_data_version: int,
+    *,
+    min_interval_s: float,
+    force: bool = False,
+) -> bool:
+    """
+    Decide whether a downstream tier should re-render.
+
+    Returns ``True`` when data has changed since the tier's last render **and**
+    enough wall-clock time has elapsed (or ``force`` is set).  This avoids the
+    previous race where Dash callback batching could overwrite a
+    ``data_changed=True`` store with a subsequent ``data_changed=False`` tick
+    before the tier callback had a chance to fire.
+    """
+    key = (run_root_key, tier)
+    with _TIER_LAST_RENDERED_LOCK:
+        last_ver = _TIER_LAST_RENDERED.get(key, -1)
+        if current_data_version <= last_ver and not force:
+            return False  # no new data since last render
+        now = time.monotonic()
+        last_time = _TIER_LAST_RENDER_TIME.get(key, 0.0)
+        if (not force) and (now - last_time < min_interval_s):
+            return False  # throttled — will catch up on a later tick
+        _TIER_LAST_RENDERED[key] = current_data_version
+        _TIER_LAST_RENDER_TIME[key] = now
+        return True
 
 
 def _clear_metrics_cache(run_root_key: Optional[str] = None) -> None:
@@ -114,22 +141,30 @@ def _get_cached_metrics(run_root_key: str) -> Optional[_MetricsCacheEntry]:
         return _METRICS_CACHE.get(run_root_key)
 
 
-def _set_cached_metrics(run_root_key: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _set_cached_metrics(run_root_key: str, rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
     """
     Replace cached metrics for a run and enforce the global live row cap.
 
-    Notes
-    -----
-    The list is copied to avoid mutating shared state outside the cache lock.
+    Returns
+    -------
+    Tuple[list, int]
+        The (possibly trimmed) rows and the new ``data_version``.
+        If *rows* is empty the cache entry is **not** created so that
+        ``_get_cached_metrics`` still returns ``None`` and the next callback
+        invocation treats it as the initial load (avoiding frozen empty figures).
     """
     trimmed = list(rows[-LIVE_METRICS_LIMIT:]) if rows else []
-    last_t = int(trimmed[-1]["t"]) if trimmed else -1
+    if not trimmed:
+        return [], 0
+    last_t = int(trimmed[-1]["t"])
     with _METRICS_CACHE_LOCK:
-        _METRICS_CACHE[run_root_key] = _MetricsCacheEntry(rows=trimmed, last_t=last_t)
-    return trimmed
+        prev = _METRICS_CACHE.get(run_root_key)
+        new_ver = (prev.data_version + 1) if prev is not None else 1
+        _METRICS_CACHE[run_root_key] = _MetricsCacheEntry(rows=trimmed, last_t=last_t, data_version=new_ver)
+    return trimmed, new_ver
 
 
-def _append_cached_metrics(run_root_key: str, new_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _append_cached_metrics(run_root_key: str, new_rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
     """
     Append newly streamed metrics to cache and return the full bounded series.
 
@@ -139,17 +174,26 @@ def _append_cached_metrics(run_root_key: str, new_rows: List[Dict[str, Any]]) ->
         Run-root cache key.
     new_rows
         Rows with strictly increasing `t` expected from SQLite polling.
+
+    Returns
+    -------
+    Tuple[list, int]
+        The merged rows and the current ``data_version``.
     """
     if not new_rows:
         cached = _get_cached_metrics(run_root_key)
-        return list(cached.rows) if cached is not None else []
+        if cached is not None:
+            return list(cached.rows), cached.data_version
+        return [], 0
 
     with _METRICS_CACHE_LOCK:
         cached = _METRICS_CACHE.get(run_root_key)
         if cached is None:
             merged = list(new_rows)
+            prev_ver = 0
         else:
             merged = list(cached.rows)
+            prev_ver = cached.data_version
             last_t_seen = cached.last_t
             for row in new_rows:
                 t_val = int(row["t"])
@@ -158,8 +202,9 @@ def _append_cached_metrics(run_root_key: str, new_rows: List[Dict[str, Any]]) ->
                     last_t_seen = t_val
         merged = merged[-LIVE_METRICS_LIMIT:]
         last_t = int(merged[-1]["t"]) if merged else -1
-        _METRICS_CACHE[run_root_key] = _MetricsCacheEntry(rows=merged, last_t=last_t)
-        return list(merged)
+        new_ver = prev_ver + 1
+        _METRICS_CACHE[run_root_key] = _MetricsCacheEntry(rows=merged, last_t=last_t, data_version=new_ver)
+        return list(merged), new_ver
 
 
 _LOG_TEXT_CACHE: Dict[str, str] = {}
@@ -234,6 +279,9 @@ def _status_to_dict(status: Any) -> Dict[str, Any]:
             "message": str(getattr(status, "message", "")),
             "updated_at": str(getattr(status, "updated_at", "")),
             "log_path": str(getattr(status, "log_path", "")),
+            "pid": getattr(status, "pid", None),
+            "heartbeat_at": getattr(status, "heartbeat_at", None),
+            "stop_reason": getattr(status, "stop_reason", None),
         }
     except Exception:
         return {}
@@ -316,7 +364,14 @@ def _format_status_line(status_dict: Dict[str, Any]) -> str:
     t_last = status_dict.get("t_last", "")
     updated_at = str(status_dict.get("updated_at", ""))
     message = str(status_dict.get("message", ""))
-    return f"run_id={run_id} state={state} t_last={t_last} updated={updated_at}\n{message}"
+    heartbeat_at = status_dict.get("heartbeat_at")
+    stop_reason = status_dict.get("stop_reason")
+    line = f"run_id={run_id} state={state} t_last={t_last} updated={updated_at}"
+    if heartbeat_at:
+        line += f" heartbeat={heartbeat_at}"
+    if stop_reason:
+        line += f" stop_reason={stop_reason}"
+    return f"{line}\n{message}"
 
 
 def _list_scenario_files(scenarios_dir: Path) -> List[Path]:
@@ -346,30 +401,33 @@ def _run_root_for(run_id: str) -> Path:
 
 
 def _safe_yaml_parse(text: str) -> Tuple[bool, str]:
-    try:
-        yaml.safe_load(text)
-    except Exception as exc:
-        return False, f"YAML parse error: {exc}"
+    from abm_webapp.config import safe_load_yaml
+    data, err = safe_load_yaml(text)
+    if err:
+        return False, err
     return True, ""
 
 
 def _validate_config_against_simulate(config_yaml: str) -> Tuple[bool, str]:
     """
-    Validate YAML config against simulate() signature (fast fail before starting a run).
+    Validate YAML config with strict schema checks + simulate() signature check.
 
     Notes
     -----
-    This reuses `utils.load_simulation_parameters` for consistency with CLI scenarios.
+    First runs the strict schema validation (bounds, types, unknown keys),
+    then validates against simulate() signature for full compatibility.
     """
-    ok, err = _safe_yaml_parse(config_yaml)
+    from abm_webapp.config import validate_scenario_text
+
+    ok, err = validate_scenario_text(config_yaml)
     if not ok:
         return False, err
 
     try:
         from tempfile import TemporaryDirectory
 
-        from run import simulate
-        from utils import load_simulation_parameters
+        from scripts.run import simulate
+        from core.utils import load_simulation_parameters
 
         with TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir) / "scenario.yml"
@@ -788,7 +846,7 @@ def _build_fee_figure(rows: List[Dict[str, Any]], *, fee_mode: str) -> go.Figure
 
     Notes
     -----
-    Aligns fee(t+1) with signal(t), as in run.py.
+    Aligns fee(t+1) with signal(t), as in scripts/run.py.
     """
     steps = [r["t"] for r in rows]
     fee_series = [r.get("fee") for r in rows]
@@ -912,7 +970,7 @@ def _build_lp_decomposition_figure(rows: List[Dict[str, Any]]) -> go.Figure:
 
     Notes
     -----
-    This mirrors the richer LP accounting outputs recently added to run.py.
+    This mirrors the richer LP accounting outputs recently added to scripts/run.py.
     """
     t = [r["t"] for r in rows]
     lp_active_hedged = [r.get("lp_pnl_active") for r in rows]
@@ -1306,6 +1364,34 @@ class _RunController:
             if not ok:
                 return False, err
 
+            # Build canonical validated config
+            from abm_webapp.config import validate_scenario, canonical_yaml
+            validated, verr = validate_scenario(config_yaml)
+            if validated is not None:
+                config_yaml = canonical_yaml(validated)
+
+            # Collect run metadata for reproducibility
+            meta_json_str: Optional[str] = None
+            try:
+                from abm_webapp import __version__
+                from abm_webapp.run_meta import collect_run_meta
+                import yaml as _yaml
+                parsed = _yaml.safe_load(config_yaml)
+                seed = None
+                if isinstance(parsed, dict):
+                    sim_block = parsed.get("simulate", {})
+                    if isinstance(sim_block, dict):
+                        seed = sim_block.get("seed")
+                meta = collect_run_meta(
+                    app_version=__version__,
+                    seed=seed,
+                    config_yaml=config_yaml,
+                )
+                import json as _json
+                meta_json_str = _json.dumps(meta, default=str)
+            except Exception:
+                pass
+
             run_id = _default_run_id()
             run_root = _run_root_for(run_id)
             run_root.mkdir(parents=True, exist_ok=True)
@@ -1320,6 +1406,7 @@ class _RunController:
                     stop_event=stop_event,
                     live_every=int(live_every),
                     log_flush_every=int(log_flush_every),
+                    meta_json=meta_json_str,
                 ),
                 daemon=True,
             )
@@ -1332,16 +1419,16 @@ class _RunController:
             _clear_metrics_cache()
             _clear_log_cache()
             _clear_log_offset_cache()
-            _clear_run_update_counter()
+            _clear_tier_tracking()
             return True, f"Started run {run_id}"
 
     def stop(self) -> Tuple[bool, str]:
-        """Request current run to stop."""
+        """Request current run to stop (idempotent)."""
         with self.lock:
             if self.process is None or self.stop_event is None:
                 return False, "No active run."
             if not self.process.is_alive():
-                return False, "No active run."
+                return True, "Run already finished."
             self.stop_event.set()
             return True, "Stop requested."
 
@@ -1372,7 +1459,7 @@ class _RunController:
             _clear_metrics_cache()
             _clear_log_cache()
             _clear_log_offset_cache()
-            _clear_run_update_counter()
+            _clear_tier_tracking()
 
         root = _web_runs_root()
         try:
@@ -1394,6 +1481,16 @@ def _build_dash_app():
         raise RuntimeError(
             "Dash is required for the webapp. Install it with `pip install dash` (or `conda install -c conda-forge dash`)."
         ) from exc
+
+    # ── Crash recovery: scan existing runs on startup ──
+    web_root = _web_runs_root()
+    web_root.mkdir(parents=True, exist_ok=True)
+    try:
+        recovered = scan_and_recover(web_root)
+        if recovered:
+            print(f"[webapp] Crash recovery: marked {len(recovered)} abandoned run(s): {recovered}")
+    except Exception as exc:
+        print(f"[webapp] Warning: crash recovery scan failed: {exc}")
 
     scenarios_dir = Path("abm_results") / "scenarios"
     scenario_files = _list_scenario_files(scenarios_dir)
@@ -1429,79 +1526,83 @@ def _build_dash_app():
             last_emit = time.monotonic()
             terminal_emitted = False
 
-            # Initial hydrate snapshot.
-            rows_init = read_metrics(db_path, limit=LIVE_METRICS_LIMIT)
-            if rows_init:
-                last_t = int(rows_init[-1]["t"])
+            try:
+                # Initial hydrate snapshot.
+                rows_init = read_metrics(db_path, limit=LIVE_METRICS_LIMIT)
+                if rows_init:
+                    last_t = int(rows_init[-1]["t"])
 
-            status_init = read_status(db_path)
-            status_init_dict = _status_to_dict(status_init)
-            last_status_sig = _status_signature(status_init_dict)
+                status_init = read_status(db_path)
+                status_init_dict = _status_to_dict(status_init)
+                last_status_sig = _status_signature(status_init_dict)
 
-            event_id += 1
-            yield _format_sse_event(
-                event="snapshot",
-                payload=dict(
-                    run_id=run_id_s,
-                    row_count=len(rows_init),
-                    status=status_init_dict,
-                ),
-                event_id=event_id,
-            )
-            last_emit = time.monotonic()
+                event_id += 1
+                yield _format_sse_event(
+                    event="snapshot",
+                    payload=dict(
+                        run_id=run_id_s,
+                        row_count=len(rows_init),
+                        status=status_init_dict,
+                    ),
+                    event_id=event_id,
+                )
+                last_emit = time.monotonic()
 
-            while True:
-                emitted_this_loop = False
+                while True:
+                    emitted_this_loop = False
 
-                status = read_status(db_path)
-                status_dict = _status_to_dict(status)
-                status_sig = _status_signature(status_dict)
-                if status_sig != last_status_sig:
-                    last_status_sig = status_sig
-                    event_id += 1
-                    yield _format_sse_event(
-                        event="status_change",
-                        payload=dict(run_id=run_id_s, status=status_dict),
-                        event_id=event_id,
-                    )
-                    emitted_this_loop = True
-                    last_emit = time.monotonic()
-
-                new_rows = read_metrics(db_path, since_t=last_t)
-                if new_rows:
-                    last_t = int(new_rows[-1]["t"])
-                    event_id += 1
-                    yield _format_sse_event(
-                        event="metrics_delta",
-                        payload=dict(run_id=run_id_s, row_count=len(new_rows), last_t=last_t),
-                        event_id=event_id,
-                    )
-                    emitted_this_loop = True
-                    last_emit = time.monotonic()
-
-                run_state = str(status_dict.get("state", "")).lower()
-                if run_state in TERMINAL_RUN_STATES and not new_rows:
-                    if not terminal_emitted:
+                    status = read_status(db_path)
+                    status_dict = _status_to_dict(status)
+                    status_sig = _status_signature(status_dict)
+                    if status_sig != last_status_sig:
+                        last_status_sig = status_sig
                         event_id += 1
                         yield _format_sse_event(
-                            event="end",
-                            payload=dict(run_id=run_id_s, state=run_state),
+                            event="status_change",
+                            payload=dict(run_id=run_id_s, status=status_dict),
                             event_id=event_id,
                         )
-                        terminal_emitted = True
-                    break
+                        emitted_this_loop = True
+                        last_emit = time.monotonic()
 
-                now = time.monotonic()
-                if (not emitted_this_loop) and ((now - last_emit) >= SSE_HEARTBEAT_SECONDS):
-                    event_id += 1
-                    yield _format_sse_event(
-                        event="heartbeat",
-                        payload=dict(run_id=run_id_s, ts=datetime.now().isoformat()),
-                        event_id=event_id,
-                    )
-                    last_emit = now
+                    new_rows = read_metrics(db_path, since_t=last_t)
+                    if new_rows:
+                        last_t = int(new_rows[-1]["t"])
+                        event_id += 1
+                        yield _format_sse_event(
+                            event="metrics_delta",
+                            payload=dict(run_id=run_id_s, row_count=len(new_rows), last_t=last_t),
+                            event_id=event_id,
+                        )
+                        emitted_this_loop = True
+                        last_emit = time.monotonic()
 
-                time.sleep(SSE_LOOP_SLEEP_SECONDS)
+                    run_state = str(status_dict.get("state", "")).lower()
+                    if run_state in TERMINAL_RUN_STATES and not new_rows:
+                        if not terminal_emitted:
+                            event_id += 1
+                            yield _format_sse_event(
+                                event="end",
+                                payload=dict(run_id=run_id_s, state=run_state),
+                                event_id=event_id,
+                            )
+                            terminal_emitted = True
+                        break
+
+                    now = time.monotonic()
+                    if (not emitted_this_loop) and ((now - last_emit) >= SSE_HEARTBEAT_SECONDS):
+                        event_id += 1
+                        yield _format_sse_event(
+                            event="heartbeat",
+                            payload=dict(run_id=run_id_s, ts=datetime.now().isoformat()),
+                            event_id=event_id,
+                        )
+                        last_emit = now
+
+                    time.sleep(SSE_LOOP_SLEEP_SECONDS)
+            except GeneratorExit:
+                # Client disconnected; exit cleanly without resource leaks.
+                return
 
         response = Response(stream_with_context(_event_stream()), mimetype="text/event-stream")
         response.headers["Cache-Control"] = "no-cache"
@@ -1793,9 +1894,9 @@ def _build_dash_app():
             "seq": int(_seq or 0),
             "run_id": "",
             "run_root_key": "",
-            "update_idx": 0,
-            "data_changed": False,
-            "is_initial": True,
+            "data_version": 0,
+            "has_rows": False,
+            "is_terminal": False,
             "fee_mode": "static",
             "status_dict": {},
         }
@@ -1811,23 +1912,29 @@ def _build_dash_app():
         cached = _get_cached_metrics(run_root_key)
         is_initial_load = cached is None
         data_changed = False
+        data_version = 0
 
         if cached is None:
-            rows = _set_cached_metrics(run_root_key, read_metrics(db_path, limit=LIVE_METRICS_LIMIT))
+            rows, data_version = _set_cached_metrics(
+                run_root_key, read_metrics(db_path, limit=LIVE_METRICS_LIMIT)
+            )
             data_changed = bool(rows)
         else:
             new_rows = read_metrics(db_path, since_t=int(cached.last_t))
             data_changed = bool(new_rows)
-            rows = _append_cached_metrics(run_root_key, new_rows)
+            rows, data_version = _append_cached_metrics(run_root_key, new_rows)
 
         status = read_status(db_path)
         status_dict = _status_to_dict(status)
         status_line = _format_status_line(status_dict)
 
         fee_mode = _get_fee_mode_for_run(run_root)
-        update_idx = _bump_run_update_counter(run_root_key, changed=bool(data_changed))
+        run_state = str(status_dict.get("state", "")).lower()
+        is_terminal = run_state in TERMINAL_RUN_STATES
 
-        freeze = (not data_changed) and (not is_initial_load)
+        # Freeze core-tier figures only when genuinely nothing changed
+        # AND we already rendered at least once with actual data.
+        freeze = (not data_changed) and (not is_initial_load) and bool(rows)
         if freeze:
             fig_price = no_update
             fig_step = no_update
@@ -1843,13 +1950,16 @@ def _build_dash_app():
 
         cards = _build_summary_cards(rows, status, fee_mode)
 
+        # The store carries a monotonic data_version so downstream callbacks
+        # can reliably detect whether new data appeared, even if Dash batches
+        # multiple rapid Input changes and only delivers the last value.
         store_data: Dict[str, Any] = {
             "seq": int(_seq or 0),
             "run_id": run_id,
             "run_root_key": run_root_key,
-            "update_idx": update_idx,
-            "data_changed": data_changed,
-            "is_initial": is_initial_load,
+            "data_version": data_version,
+            "has_rows": bool(rows),
+            "is_terminal": is_terminal,
             "fee_mode": fee_mode,
             "status_dict": status_dict,
         }
@@ -1869,17 +1979,23 @@ def _build_dash_app():
         if not store_data or not store_data.get("run_id"):
             return empty, empty, empty
 
-        data_changed = store_data.get("data_changed", False)
-        is_initial = store_data.get("is_initial", False)
-        if (not data_changed) and (not is_initial):
-            return no_update, no_update, no_update
-
-        update_idx = int(store_data.get("update_idx", 0))
-        do_medium = is_initial or (update_idx % MEDIUM_FIG_UPDATE_EVERY == 0)
-        if not do_medium:
+        if not store_data.get("has_rows", False):
             return no_update, no_update, no_update
 
         run_root_key = store_data["run_root_key"]
+        data_version = int(store_data.get("data_version", 0))
+        is_terminal = store_data.get("is_terminal", False)
+
+        # Render when new data has appeared since this tier's last render
+        # and enough wall-clock time has elapsed (throttle).  Force render
+        # on terminal state so the final frame is always complete.
+        if not _should_render_tier(
+            run_root_key, "medium", data_version,
+            min_interval_s=MEDIUM_FIG_UPDATE_EVERY * SSE_LOOP_SLEEP_SECONDS,
+            force=is_terminal,
+        ):
+            return no_update, no_update, no_update
+
         cached = _get_cached_metrics(run_root_key)
         rows = list(cached.rows) if cached else []
         if not rows:
@@ -1905,17 +2021,20 @@ def _build_dash_app():
         if not store_data or not store_data.get("run_id"):
             return empty, empty, empty
 
-        data_changed = store_data.get("data_changed", False)
-        is_initial = store_data.get("is_initial", False)
-        if (not data_changed) and (not is_initial):
-            return no_update, no_update, no_update
-
-        update_idx = int(store_data.get("update_idx", 0))
-        do_heavy = is_initial or (update_idx % HEAVY_FIG_UPDATE_EVERY == 0)
-        if not do_heavy:
+        if not store_data.get("has_rows", False):
             return no_update, no_update, no_update
 
         run_root_key = store_data["run_root_key"]
+        data_version = int(store_data.get("data_version", 0))
+        is_terminal = store_data.get("is_terminal", False)
+
+        if not _should_render_tier(
+            run_root_key, "heavy", data_version,
+            min_interval_s=HEAVY_FIG_UPDATE_EVERY * SSE_LOOP_SLEEP_SECONDS,
+            force=is_terminal,
+        ):
+            return no_update, no_update, no_update
+
         cached = _get_cached_metrics(run_root_key)
         rows = list(cached.rows) if cached else []
         if not rows:

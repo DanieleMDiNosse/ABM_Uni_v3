@@ -7,3 +7,4 @@ This package is intentionally lightweight and keeps dependencies minimal:
 - The simulation runs in a separate process (stdlib `multiprocessing`) to keep the UI responsive.
 """
 
+__version__ = "0.2.0"

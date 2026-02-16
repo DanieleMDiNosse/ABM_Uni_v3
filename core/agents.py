@@ -9,11 +9,11 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 import numpy as np
 
-from utils import (
+from core.utils import (
     EPS_LIQ2, EPS_LIQ, EPS_BOUNDARY, TITLE_FONT_SIZE, LABEL_FONT_SIZE,
     minted_amounts_at_S, ReferenceMarket
 )
-from miscellaneous.numba_accel import _current_amounts_impl
+from core.numba_accel import _current_amounts_impl
 
 
 # =============================================================================

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import threading
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -7,6 +10,10 @@ from typing import Any, Dict, Optional
 import yaml
 
 from abm_webapp.storage import SQLiteLiveSink
+
+# Heartbeat interval in seconds – the worker updates its DB heartbeat
+# at least this often so the UI can detect crashes.
+_HEARTBEAT_INTERVAL_S: float = 10.0
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -34,6 +41,47 @@ def _normalize_params_for_webapp(params: Dict[str, Any], *, run_root: Path) -> D
     return out
 
 
+def _start_heartbeat_thread(
+    sink: SQLiteLiveSink,
+    stop_event: Any,
+    *,
+    interval: float = _HEARTBEAT_INTERVAL_S,
+) -> threading.Thread:
+    """
+    Launch a daemon thread that periodically updates the heartbeat timestamp
+    in the run's DB so that the UI can detect a dead worker.
+    """
+
+    def _loop() -> None:
+        while True:
+            # Check if the stop event is set
+            try:
+                is_set = getattr(stop_event, "is_set", None)
+                if callable(is_set) and is_set():
+                    break
+            except Exception:
+                pass
+            try:
+                sink.update_heartbeat()
+            except Exception:
+                pass
+            # Use the stop_event's wait (with timeout) for a cleaner exit
+            try:
+                wait_fn = getattr(stop_event, "wait", None)
+                if callable(wait_fn):
+                    wait_fn(timeout=interval)
+                else:
+                    import time
+                    time.sleep(interval)
+            except Exception:
+                import time
+                time.sleep(interval)
+
+    t = threading.Thread(target=_loop, daemon=True, name="heartbeat")
+    t.start()
+    return t
+
+
 def run_simulation_process(
     *,
     run_id: str,
@@ -42,6 +90,7 @@ def run_simulation_process(
     stop_event: Any,
     live_every: int = 5,
     log_flush_every: int = 200,
+    meta_json: Optional[str] = None,
 ) -> None:
     """
     Entry point for the simulation worker process.
@@ -60,6 +109,8 @@ def run_simulation_process(
         Record live metrics every N blocks (smaller = more responsive, larger = lower overhead).
     log_flush_every
         Flush the simulation log buffer every N blocks so the UI can tail it live.
+    meta_json
+        Optional JSON string with extended run metadata for reproducibility.
 
     Returns
     -------
@@ -84,14 +135,23 @@ def run_simulation_process(
         results_root=run_root_path,
         T=int(_infer_T_from_yaml(config_yaml)),
         commit_every=commit_every,
+        meta_json=meta_json,
     )
 
+    # Persist the validated config snapshot (canonical form)
     config_path = run_root_path / "scenario.yml"
     _write_text(config_path, config_yaml)
 
+    # Persist run metadata as a separate JSON file for easy inspection
+    if meta_json:
+        _write_text(run_root_path / "run_meta.json", meta_json)
+
+    # Start the heartbeat thread
+    hb_thread = _start_heartbeat_thread(sink, stop_event)
+
     try:
-        from run import simulate
-        from utils import load_simulation_parameters
+        from scripts.run import simulate
+        from core.utils import load_simulation_parameters
 
         scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
         params = _normalize_params_for_webapp(params, run_root=run_root_path)
@@ -100,7 +160,7 @@ def run_simulation_process(
         for k in ("live_sink", "live_every", "stop_event", "log_flush_every"):
             params.pop(k, None)
 
-        # Run with live hooks enabled (implemented in run.py).
+        # Run with live hooks enabled (implemented in scripts/run.py).
         simulate(
             **params,
             live_sink=sink,
@@ -115,10 +175,13 @@ def run_simulation_process(
             stopped = bool(is_set()) if callable(is_set) else False
         except Exception:
             stopped = False
-        sink.set_status(state="stopped" if stopped else "finished", message="stopped" if stopped else "completed")
+        if stopped:
+            sink.set_status(state="stopped", message="stopped", stop_reason="user_stop")
+        else:
+            sink.set_status(state="finished", message="completed")
     except Exception as exc:
         tb = traceback.format_exc()
-        sink.set_status(state="error", message=f"{type(exc).__name__}: {exc}")
+        sink.set_status(state="error", message=f"{type(exc).__name__}: {exc}", stop_reason="exception")
         _write_text(run_root_path / "error.log", tb)
     finally:
         try:

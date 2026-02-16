@@ -7,7 +7,7 @@ nav_order: 6
 
 This document explains the fee schedules implemented in the simulation, including the mathematical formulas and their implementation details.
 
-The fee logic is primarily implemented in `run.py` within the `simulate` function.
+The fee logic is primarily implemented in `scripts/run.py` within the `simulate` function.
 
 ## Exponentially Weighted Moving Average (EWMA)
 
@@ -162,7 +162,7 @@ The implementation is staged (commit→reveal): the controller computes signals 
 
 ## Implementation Reference
 
-*   **File:** `run.py`
+*   **File:** `scripts/run.py`
 *   **Function:** `simulate`
 *   **Relevant Section:** "Dynamic fee controller" block inside the main simulation loop.
 *   **Diagnostics:** the simulation returns `fee_series`, `fee_sigma_series`, `fee_basis_ticks_series`, `fee_signal_series`, and `fee_imb_series` for plotting/debugging.

@@ -159,14 +159,14 @@ $$
 V_t^{reb} = x_t^{reb} m_t + y_t^{reb}.
 $$
 
-### Mapping to the implementation (`run.py`)
+### Mapping to the implementation (`scripts/run.py`)
 
-The computation is handled by `RebalancerState` in `agents.py` and updated inside `run.py`.
+The computation is handled by `RebalancerState` in `core/agents.py` and updated inside `scripts/run.py`.
 
 The benchmark’s *price-move accrual* is implemented by `_accrue_price_move`:
 
 ```python
-# run.py: _accrue_price_move
+# scripts/run.py: _accrue_price_move
 delta = M_new - rb.last_M
 rb.cumulative_R += rb.x_prev * delta
 rb.last_M = M_new
@@ -175,7 +175,7 @@ rb.last_M = M_new
 The benchmark’s *rebalancing trade* is implemented by `_rebalance_lp_to_target`:
 
 ```python
-# run.py: _rebalance_lp_to_target
+# scripts/run.py: _rebalance_lp_to_target
 dx = x_target - rb.x_prev
 rb.cash_y -= dx * M_now
 rb.x_prev = x_target
@@ -230,5 +230,5 @@ The main per-block series are (each split into `total` / `active` / `passive` co
 - `lp_unhedged_*`: unhedged PnL $V_t^{LP} - V_0^{LP}$.
 
 These are the quantities typically plotted in the dashboards and consumed by batch runners such as
-`run_multiple.py`, `run_parameter_surface_nd_pnl_fee_dashboard.py`, and
-`build_parameter_surface_nd_pnl_fee_dashboard.py`.
+`scripts/run_multiple.py`, `scripts/run_parameter_surface_nd_pnl_fee_dashboard.py`, and
+`scripts/build_parameter_surface_nd_pnl_fee_dashboard.py`.

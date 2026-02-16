@@ -15,7 +15,7 @@ Outputs Plotly figures (HTML, and PNG if kaleido is installed) for:
 - Reference market path (price, volatility, and return/volatility histograms).
 
 By default this script mirrors the parameters in `abm_results/scenarios/test.yml`.
-You can point it at any run-style scenario YAML (the same config used by `run.py`)
+You can point it at any run-style scenario YAML (the same config used by `scripts/run.py`)
 to visualize the implied distributions for that scenario.
 """
 
@@ -32,7 +32,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from utils import ReferenceMarket, build_empty_pool, scenario_output_root
+from core.utils import ReferenceMarket, build_empty_pool, scenario_output_root
 
 
 # =============================================================================
@@ -93,7 +93,7 @@ class DistributionParams:
     block_time : int
         Micro-steps per block (used for per-micro-step Poisson visualizations).
     smart_trades_per_block, noise_trades_per_block : float
-        Expected trader intents per block (converted to per-micro-step intensities in run.py).
+        Expected trader intents per block (converted to per-micro-step intensities in scripts/run.py).
     narrow_mints_per_block, passive_mints_per_block, passive_burns_per_block : float
         Expected LP event targets per block.
     p_jit : float
@@ -112,7 +112,7 @@ class DistributionParams:
 
     Notes
     -----
-    These parameters are intentionally a *subset* of `run.py`'s `simulate()` inputs:
+    These parameters are intentionally a *subset* of `scripts/run.py`'s `simulate()` inputs:
     only what is needed to visualize the stochastic primitives.
     """
 
@@ -200,7 +200,7 @@ def save_plotly_figure(
 
     Notes
     -----
-    This mirrors `run.py`'s output convention: always write HTML; attempt PNG
+    This mirrors `scripts/run.py`'s output convention: always write HTML; attempt PNG
     export and emit a single warning if Kaleido is missing.
     """
     global PLOTLY_STATIC_WARNING_EMITTED
@@ -250,7 +250,7 @@ def load_scenario_config(config_path: Path) -> Tuple[str, Dict[str, Any]]:
     scenario_label : str
         Scenario label used for filenames (prefers top-level `fee_mode`).
     simulate_params : dict[str, Any]
-        Mapping of inputs passed to `run.py`'s `simulate()` function.
+        Mapping of inputs passed to `scripts/run.py`'s `simulate()` function.
 
     Notes
     -----
@@ -271,7 +271,7 @@ def load_scenario_config(config_path: Path) -> Tuple[str, Dict[str, Any]]:
     if not isinstance(simulate_params, dict):
         raise ValueError(f"'simulate' section missing in {config_path}")
 
-    # Match `utils.load_simulation_parameters` behavior: prefer top-level fee_mode.
+    # Match `core.utils.load_simulation_parameters` behavior: prefer top-level fee_mode.
     fee_mode = config_data.get("fee_mode")
     if fee_mode is not None:
         simulate_fee_mode = simulate_params.get("fee_mode")
@@ -309,7 +309,7 @@ def build_distribution_params(
 
     Notes
     -----
-    `run.py` uses `build_empty_pool()` for `m0`; here we default to 2000.0 and
+    `scripts/run.py` uses `build_empty_pool()` for `m0`; here we default to 2000.0 and
     allow overriding via `initial_price` if ever added to configs.
     """
     seed = int(simulate_params.get("seed", DistributionParams.seed))
@@ -369,7 +369,7 @@ def build_distribution_params(
 
 def simulate_reference_market_path(params: DistributionParams) -> Tuple[List[float], List[float]]:
     """
-    Simulate a reference market path using the same volatility modes as `run.py`.
+    Simulate a reference market path using the same volatility modes as `scripts/run.py`.
 
     Parameters
     ----------
@@ -638,7 +638,7 @@ def sample_width_noise(
 
     Notes
     -----
-    In run.py, noise_ticks = (K - n * p) * tick_spacing.
+    In scripts/run.py, noise_ticks = (K - n * p) * tick_spacing.
 
     Examples
     --------
@@ -677,7 +677,7 @@ def sample_trader_notional(
 
     Notes
     -----
-    Matches run.py: exp(N(mean_log, sigma_log)).
+    Matches scripts/run.py: exp(N(mean_log, sigma_log)).
 
     Examples
     --------
@@ -712,7 +712,7 @@ def sample_lp_mint_scale(
 
     Notes
     -----
-    Mirrors `run.py`'s `_draw_wallet_utilization_factor`:
+    Mirrors `scripts/run.py`'s `_draw_wallet_utilization_factor`:
 
         Z ~ LogNormal(mean_log, sigma_log)
         η = min(1, Z)
@@ -752,7 +752,7 @@ def sample_review_intervals(
 
     Notes
     -----
-    Matches run.py: next_review ~ Geometric(1 / max(1, tau)).
+    Matches scripts/run.py: next_review ~ Geometric(1 / max(1, tau)).
 
     Examples
     --------
@@ -784,7 +784,7 @@ def sample_poisson_per_micro_step(per_block_rate: float, block_time: int, n_samp
 
     Notes
     -----
-    Uses lambda = per_block_rate / max(1, block_time), matching run.py.
+    Uses lambda = per_block_rate / max(1, block_time), matching scripts/run.py.
 
     Examples
     --------
@@ -815,7 +815,7 @@ def sample_poisson_per_block(per_block_rate: float, n_samples: int) -> np.ndarra
 
     Notes
     -----
-    Uses lambda = per_block_rate, matching run.py.
+    Uses lambda = per_block_rate, matching scripts/run.py.
 
     Examples
     --------
@@ -1081,7 +1081,7 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
 
     Notes
     -----
-    `run.py` samples trader intents per micro-step with intensity
+    `scripts/run.py` samples trader intents per micro-step with intensity
     λ_micro = trades_per_block / block_time. The sum across a block remains
     Poisson(trades_per_block), but the micro-step view is helpful for intuition.
 
@@ -1255,7 +1255,7 @@ def main() -> None:
 
     Notes
     -----
-    Writes to the same scenario output convention as `run.py`:
+    Writes to the same scenario output convention as `scripts/run.py`:
     `abm_results/scenarios/<scenario_name>/{html,png}`.
 
     Examples

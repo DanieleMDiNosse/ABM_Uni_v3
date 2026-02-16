@@ -12,7 +12,7 @@ How it works
 2) Build a grid of block sizes B (via `block_time`; default 2..16 inclusive).
 3) For each B, run `--runs` simulations with different seeds (optionally in parallel via
    `--max-workers`).
-4) Convert cumulative series produced by `run.simulate()` into *per-block increments* (after
+4) Convert cumulative series produced by `scripts.run.simulate()` into *per-block increments* (after
    `--skip-step` burn-in), aggregate across runs, and plot the requested layers
    (default: medians only):
    - `--plot-medians`: per-B medians (pooled across runs/blocks)
@@ -34,7 +34,7 @@ LVR accrued in the block (via hedged PnL deltas):
 Fee definition switch
 ---------------------
 `--fee-definition` controls how `ΔFees_block` is computed:
-  - `flow` (default): uses token-unit cumulative fee counters exported by `run.py` and values
+  - `flow` (default): uses token-unit cumulative fee counters exported by `scripts/run.py` and values
     the *in-block* fee flow at `m_t` (no revaluation of previously earned token0 fees).
   - `mtm` (legacy): uses `np.diff(fees0_earned*m_t + fees1_earned)`, which includes a
     mark-to-market revaluation term on the existing token0 fee inventory.
@@ -48,10 +48,10 @@ Example
 -------
   conda activate main
   # Default: medians only
-  python LVR_vs_blocksize.py --config abm_results/scenarios/test.yml --runs 50 --fee-definition flow
+  python -m scripts.LVR_vs_blocksize --config abm_results/scenarios/test.yml --runs 50 --fee-definition flow
 
   # Overlay violin distributions and means
-  python LVR_vs_blocksize.py --config abm_results/scenarios/test.yml --runs 50 --fee-definition flow \\
+  python -m scripts.LVR_vs_blocksize --config abm_results/scenarios/test.yml --runs 50 --fee-definition flow \\
     --plot-violin-plot --plot-means --plot-medians
 """
 
@@ -69,12 +69,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-import run as run_module
-from utils import load_simulation_parameters, scenario_output_root
+from scripts import run as run_module
+from core.utils import load_simulation_parameters, scenario_output_root
 
 
 def _silent_tqdm(iterable=None, **kwargs):
-    """Silence tqdm inside run.simulate to avoid nested progress bars.
+    """Silence tqdm inside scripts.run.simulate to avoid nested progress bars.
 
     Parameters:
         iterable: Optional iterable to wrap.
@@ -84,7 +84,7 @@ def _silent_tqdm(iterable=None, **kwargs):
         Iterable: A pass-through iterable.
 
     Notes:
-        `run.py` uses `tqdm(range(...))`. Replacing it with `range(...)` prevents
+        `scripts/run.py` uses `tqdm(range(...))`. Replacing it with `range(...)` prevents
         worker subprocesses from generating progress bars.
     """
     if iterable is None:
@@ -93,7 +93,7 @@ def _silent_tqdm(iterable=None, **kwargs):
     return iterable
 
 
-# Monkeypatch tqdm used inside run.py
+# Monkeypatch tqdm used inside scripts/run.py
 run_module.tqdm = _silent_tqdm  # type: ignore[attr-defined]
 
 simulate = run_module.simulate
@@ -416,7 +416,7 @@ def _compute_jiter_lvr_cumulative(out: Mapping[str, Any]) -> np.ndarray:
     """Reconstruct Jiter cumulative LVR from returned accounting series.
 
     Parameters:
-        out: Output dict returned by `run.simulate()`.
+        out: Output dict returned by `scripts.run.simulate()`.
 
     Returns:
         np.ndarray: Cumulative Jiter LVR series (float).
@@ -447,7 +447,7 @@ def _jit_success_mask_after_skip(out: Mapping[str, Any], *, skip_step: int, n_st
     """Build a boolean mask for blocks with successful JIT execution after burn-in.
 
     Parameters:
-        out: Output dict returned by `run.simulate()`.
+        out: Output dict returned by `scripts.run.simulate()`.
         skip_step: Number of initial blocks to omit (burn-in).
         n_steps: Number of simulation blocks to align to (typically len(LVR series)).
 
@@ -455,7 +455,7 @@ def _jit_success_mask_after_skip(out: Mapping[str, Any], *, skip_step: int, n_st
         np.ndarray: Boolean mask aligned with Δ series (length ~= n_steps - skip_step - 1).
 
     Notes:
-        `run.py` increments `jiter_activity` by +1 in block `t` when a JIT mint/burn
+        `scripts/run.py` increments `jiter_activity` by +1 in block `t` when a JIT mint/burn
         roundtrip successfully surrounds an executed swap (`jit_swap_executed=True`).
         The output only exposes the cumulative series `jiter_activity_cum`, so we
         recover per-block counts via a first difference.
@@ -502,11 +502,11 @@ def _run_one(
         and `dLVR_over_dFees_<cohort>`.
 
     Notes:
-        We call `run.simulate()` directly to keep results in-memory. We set
+        We call `scripts.run.simulate()` directly to keep results in-memory. We set
         `results_root` to a per-run folder so any verbose logs are isolated and
         can be removed when `keep_run_artifacts=False`.
     """
-    import run as _run_module
+    from scripts import run as _run_module
 
     _run_module.tqdm = _silent_tqdm  # type: ignore[attr-defined]
 
@@ -627,6 +627,9 @@ def _build_violin_figure(
     cohort_specs: Sequence[CohortSpec],
     block_times: Sequence[int],
     yaxis_title: str = "ΔLVR",
+    yaxis_titles: Optional[Mapping[str, str]] = None,
+    yaxis_type: str = "linear",
+    share_yaxes: bool = True,
     plot_medians: bool = True,
     plot_95_interval: bool = False,
     plot_means: bool = False,
@@ -641,6 +644,10 @@ def _build_violin_figure(
         cohort_specs: Enabled cohort specifications (label/color).
         block_times: Block size grid in display order.
         yaxis_title: Y-axis label (metric name).
+        yaxis_titles: Optional per-cohort y-axis labels. When provided, labels are
+            applied per subplot column using cohort names as keys.
+        yaxis_type: Plotly y-axis scale type ("linear" or "log").
+        share_yaxes: Whether to share the y-axis across subplot columns.
         plot_medians: If True, overlay a median line (computed from pooled samples).
         plot_95_interval: If True and `plot_medians` is True, overlay a central 95% interval
             (2.5th..97.5th percentiles) around the median points.
@@ -661,13 +668,14 @@ def _build_violin_figure(
     fig = make_subplots(
         rows=1,
         cols=n_cols,
-        shared_yaxes=True,
+        shared_yaxes=bool(share_yaxes),
         horizontal_spacing=0.06,
         subplot_titles=subplot_titles,
     )
 
     x_categories = [str(int(b)) for b in block_times]
     show_legend = bool(plot_means)
+    use_log_axis = str(yaxis_type) == "log"
 
     for col_idx, spec in enumerate(cohort_specs, start=1):
         per_b = distributions.get(spec.name, {})
@@ -679,6 +687,9 @@ def _build_violin_figure(
         for b in block_times:
             vals = np.asarray(per_b.get(int(b), np.array([], dtype=float)), dtype=float)
             vals = vals[np.isfinite(vals)]
+            if use_log_axis:
+                # Log axes cannot display non-positive values.
+                vals = vals[vals > 0.0]
             med = float(np.median(vals)) if vals.size > 0 else float("nan")
             medians.append(med)
             if vals.size > 0:
@@ -765,14 +776,18 @@ def _build_violin_figure(
                 col=col_idx,
             )
 
-        fig.add_hline(
-            y=0.0,
-            line=dict(color="gray", width=1, dash="dash"),
-            row=1,
-            col=col_idx,
-        )
-        if col_idx == 1:
-            fig.update_yaxes(title_text=yaxis_title, row=1, col=col_idx)
+        if str(yaxis_type) != "log":
+            fig.add_hline(
+                y=0.0,
+                line=dict(color="gray", width=1, dash="dash"),
+                row=1,
+                col=col_idx,
+            )
+        axis_title = str(yaxis_titles.get(spec.name, yaxis_title)) if yaxis_titles is not None else yaxis_title
+        if col_idx == 1 or yaxis_titles is not None:
+            fig.update_yaxes(title_text=axis_title, type=str(yaxis_type), row=1, col=col_idx)
+        else:
+            fig.update_yaxes(type=str(yaxis_type), row=1, col=col_idx)
 
     fig.update_xaxes(title_text="B", categoryorder="array", categoryarray=x_categories)
     fig.update_layout(
@@ -798,6 +813,9 @@ def _build_medians_only_figure(
     cohort_specs: Sequence[CohortSpec],
     block_times: Sequence[int],
     yaxis_title: str = "ΔLVR",
+    yaxis_titles: Optional[Mapping[str, str]] = None,
+    yaxis_type: str = "linear",
+    share_yaxes: bool = True,
     plot_medians: bool = True,
     plot_95_interval: bool = False,
     plot_means: bool = False,
@@ -815,6 +833,10 @@ def _build_medians_only_figure(
         cohort_specs: Enabled cohort specifications (label/color).
         block_times: Block size grid in display order.
         yaxis_title: Y-axis label (metric name).
+        yaxis_titles: Optional per-cohort y-axis labels. When provided, labels are
+            applied per subplot column using cohort names as keys.
+        yaxis_type: Plotly y-axis scale type ("linear" or "log").
+        share_yaxes: Whether to share the y-axis across subplot columns.
         plot_medians: If True, plot the median line.
         plot_95_interval: If True and `plot_medians` is True, plot the central 95% interval
             (2.5th..97.5th percentiles) around the median points.
@@ -835,18 +857,22 @@ def _build_medians_only_figure(
     fig = make_subplots(
         rows=1,
         cols=n_cols,
-        shared_yaxes=True,
+        shared_yaxes=bool(share_yaxes),
         horizontal_spacing=0.06,
         subplot_titles=subplot_titles,
     )
 
     x_categories = [str(int(b)) for b in block_times]
     show_legend = bool(plot_means)
+    use_log_axis = str(yaxis_type) == "log"
 
     for col_idx, spec in enumerate(cohort_specs, start=1):
         y = list(medians.get(spec.name, []))
         if len(y) != len(x_categories):
             y = [float("nan")] * len(x_categories)
+        if use_log_axis:
+            # Log axes cannot display non-positive values.
+            y = [float(v) if np.isfinite(v) and float(v) > 0.0 else float("nan") for v in y]
 
         if bool(plot_medians):
             error_y = None
@@ -860,7 +886,9 @@ def _build_medians_only_figure(
                     err_minus: List[Optional[float]] = []
                     customdata = []
                     for med, lo, hi in zip(y, y_lo, y_hi):
-                        if np.isfinite(med) and np.isfinite(lo) and np.isfinite(hi):
+                        if np.isfinite(med) and np.isfinite(lo) and np.isfinite(hi) and (
+                            (not use_log_axis) or (float(med) > 0.0 and float(lo) > 0.0 and float(hi) > 0.0)
+                        ):
                             err_plus.append(float(hi - med))
                             err_minus.append(float(med - lo))
                         else:
@@ -897,6 +925,8 @@ def _build_medians_only_figure(
             y_mean = list((means or {}).get(spec.name, []))
             if len(y_mean) != len(x_categories):
                 y_mean = [float("nan")] * len(x_categories)
+            if use_log_axis:
+                y_mean = [float(v) if np.isfinite(v) and float(v) > 0.0 else float("nan") for v in y_mean]
             fig.add_trace(
                 go.Scatter(
                     x=x_categories,
@@ -913,14 +943,18 @@ def _build_medians_only_figure(
                 col=col_idx,
             )
 
-        fig.add_hline(
-            y=0.0,
-            line=dict(color="gray", width=1, dash="dash"),
-            row=1,
-            col=col_idx,
-        )
-        if col_idx == 1:
-            fig.update_yaxes(title_text=yaxis_title, row=1, col=col_idx)
+        if str(yaxis_type) != "log":
+            fig.add_hline(
+                y=0.0,
+                line=dict(color="gray", width=1, dash="dash"),
+                row=1,
+                col=col_idx,
+            )
+        axis_title = str(yaxis_titles.get(spec.name, yaxis_title)) if yaxis_titles is not None else yaxis_title
+        if col_idx == 1 or yaxis_titles is not None:
+            fig.update_yaxes(title_text=axis_title, type=str(yaxis_type), row=1, col=col_idx)
+        else:
+            fig.update_yaxes(type=str(yaxis_type), row=1, col=col_idx)
 
     fig.update_xaxes(title_text="B", categoryorder="array", categoryarray=x_categories)
     fig.update_layout(
@@ -1041,6 +1075,20 @@ def parse_args() -> argparse.Namespace:
             "'mtm' uses the legacy mark-to-market Δ(fees0_earned*m_t + fees1_earned). Default: flow."
         ),
     )
+    p.add_argument(
+        "--y-scale",
+        "--y_scale",
+        choices=("linear", "log"),
+        default="linear",
+        help=(
+            "Y-scale mode for ratio plots. "
+            "'linear' plots ΔLVR/ΔFees directly. "
+            "'log' plots log10(ΔLVR/ΔFees) for cohorts whose selected summary points "
+            "(medians/means being plotted) are strictly positive; "
+            "cohorts that fail this condition stay in raw units and, in that mixed case, "
+            "ratio subplots use independent y-axes with per-subplot labels."
+        ),
+    )
     return p.parse_args()
 
 
@@ -1102,6 +1150,112 @@ def _infer_pid_from_npz_path(npz_path: Path) -> int:
     return int(os.getpid())
 
 
+def _ratio_log10_eligibility_from_summary(
+    ratio_summary_df: pd.DataFrame,
+    *,
+    cohort_names: Sequence[str],
+    use_medians: bool,
+    use_means: bool,
+) -> Dict[str, bool]:
+    """Detect cohorts where log-transform is valid for plotted summary points.
+
+    Parameters:
+        ratio_summary_df: Summary DataFrame with at least `cohort`, `median`, `mean`.
+        cohort_names: Cohorts to evaluate (subplot order).
+        use_medians: Whether median points are plotted.
+        use_means: Whether mean points are plotted.
+
+    Returns:
+        Dict[str, bool]: Cohort -> True iff all finite chosen points are strictly positive.
+
+    Notes:
+        - Eligibility is evaluated only on the points that are actually plotted
+          (median and/or mean), not on all underlying samples.
+        - If neither means nor medians is selected, medians are used by default.
+        - Missing or entirely non-finite chosen points make a cohort ineligible.
+    """
+    metric_cols: List[str] = []
+    if bool(use_medians):
+        metric_cols.append("median")
+    if bool(use_means):
+        metric_cols.append("mean")
+    if not metric_cols:
+        metric_cols.append("median")
+
+    eligibility: Dict[str, bool] = {}
+    for cohort in cohort_names:
+        cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort]
+        if cohort_df.empty:
+            eligibility[cohort] = False
+            continue
+
+        has_any = False
+        is_valid = True
+        for col in metric_cols:
+            vals = np.asarray(cohort_df[col], dtype=float)
+            vals = vals[np.isfinite(vals)]
+            if vals.size <= 0:
+                continue
+            has_any = True
+            if np.any(vals <= 0.0):
+                is_valid = False
+                break
+
+        eligibility[cohort] = bool(has_any and is_valid)
+    return eligibility
+
+
+def _transform_summary_series_for_plot(values: Sequence[float], *, apply_log10: bool) -> List[float]:
+    """Transform plotted summary points for ratio figures.
+
+    Parameters:
+        values: Summary-point sequence (typically medians or means by block size).
+        apply_log10: If True, apply base-10 log to strictly positive finite values.
+
+    Returns:
+        List[float]: Transformed values; invalid entries become NaN under log mode.
+
+    Notes:
+        This helper is intended for plotted summary lines only. Under `apply_log10`,
+        non-positive values are mapped to NaN.
+    """
+    arr = np.asarray(values, dtype=float)
+    out: List[float] = []
+    for v in arr:
+        if not np.isfinite(v):
+            out.append(float("nan"))
+            continue
+        if not bool(apply_log10):
+            out.append(float(v))
+            continue
+        out.append(float(np.log10(v)) if float(v) > 0.0 else float("nan"))
+    return out
+
+
+def _transform_ratio_values_for_plot(values: np.ndarray, *, apply_log10: bool) -> np.ndarray:
+    """Transform ratio samples for plotting under the selected y-scale mode.
+
+    Parameters:
+        values: 1D ratio samples (already finite-filtered or raw finite candidates).
+        apply_log10: If True, transform strictly positive values via `log10`.
+
+    Returns:
+        np.ndarray: Values to plot/statistically summarize.
+
+    Notes:
+        When `apply_log10=True`, non-positive values are removed before transform.
+        Callers should set `apply_log10` only for cohorts confirmed as log10-eligible.
+    """
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if not bool(apply_log10):
+        return arr
+    arr = arr[arr > 0.0]
+    if arr.size <= 0:
+        return np.array([], dtype=float)
+    return np.log10(arr)
+
+
 def main() -> None:
     """Run the block size sweep and write plots + data to disk.
 
@@ -1123,6 +1277,8 @@ def main() -> None:
     plot_violin = bool(getattr(args, "plot_violin_plot", False))
     plot_means = bool(getattr(args, "plot_means", False))
     plot_95_interval = bool(getattr(args, "plot_95_interval", False))
+    yaxis_type = str(getattr(args, "y_scale", "linear"))
+    yaxis_suffix = " (log scale)" if yaxis_type == "log" else ""
     # Default: always plot medians; other layers are optional.
     plot_medians = True
 
@@ -1214,12 +1370,20 @@ def main() -> None:
 
         print(f"[LVR_vs_blocksize] loaded: {npz_path}")
         print(f"[LVR_vs_blocksize] fee definition: {fee_definition}")
+        print(f"[LVR_vs_blocksize] y scale: {yaxis_type}")
         print(f"[LVR_vs_blocksize] cohorts: {', '.join(cohort_names)}")
         print(f"[LVR_vs_blocksize] B grid: {block_times[0]}..{block_times[-1]} (n={len(block_times)})")
         print(f"[LVR_vs_blocksize] seeds:  {seeds[0]}..{seeds[-1]} (n={len(seeds)})")
 
-        lvr_yaxis_title = "ΔLVR (block)" if str(fee_definition) == "flow" else "ΔLVR"
-        ratio_yaxis_title = "ΔLVR/ΔFees" if str(fee_definition) == "flow" else "ΔLVR/ΔFees (mtm)"
+        lvr_yaxis_title = ("ΔLVR (block)" if str(fee_definition) == "flow" else "ΔLVR") + yaxis_suffix
+        base_ratio_yaxis_title = "ΔLVR/ΔFees" if str(fee_definition) == "flow" else "ΔLVR/ΔFees (mtm)"
+        ratio_yaxis_title = base_ratio_yaxis_title
+        ratio_plot_yaxis_type = str(yaxis_type)
+        ratio_share_yaxes = True
+        ratio_plot_cohort_specs: List[CohortSpec] = list(ratio_enabled_cohorts)
+        ratio_axis_titles_by_cohort: Optional[Dict[str, str]] = None
+        ratio_can_log_by_cohort: Dict[str, bool] = {c: False for c in ratio_cohort_names}
+        ratio_use_log10 = str(yaxis_type) == "log"
 
         # Build distributions per (cohort, B) by pooling across seeds and time.
         distributions: Dict[str, Dict[int, np.ndarray]] = {c: {} for c in cohort_names}
@@ -1324,6 +1488,42 @@ def main() -> None:
             ratio_summary_csv = out_root / f"dLVR_over_dFees_summary_{label_stub}_runs{runs}_pid{pid}.csv"
             ratio_summary_df.to_csv(ratio_summary_csv, index=False)
 
+            if bool(ratio_use_log10):
+                ratio_can_log_by_cohort = _ratio_log10_eligibility_from_summary(
+                    ratio_summary_df,
+                    cohort_names=ratio_cohort_names,
+                    use_medians=bool(plot_medians),
+                    use_means=bool(plot_means),
+                )
+                ratio_plot_yaxis_type = "linear"
+                has_raw_fallback = any(not bool(ratio_can_log_by_cohort.get(c, False)) for c in ratio_cohort_names)
+                ratio_share_yaxes = not has_raw_fallback
+                if has_raw_fallback:
+                    ratio_yaxis_title = base_ratio_yaxis_title
+                    ratio_axis_titles_by_cohort = {
+                        c: (f"log({base_ratio_yaxis_title})" if bool(ratio_can_log_by_cohort.get(c, False)) else base_ratio_yaxis_title)
+                        for c in ratio_cohort_names
+                    }
+                    fallback_names = [c for c in ratio_cohort_names if not bool(ratio_can_log_by_cohort.get(c, False))]
+                    if fallback_names:
+                        print(
+                            "[LVR_vs_blocksize] log-transform fallback to raw ratio (based on selected summary points) for cohorts: "
+                            + ", ".join(fallback_names)
+                        )
+                else:
+                    ratio_yaxis_title = f"log({base_ratio_yaxis_title})"
+                    ratio_axis_titles_by_cohort = None
+
+                if ratio_distributions is not None:
+                    for cohort in ratio_cohort_names:
+                        apply_log = bool(ratio_can_log_by_cohort.get(cohort, False))
+                        for b in block_times:
+                            vals = np.asarray(ratio_distributions[cohort].get(int(b), np.array([], dtype=float)), dtype=float)
+                            ratio_distributions[cohort][int(b)] = _transform_ratio_values_for_plot(
+                                vals,
+                                apply_log10=apply_log,
+                            )
+
         plot_label = "violin" if bool(plot_violin) else "medians"
         if not bool(plot_violin):
             medians_by_cohort: Dict[str, List[float]] = {}
@@ -1349,6 +1549,7 @@ def main() -> None:
                 cohort_specs=enabled_cohorts,
                 block_times=block_times,
                 yaxis_title=lvr_yaxis_title,
+                yaxis_type=yaxis_type,
                 plot_medians=bool(plot_medians),
                 plot_95_interval=bool(plot_95_interval),
                 plot_means=bool(plot_means),
@@ -1364,8 +1565,15 @@ def main() -> None:
                 ratio_means_by_cohort: Dict[str, List[float]] = {}
                 for cohort in ratio_cohort_names:
                     cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
-                    ratio_medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
-                    ratio_means_by_cohort[cohort] = [float(x) for x in cohort_df["mean"].to_list()]
+                    apply_log = bool(ratio_use_log10 and ratio_can_log_by_cohort.get(cohort, False))
+                    ratio_medians_by_cohort[cohort] = _transform_summary_series_for_plot(
+                        cohort_df["median"].to_list(),
+                        apply_log10=apply_log,
+                    )
+                    ratio_means_by_cohort[cohort] = _transform_summary_series_for_plot(
+                        cohort_df["mean"].to_list(),
+                        apply_log10=apply_log,
+                    )
                 ratio_p2_5_by_cohort: Optional[Dict[str, List[float]]] = None
                 ratio_p97_5_by_cohort: Optional[Dict[str, List[float]]] = None
                 if bool(plot_95_interval) and bool(plot_medians):
@@ -1373,16 +1581,26 @@ def main() -> None:
                     ratio_p97_5_by_cohort = {}
                     for cohort in ratio_cohort_names:
                         cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
-                        ratio_p2_5_by_cohort[cohort] = [float(x) for x in cohort_df["p2_5"].to_list()]
-                        ratio_p97_5_by_cohort[cohort] = [float(x) for x in cohort_df["p97_5"].to_list()]
+                        apply_log = bool(ratio_use_log10 and ratio_can_log_by_cohort.get(cohort, False))
+                        ratio_p2_5_by_cohort[cohort] = _transform_summary_series_for_plot(
+                            cohort_df["p2_5"].to_list(),
+                            apply_log10=apply_log,
+                        )
+                        ratio_p97_5_by_cohort[cohort] = _transform_summary_series_for_plot(
+                            cohort_df["p97_5"].to_list(),
+                            apply_log10=apply_log,
+                        )
                 ratio_fig = _build_medians_only_figure(
                     ratio_medians_by_cohort,
                     means=ratio_means_by_cohort,
                     p2_5=ratio_p2_5_by_cohort,
                     p97_5=ratio_p97_5_by_cohort,
-                    cohort_specs=ratio_enabled_cohorts,
+                    cohort_specs=ratio_plot_cohort_specs,
                     block_times=block_times,
                     yaxis_title=ratio_yaxis_title,
+                    yaxis_titles=ratio_axis_titles_by_cohort,
+                    yaxis_type=ratio_plot_yaxis_type,
+                    share_yaxes=bool(ratio_share_yaxes),
                     plot_medians=bool(plot_medians),
                     plot_95_interval=bool(plot_95_interval),
                     plot_means=bool(plot_means),
@@ -1397,6 +1615,7 @@ def main() -> None:
                 cohort_specs=enabled_cohorts,
                 block_times=block_times,
                 yaxis_title=lvr_yaxis_title,
+                yaxis_type=yaxis_type,
                 plot_medians=bool(plot_medians),
                 plot_95_interval=bool(plot_95_interval),
                 plot_means=bool(plot_means),
@@ -1410,9 +1629,12 @@ def main() -> None:
             if ratio_distributions is not None:
                 ratio_fig = _build_violin_figure(
                     ratio_distributions,
-                    cohort_specs=ratio_enabled_cohorts,
+                    cohort_specs=ratio_plot_cohort_specs,
                     block_times=block_times,
                     yaxis_title=ratio_yaxis_title,
+                    yaxis_titles=ratio_axis_titles_by_cohort,
+                    yaxis_type=ratio_plot_yaxis_type,
+                    share_yaxes=bool(ratio_share_yaxes),
                     plot_medians=bool(plot_medians),
                     plot_95_interval=bool(plot_95_interval),
                     plot_means=bool(plot_means),
@@ -1455,7 +1677,7 @@ def main() -> None:
     if args.max_workers <= 0:
         raise SystemExit("--max-workers must be positive.")
     if args.block_min < 2:
-        raise SystemExit("--block-min must be >= 2 (run.py requires block_time > 1).")
+        raise SystemExit("--block-min must be >= 2 (scripts/run.py requires block_time > 1).")
     if args.block_min > args.block_max:
         raise SystemExit("--block-min cannot exceed --block-max.")
 
@@ -1483,8 +1705,9 @@ def main() -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     fee_mode_label = str(base_params.get("fee_mode", "unknown"))
     fee_def_label = str(args.fee_definition)
-    lvr_yaxis_title = "ΔLVR (block)" if fee_def_label == "flow" else "ΔLVR"
-    ratio_yaxis_title = "ΔLVR/ΔFees" if fee_def_label == "flow" else "ΔLVR/ΔFees (mtm)"
+    lvr_yaxis_title = ("ΔLVR (block)" if fee_def_label == "flow" else "ΔLVR") + yaxis_suffix
+    base_ratio_yaxis_title = "ΔLVR/ΔFees" if fee_def_label == "flow" else "ΔLVR/ΔFees (mtm)"
+    ratio_yaxis_title = base_ratio_yaxis_title
     pid = int(os.getpid())
 
     # Temp root for per-run artifacts (logs, etc.). Each worker uses a unique folder.
@@ -1522,6 +1745,7 @@ def main() -> None:
     print(f"[LVR_vs_blocksize] config: {config_path}")
     print(f"[LVR_vs_blocksize] fee mode: {fee_mode_label}")
     print(f"[LVR_vs_blocksize] fee definition: {fee_def_label}")
+    print(f"[LVR_vs_blocksize] y scale: {yaxis_type}")
     print(f"[LVR_vs_blocksize] cohorts: {', '.join(cohort_names)}")
     print(f"[LVR_vs_blocksize] B grid: {block_times[0]}..{block_times[-1]} (n={len(block_times)})")
     print(f"[LVR_vs_blocksize] seeds:  {seeds[0]}..{seeds[-1]} (n={len(seeds)}, step={args.seed_step})")
@@ -1653,6 +1877,14 @@ def main() -> None:
     summary_df.to_csv(summary_csv, index=False)
 
     # Build distributions/stats for ΔLVR/ΔFees ("fee coverage") ratio.
+    ratio_cohort_names = list(cohort_names)
+    ratio_use_log10 = str(yaxis_type) == "log"
+    ratio_can_log_by_cohort: Dict[str, bool] = {c: False for c in ratio_cohort_names}
+    ratio_plot_yaxis_type = "linear" if bool(ratio_use_log10) else str(yaxis_type)
+    ratio_share_yaxes = True
+    ratio_axis_titles_by_cohort: Optional[Dict[str, str]] = None
+    ratio_plot_cohort_specs: List[CohortSpec] = list(enabled_cohorts)
+
     ratio_distributions: Dict[str, Dict[int, np.ndarray]] = {c: {} for c in cohort_names}
     ratio_summary_rows: List[Dict[str, Any]] = []
     for cohort in cohort_names:
@@ -1703,6 +1935,40 @@ def main() -> None:
     )
     ratio_summary_df.to_csv(ratio_summary_csv, index=False)
 
+    if bool(ratio_use_log10):
+        ratio_can_log_by_cohort = _ratio_log10_eligibility_from_summary(
+            ratio_summary_df,
+            cohort_names=ratio_cohort_names,
+            use_medians=bool(plot_medians),
+            use_means=bool(plot_means),
+        )
+        has_raw_fallback = any(not bool(ratio_can_log_by_cohort.get(c, False)) for c in ratio_cohort_names)
+        ratio_share_yaxes = not has_raw_fallback
+        if has_raw_fallback:
+            ratio_yaxis_title = base_ratio_yaxis_title
+            ratio_axis_titles_by_cohort = {
+                c: (f"log({base_ratio_yaxis_title})" if bool(ratio_can_log_by_cohort.get(c, False)) else base_ratio_yaxis_title)
+                for c in ratio_cohort_names
+            }
+            fallback_names = [c for c in ratio_cohort_names if not bool(ratio_can_log_by_cohort.get(c, False))]
+            if fallback_names:
+                print(
+                    "[LVR_vs_blocksize] log-transform fallback to raw ratio (based on selected summary points) for cohorts: "
+                    + ", ".join(fallback_names)
+                )
+        else:
+            ratio_yaxis_title = f"log({base_ratio_yaxis_title})"
+            ratio_axis_titles_by_cohort = None
+
+        for cohort in cohort_names:
+            apply_log = bool(ratio_can_log_by_cohort.get(cohort, False))
+            for b in block_times:
+                vals = np.asarray(ratio_distributions[cohort].get(int(b), np.array([], dtype=float)), dtype=float)
+                ratio_distributions[cohort][int(b)] = _transform_ratio_values_for_plot(
+                    vals,
+                    apply_log10=apply_log,
+                )
+
     plot_label = "violin" if bool(plot_violin) else "medians"
     # fig_title = f"ΔLVR per block vs block_time (runs={int(args.runs)}, skip_step={skip_step})"
     if not bool(plot_violin):
@@ -1729,6 +1995,7 @@ def main() -> None:
             cohort_specs=enabled_cohorts,
             block_times=block_times,
             yaxis_title=lvr_yaxis_title,
+            yaxis_type=yaxis_type,
             plot_medians=bool(plot_medians),
             plot_95_interval=bool(plot_95_interval),
             plot_means=bool(plot_means),
@@ -1745,8 +2012,15 @@ def main() -> None:
         ratio_means_by_cohort: Dict[str, List[float]] = {}
         for cohort in cohort_names:
             cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
-            ratio_medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
-            ratio_means_by_cohort[cohort] = [float(x) for x in cohort_df["mean"].to_list()]
+            apply_log = bool(ratio_use_log10 and ratio_can_log_by_cohort.get(cohort, False))
+            ratio_medians_by_cohort[cohort] = _transform_summary_series_for_plot(
+                cohort_df["median"].to_list(),
+                apply_log10=apply_log,
+            )
+            ratio_means_by_cohort[cohort] = _transform_summary_series_for_plot(
+                cohort_df["mean"].to_list(),
+                apply_log10=apply_log,
+            )
         ratio_p2_5_by_cohort = None
         ratio_p97_5_by_cohort = None
         if bool(plot_95_interval) and bool(plot_medians):
@@ -1754,16 +2028,26 @@ def main() -> None:
             ratio_p97_5_by_cohort = {}
             for cohort in cohort_names:
                 cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
-                ratio_p2_5_by_cohort[cohort] = [float(x) for x in cohort_df["p2_5"].to_list()]
-                ratio_p97_5_by_cohort[cohort] = [float(x) for x in cohort_df["p97_5"].to_list()]
+                apply_log = bool(ratio_use_log10 and ratio_can_log_by_cohort.get(cohort, False))
+                ratio_p2_5_by_cohort[cohort] = _transform_summary_series_for_plot(
+                    cohort_df["p2_5"].to_list(),
+                    apply_log10=apply_log,
+                )
+                ratio_p97_5_by_cohort[cohort] = _transform_summary_series_for_plot(
+                    cohort_df["p97_5"].to_list(),
+                    apply_log10=apply_log,
+                )
         ratio_fig = _build_medians_only_figure(
             ratio_medians_by_cohort,
             means=ratio_means_by_cohort,
             p2_5=ratio_p2_5_by_cohort,
             p97_5=ratio_p97_5_by_cohort,
-            cohort_specs=enabled_cohorts,
+            cohort_specs=ratio_plot_cohort_specs,
             block_times=block_times,
             yaxis_title=ratio_yaxis_title,
+            yaxis_titles=ratio_axis_titles_by_cohort,
+            yaxis_type=ratio_plot_yaxis_type,
+            share_yaxes=bool(ratio_share_yaxes),
             plot_medians=bool(plot_medians),
             plot_95_interval=bool(plot_95_interval),
             plot_means=bool(plot_means),
@@ -1780,6 +2064,7 @@ def main() -> None:
             cohort_specs=enabled_cohorts,
             block_times=block_times,
             yaxis_title=lvr_yaxis_title,
+            yaxis_type=yaxis_type,
             plot_medians=bool(plot_medians),
             plot_95_interval=bool(plot_95_interval),
             plot_means=bool(plot_means),
@@ -1794,9 +2079,12 @@ def main() -> None:
 
         ratio_fig = _build_violin_figure(
             ratio_distributions,
-            cohort_specs=enabled_cohorts,
+            cohort_specs=ratio_plot_cohort_specs,
             block_times=block_times,
             yaxis_title=ratio_yaxis_title,
+            yaxis_titles=ratio_axis_titles_by_cohort,
+            yaxis_type=ratio_plot_yaxis_type,
+            share_yaxes=bool(ratio_share_yaxes),
             plot_medians=bool(plot_medians),
             plot_95_interval=bool(plot_95_interval),
             plot_means=bool(plot_means),

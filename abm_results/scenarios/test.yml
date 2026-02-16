@@ -10,7 +10,7 @@ simulate:
   # Number of micro-time steps aggregated per block (1 switches to non-block mode)
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 13000
+  T: 100000
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 3000
   # Compute smart-router DEX share (DEX/(CEX+DEX)) every n blocks

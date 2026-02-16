@@ -42,7 +42,7 @@ Stored results (written under `abm_results/grid_search/dashboard_nd/`):
     the corresponding `i__*` / `v__*` sweep coordinates).
 
 To build the interactive HTML dashboard (PnL surface + fee histogram) from the cached CSV, use:
-  `build_parameter_surface_nd_pnl_fee_dashboard.py`
+  `scripts/build_parameter_surface_nd_pnl_fee_dashboard.py`
 
 Notes:
   - This script runs the full simulation for every parameter combination (potentially expensive).
@@ -66,12 +66,12 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-import run as run_module
-from utils import load_simulation_parameters
+from scripts import run as run_module
+from core.utils import load_simulation_parameters
 
 
 def _silent_tqdm(iterable=None, **kwargs):
-    """Silence tqdm inside run.simulate to avoid nested progress bars."""
+    """Silence tqdm inside scripts.run.simulate to avoid nested progress bars."""
     if iterable is None:
         total = int(kwargs.get("total", 0))
         return range(total)
@@ -466,7 +466,7 @@ def _result_to_row(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="N-parameter grid runner (cached CSV outputs). Use build_parameter_surface_nd_pnl_fee_dashboard.py to render HTML."
+        description="N-parameter grid runner (cached CSV outputs). Use scripts/build_parameter_surface_nd_pnl_fee_dashboard.py to render HTML."
     )
     parser.add_argument("--config", type=Path, default=BASE_CONFIG_PATH, help="Base YAML scenario config path.")
     parser.add_argument("--runs-per-point", type=int, default=RUNS_PER_POINT_DEFAULT)
@@ -784,7 +784,7 @@ def main() -> None:
     print(f"[dashboard_nd] cache complete: {csv_global}")
     print(
         "[dashboard_nd] build HTML with:\n"
-        f"  python build_parameter_surface_nd_pnl_fee_dashboard.py --cache {csv_global} --meta {meta_global} --output {html_default}"
+        f"  python -m scripts.build_parameter_surface_nd_pnl_fee_dashboard --cache {csv_global} --meta {meta_global} --output {html_default}"
     )
 
 
