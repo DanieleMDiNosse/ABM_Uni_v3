@@ -32,7 +32,7 @@ The implementation lives in `scripts/run.py` and is configured via YAML files. E
 - **Comprehensive telemetry**: per-agent PnL series split by smart router vs. noise trader, liquidity history, fee path, target bands, LP wallet/wealth (hedged vs. unhedged), micro-time traces (per block), and verbose logs under `<results_root>/logs/` (e.g. `abm_results/scenarios/<scenario_name>/logs/` when running via `python -m scripts.run --config ...`).
 
 For the *detailed* and math-accurate description of each agent’s decision rules and execution logic, see:
-- **[Agent Behaviour Details](agents.md)**
+- **[Agent Behaviour Details](agents_spec.md)**
 
 ---
 
@@ -143,16 +143,26 @@ simulate:
   # cex_heston_sigma_v: 0.1      # volatility of variance
   # cex_heston_rho: -0.5         # correlation between price and variance shocks
   # cex_heston_v0: 2.25e-8       # optional initial variance; defaults to cex_sigma^2 when omitted
-  smart_trades_per_block: 8.0    # expected smart-router intents per block
-  noise_trades_per_block: 6.0    # expected noise intents per block
-  narrow_mints_per_block: 200.0  # expected narrow LP mints per block (total across narrow LPs)
+  # Trader arrivals (Poisson intensities).
+  # Prefer per-second knobs (micro-step = 1 second): expected per block scales with block_time.
+  smart_trades_per_second: 1.6    # per second => ~8 per block when block_time=5
+  noise_trades_per_second: 1.2    # per second => ~6 per block when block_time=5
+  # smart_trades_per_block: 8.0   # legacy per-block knob (ignored if *_per_second is set)
+  # noise_trades_per_block: 6.0   # legacy per-block knob (ignored if *_per_second is set)
+
+  # LP event targets (Poisson means). Same convention: prefer per-second knobs.
+  narrow_mints_per_second: 40.0   # per second => ~200 per block when block_time=5
+  # narrow_mints_per_block: 200.0 # legacy per-block knob (ignored if *_per_second is set)
   passive_lp_share: 0.2
-  passive_mints_per_block: 60.0  # expected passive LP mints per block (total across passive LPs)
-  passive_burns_per_block: 10.0  # expected passive LP burns per block (total across passive LPs)
+  passive_mints_per_second: 12.0  # per second => ~60 per block when block_time=5
+  passive_burns_per_second: 2.0   # per second => ~10 per block when block_time=5
+  # passive_mints_per_block: 60.0   # legacy per-block knob (ignored if *_per_second is set)
+  # passive_burns_per_block: 10.0   # legacy per-block knob (ignored if *_per_second is set)
   passive_width_pct: 5.0
   passive_width_ticks: 500
   N_LP: 500                # number of strategic LP agents (excluding the seed binomial-hill LPs)
   tau: 20
+  tau_seconds: 100          # optional: per-second LP review clock (mean waiting time in seconds)
   w_min_ticks: 10
   w_max_ticks: 1_774_540
   basis_half_life: 20
@@ -205,9 +215,28 @@ Outputs:
 
 ## Batch Runners & Analysis Helpers
 - `scripts/run_multiple.py`: run a single scenario config over many seeds (parallel) and plot mean ± std bands for agent PnL series under `abm_results/scenarios/<scenario>/multi_runs/{html,png}/`.
-- `scripts/run_parameter_surface_nd_pnl_fee_dashboard.py`: ND parameter sweeps (cache-only) writing CSV + metadata under `abm_results/grid_search/dashboard_nd/data/`.
-- `scripts/build_parameter_surface_nd_pnl_fee_dashboard.py`: build the standalone HTML dashboard from the cached CSV under `abm_results/grid_search/dashboard_nd/html/`.
+- `scripts/run_parameter_surface_nd_pnl_fee_dashboard.py`: ND parameter sweeps (cache-only) writing CSV + metadata under `abm_results/grid_search/dashboard_nd/data/`; worker runs use isolated temp output folders and the cache fingerprint includes an effective config-content hash.
+- `scripts/build_parameter_surface_nd_pnl_fee_dashboard.py`: build the standalone HTML dashboard from the cached CSV under `abm_results/grid_search/dashboard_nd/html/` (reads cache metadata when available, while staying compatible with older caches).
+- Grid enumeration/seeding details: `docs/nd_grid_sampling_methods.qmd`.
+- `scripts/run_experiment_design.py`: run experiment designs (grid/LHS/Sobol/Saltelli/adaptive refine/BayesOpt) defined in an experiment YAML under `abm_results/experiments/`, caching point summaries under `abm_results/experiments_runs/<tag>/data/`.
+- `scripts/build_experiment_design_dashboard.py`: build a standalone HTML dashboard for sampled designs from `points_<tag>.csv` (scatter + filtering + optional binned heatmap).
+- `scripts/analyze_experiment_design.py`: screening (permutation importance), Saltelli Sobol indices (when applicable), and top-point summaries from an experiment cache.
 - `scripts/sigma_calibration.py`: derive realistic per-second `cex_sigma` from Binance 1s ETH/USDC data (CSV/Parquet/pickle) and optionally persist the computed series.
 - `scripts/visualize_distributions.py`: generate and save figures for the stochastic components used by the simulator (Heston price/volatility paths, binomial-hill initial liquidity, binomial width noise, log-normal trader and LP mint-size distributions, and geometric LP review clocks), useful for validating input distributions and for documentation figures.
+
+Reproduction recipe (experiment designs):
+```bash
+conda activate main
+
+# 1) Preview + run (examples live under abm_results/experiments/)
+python -m scripts.run_experiment_design --experiment abm_results/experiments/example_lhs_screening.yml --dry-run
+python -m scripts.run_experiment_design --experiment abm_results/experiments/example_lhs_screening.yml
+
+# 2) Build the sampled-design dashboard (use the printed cache/meta paths)
+python -m scripts.build_experiment_design_dashboard --cache abm_results/experiments_runs/<tag>/data/points_<tag>.csv --meta abm_results/experiments_runs/<tag>/data/meta_<tag>.json
+
+# 3) Analyze (screening; Sobol indices only if the design is sobol_saltelli)
+python -m scripts.analyze_experiment_design --cache abm_results/experiments_runs/<tag>/data/points_<tag>.csv --meta abm_results/experiments_runs/<tag>/data/meta_<tag>.json --metric fee_mean
+```
 
 For further questions or ideas, open an issue or start a discussion in this repository. Happy simulating!

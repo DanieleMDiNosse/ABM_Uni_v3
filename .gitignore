@@ -177,38 +177,28 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# csv
-*.csv
-
-# folder
-abm_results/html/*
-abm_results/png/*
+# Generated outputs
+#
+# Keep canonical figures/assets trackable under `docs/` and `paper/`, but ignore
+# simulator artifacts under `abm_results/` by default.
+abm_results/**/runs/
+abm_results/**/multi_runs/
+abm_results/experiments_runs/
+abm_results/**/logs/
+abm_results/**/png/
+abm_results/**/html/
 abm_results/web_runs/
-animation_frames/*
+abm_results/**/*.csv
+abm_results/**/*.gif
+abm_results/**/*.html
+abm_results/**/*.npy
+abm_results/**/*.parquet
+abm_results/**/*.png
+abm_results/**/*.prof
+animation_frames/
 
 # personal notebook
 personal.ipynb
-
-# GIF
-*.gif
-
-# HTML
-*.html
-
-# PNG
-*.png
-
-# PDF
-*.pdf
-
-# TXT
-*.txt
-
-# parquet, csv, pickle, pkl
-*.parquet
-*.csv
-*.pickle
-*.pkl
 
 # Zone.Identifiers
 *:Zone.Identifier
@@ -219,12 +209,8 @@ abm_mempool_config.yml
 # data
 data/
 
-# GitHub Pages site assets/layouts (tracked under docs/)
-!docs/**/*.html
-!docs/**/*.png
-
 # .tex
-*.tex
+# *.tex
 
 # .npz
 *.npz

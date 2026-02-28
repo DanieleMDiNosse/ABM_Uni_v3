@@ -75,13 +75,13 @@ class ReferenceMarket:
 ```
 
 If we denote the price at (discrete) time step 
-$$
+$
 t
-$$
+$
  by 
-$$
+$
 m_t
-$$
+$
 , then
 
 $$
@@ -92,14 +92,14 @@ $$
 where:
 
 - 
-  $$
+  $
   \mu
-  $$
+  $
    is the **drift per step** (here, per second),
 - 
-  $$
+  $
   \sigma
-  $$
+  $
    is the **volatility per step** of log‑returns (here, per second).
 
 Since one micro‑step is **1 second**, we interpret `cex_sigma` as:
@@ -123,13 +123,13 @@ Assume the raw CSV contains at least:
 ### 2.1. Time Index and Sorting
 
 Let 
-$$
+$
 P_t
-$$
+$
  be the close price at second 
-$$
+$
 t
-$$
+$
 . In pandas:
 
 ```python
@@ -154,19 +154,19 @@ df['Close'] = df['Close'].astype(float)
 ```
 
 This gives a time‑indexed series 
-$$
+$
 P_t = \text{Close}_t
-$$
+$
  at (approximately)
 1‑second intervals. Minor gaps (missing seconds) are acceptable; log‑returns
 are only computed where both 
-$$
+$
 P_{t-1}
-$$
+$
  and 
-$$
+$
 P_t
-$$
+$
  exist.
 
 ### 2.2. Log‑Returns at 1‑Second Frequency
@@ -187,9 +187,9 @@ log_ret_1s = log_ret_1s.replace([np.inf, -np.inf], np.nan)
 ```
 
 The sequence 
-$$
+$
 \{ r_t \}
-$$
+$
  is the empirical counterpart of the GBM
 log‑returns driven by `mu` and `sigma` in the simulator.
 
@@ -208,27 +208,27 @@ approach is to use a **rolling window** of recent log‑returns.
 ### 3.1. Rolling Realized Variance
 
 Fix a window length 
-$$
+$
 N
-$$
+$
  in seconds (e.g. 
-$$
+$
 N = 300
-$$
+$
  for 5 minutes,
 or 
-$$
+$
 N = 900
-$$
+$
  for 15 minutes). For each time 
-$$
+$
 t \ge N
-$$
+$
 , define the
 rolling empirical variance over the last 
-$$
+$
 N
-$$
+$
  returns:
 
 $$
@@ -253,9 +253,9 @@ $$
 
 Under the GBM model with small drift, this rolling standard deviation is
 an estimator of the **per‑second volatility** 
-$$
+$
 \sigma_{\text{1s}}
-$$
+$
 .
 
 In pandas, using a time‑based rolling window:
@@ -270,17 +270,7 @@ sigma_1s = (
 )
 ```
 
-This produces a **time series** 
-$$
-\{ \hat{\sigma}_{t,\text{1s}} \}
-$$
-,
-each value being an estimate of the per‑second volatility at time 
-$$
-t
-$$
-,
-based on the recent window of returns.
+This produces a **time series** $\{ \hat{\sigma}_{t,\text{1s}} \}$,each value being an estimate of the per‑second volatility at time $t$,based on the recent window of returns.
 
 ### 3.2. Link to Annualized Volatility (Optional)
 
@@ -288,14 +278,14 @@ Sometimes it is convenient to express volatility in **annualized** units.
 If:
 
 - 
-  $$
+  $
   \hat{\sigma}_{t,\text{1s}}
-  $$
+  $
    is the per‑second volatility estimate,
 - there are 
-  $$
+  $
   S_{\text{year}} = 365 \cdot 24 \cdot 60 \cdot 60
-  $$
+  $
    seconds
   per year,
 
@@ -315,9 +305,9 @@ sigma_annualized = sigma_1s * np.sqrt(seconds_per_year)
 
 **Important:** in the simulator, `cex_sigma` is *per micro‑step* (per
 second), so you should feed the **per‑second** value 
-$$
+$
 \hat{\sigma}_{t,\text{1s}}
-$$
+$
 
 directly, not the annualized one.
 
@@ -326,14 +316,14 @@ directly, not the annualized one.
 ## 4. Using the 2‑Year Dataset to Define “Low” and “High” Volatility
 
 Given the 2‑year series of 1‑second returns 
-$$
+$
 \{ r_t \}
-$$
+$
 , and the derived
 rolling volatility 
-$$
+$
 \{ \hat{\sigma}_{t,\text{1s}} \}
-$$
+$
 , we can use
 **quantiles** of this volatility series to define empirical volatility
 regimes.
@@ -368,14 +358,12 @@ print(q)
 ```
 
 Conceptually, if we denote the random per‑second volatility by
-
-$$
+$
 \Sigma_{\text{1s}}
-$$
-, the empirical quantile function 
-$$
+$, the empirical quantile function 
+$
 Q(p)
-$$
+$
 
 such that
 
@@ -397,26 +385,17 @@ over the 2‑year historical period.
 A simple and robust regime definition is:
 
 - **Low volatility regime:**  
-  per‑second volatility below a lower quantile 
-  $$
-  Q(p_{\text{low}})
-  $$
-  ,
-  e.g. 
-  $$
-  p_{\text{low}} = 0.2
-  $$
-   (20th percentile).
+  per‑second volatility below a lower quantile $Q(p_{\text{low}})$, e.g. $p_{\text{low}} = 0.2$ (20th percentile).
 - **High volatility regime:**  
   per‑second volatility above an upper quantile 
-  $$
+  $
   Q(p_{\text{high}})
-  $$
+  $
   ,
   e.g. 
-  $$
+  $
   p_{\text{high}} = 0.8
-  $$
+  $
    (80th percentile).
 
 Formally:

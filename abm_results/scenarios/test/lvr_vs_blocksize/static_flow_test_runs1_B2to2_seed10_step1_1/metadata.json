@@ -1,0 +1,18 @@
+{
+  "block_times": [
+    2
+  ],
+  "config_path": "/home/danielemdn/Documents/repositories/ABM_Uni_v3/abm_results/scenarios/test.yml",
+  "created_at_utc": "2026-02-28T09:36:38Z",
+  "fee_definition": "flow",
+  "fee_mode": "static",
+  "git_commit": "e42840ea6e1d6bbd7211a3c734a98f8824a9e461",
+  "max_workers": 1,
+  "platform": "linux",
+  "python": "3.11.14",
+  "run_id": "static_flow_test_runs1_B2to2_seed10_step1_1",
+  "runs": 1,
+  "script": "LVR_vs_blocksize",
+  "seed_base": 10,
+  "seed_step": 1
+}

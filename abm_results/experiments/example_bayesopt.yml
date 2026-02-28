@@ -1,0 +1,61 @@
+version: 1
+name: example_bayesopt
+
+base_config: ../scenarios/test.yml
+
+outputs:
+  root: ../experiments_runs
+  tag: example_bayesopt
+  keep_worker_tmp: false
+
+seed:
+  seed_base: 1
+  common_seeds: false
+  runs_per_point: 5
+
+compute:
+  max_workers: 8
+  light_mode: true
+  visualize: false
+  verbose: false
+
+metrics:
+  pnl_metrics:
+    - lp_pnl_passive
+    - arb_pnl_cum
+  pnl_quantiles: [0.10, 0.50, 0.90]
+  include_fee_hist: true
+  fee_hist_bins: 60
+  include_sr_dex_share_hist: true
+  sr_dex_share_hist_bins: 60
+
+design:
+  type: bayesopt
+  n_points: 120
+  n_init: 24
+  batch_size: 1
+  target_metric: pnl_rate_p50_lp_pnl_passive
+  direction: maximize
+  seed: 202
+
+space:
+  - name: k_sigma
+    kind: continuous
+    bounds: [0.0, 2.0]
+    transform: linear
+  - name: mint_mu
+    kind: continuous
+    bounds: [-1.0, -0.1]
+    transform: linear
+  - name: mint_sigma
+    kind: continuous
+    bounds: [1.0, 2.0]
+    transform: linear
+  - name: noise_trades_per_second
+    kind: continuous
+    bounds: [0.0, 0.4]
+    transform: linear
+  - name: smart_trades_per_second
+    kind: continuous
+    bounds: [0.0, 0.4]
+    transform: linear

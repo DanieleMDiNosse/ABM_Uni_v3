@@ -7,9 +7,9 @@ This repository is a scientific instrument: changes must make the simulator **mo
 - Default posture: be skeptical. When changing behavior, also add checks that would catch if the change is wrong.
 
 ## Repo map (quick orientation)
-- `scripts/run.py` is the main simulation runner; simulations are configured via YAML scenario files. :contentReference[oaicite:1]{index=1}
-- Example scenarios live under `abm_results/scenarios/` (e.g. `abm_results/scenarios/test.yml`). :contentReference[oaicite:2]{index=2}
-- Per-scenario outputs (plots/logs/results) are written under `abm_results/scenarios/<scenario_name>/`. :contentReference[oaicite:3]{index=3}
+- `scripts/run.py` is the main simulation runner; simulations are configured via YAML scenario files.
+- Example scenarios live under `abm_results/scenarios/` (e.g. `abm_results/scenarios/test.yml`).
+- Per-scenario outputs (plots/logs/results) are written under `abm_results/scenarios/<scenario_name>/`.
 - Core mechanics:
   - v3 pool math: `core/uniswapv3_pool.py`
   - LP agents and position accounting: `core/agents.py`
@@ -38,8 +38,8 @@ This repository is a scientific instrument: changes must make the simulator **mo
 
 ## How to run (local workflow)
 - Activate conda env: `conda activate main`
-- Run minimal scenario (example): `python run.py --config abm_results/scenarios/test.yml` :contentReference[oaicite:5]{index=5}
-- Run tests: `pytest -q` :contentReference[oaicite:6]{index=6}
+- Run minimal scenario (example): `python -m scripts.run --config abm_results/scenarios/test.yml`
+- Run tests: `pytest -q`
 
 If you add new CLI flags or scenario keys, update `docs/` and ensure `test.yml` stays runnable.
 
@@ -72,7 +72,7 @@ When touching stochastic components:
 - Add a distribution sanity test (mean/variance within tolerance over many draws) only if it’s stable enough.
 
 ## Results & diagnostics conventions
-- Outputs should be written under the scenario’s results root (`abm_results/scenarios/<scenario_name>/...`). :contentReference[oaicite:7]{index=7}
+- Outputs should be written under the scenario’s results root (`abm_results/scenarios/<scenario_name>/...`).
 - Any new metric should be:
   - logged in a machine-readable form (CSV/JSON),
   - and optionally plotted (Plotly is already used in `run.py`).

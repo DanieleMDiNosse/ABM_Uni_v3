@@ -158,9 +158,9 @@ In `scripts/run.py`, the benchmark is implemented as a **self-financing delta-he
 
 Define the LP’s *token0 exposure* (in token units) at the current pool state:
 $$
-x^{\\text{target}}_t
+x^{\text{target}}_t
 :=
-\\texttt{lp\\_token0\\_exposure}(lp, S_t)
+\texttt{lp\_token0\_exposure}(lp, S_t)
 $$
 which (by design) includes:
 - token0 principal inside open positions,

@@ -11,7 +11,7 @@ Tests cover:
 - Fee allocation
 
 Run with:
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=. pytest tests/test_amm_operations.py -v
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_amm_operations.py -v
 """
 
 import copy

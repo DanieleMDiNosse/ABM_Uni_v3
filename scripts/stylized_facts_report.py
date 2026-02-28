@@ -10,6 +10,7 @@ import json
 import math
 import shutil
 import signal
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
@@ -18,6 +19,12 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy import stats
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from core.artifacts import build_run_manifest, make_unique_dir, write_json
 
 
 @dataclass(frozen=True)
@@ -1287,11 +1294,10 @@ def run_stylized_facts(
     Examples
     --------
     >>> from pathlib import Path
-    >>> summary = run_stylized_facts(
-    ...     Path("abm_results/scenarios/test/output_data/dex_price_end_of_block.npy"),
-    ...     input_kind="prices",
-    ...     return_type="log",
-    ... )
+    >>> import json
+    >>> latest = json.loads(Path("abm_results/scenarios/test/latest_run.json").read_text())
+    >>> series_path = Path(latest["run_root"]) / "output_data" / "dex_price_end_of_block.npy"
+    >>> summary = run_stylized_facts(series_path, input_kind="prices", return_type="log")  # doctest: +SKIP
     >>> print(summary["report_path"])
     """
     input_kind = str(input_kind).strip().lower()
@@ -1313,9 +1319,30 @@ def run_stylized_facts(
     if out_dir is None:
         out_dir = input_path.parent / f"stylized_facts_{input_path.stem}"
     out_dir = Path(out_dir)
+    if out_dir.exists():
+        # Avoid silently overwriting an existing report folder; keep the existing
+        # folder as an experimental record and create a suffixed sibling.
+        try:
+            has_any = any(out_dir.iterdir())
+        except OSError:
+            has_any = True
+        if has_any:
+            out_dir = make_unique_dir(out_dir)
     figures_dir = out_dir / "figures"
     tables_dir = out_dir / "tables"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = build_run_manifest(script="stylized_facts_report", run_id=out_dir.name, config_path=None)
+    write_json(
+        out_dir / "metadata.json",
+        {
+            **manifest.to_dict(),
+            "input_path": str(input_path),
+            "input_kind": str(input_kind),
+            "return_type": str(return_type),
+            "horizons": [int(h) for h in horizons],
+        },
+    )
 
     horizons_sorted = sorted({int(h) for h in horizons if int(h) > 0})
     if not horizons_sorted:
@@ -1487,7 +1514,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     Examples
     --------
-    >>> main(["abm_results/scenarios/test/output_data/dex_price_end_of_block.npy"])
+    >>> # Use `latest_run.json` written by `python -m scripts.run ...` to locate the newest run:
+    >>> main(["/path/to/abm_results/scenarios/<scenario>/runs/<run_id>/output_data/dex_price_end_of_block.npy"])  # doctest: +SKIP
     0
     """
     parser = argparse.ArgumentParser(description="Generate stylized-facts diagnostics for a price or returns series.")

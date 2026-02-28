@@ -1,0 +1,7 @@
+{
+  "config_path": "/home/danielemdn/Documents/repositories/ABM_Uni_v3/abm_results/scenarios/test.yml",
+  "fee_mode": "toxicity",
+  "run_id": "toxicity_seed10_2",
+  "run_root": "abm_results/scenarios/test/runs/toxicity_seed10_2",
+  "seed": 10
+}

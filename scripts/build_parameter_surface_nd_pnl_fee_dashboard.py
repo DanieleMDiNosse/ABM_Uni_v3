@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts import run as run_module
 from core.utils import load_simulation_parameters
@@ -41,12 +46,10 @@ PNL_METRICS: Tuple[Tuple[str, str], ...] = (
 )
 
 
-INT_PARAMS: set[str] = {
-    "narrow_mints_per_block",
-    "passive_mints_per_block",
-    "noise_trades_per_block",
-    "passive_burns_per_block",
-}
+# Only used as a fallback when cache metadata is missing.
+# Prefer treating ambiguous "rate/intensity" parameters as floats: rounding floats to ints
+# is much more damaging than displaying an integer as "2.0".
+INT_PARAMS: set[str] = set()
 
 
 def _infer_tag_from_cache_path(cache_path: Path) -> str:
@@ -100,6 +103,38 @@ def _sanitize_for_json(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_sanitize_for_json(v) for v in value]
     return value
+
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters for safe literal rendering."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _build_meta_summary(meta: Optional[Mapping[str, Any]]) -> str:
+    """Build a concise cache provenance summary line for the HTML header."""
+    if meta is None:
+        return ""
+
+    parts: List[str] = []
+    cache_schema_version = meta.get("cache_schema_version")
+    script_version = meta.get("script_version")
+    config_content_hash = meta.get("config_content_hash")
+
+    if cache_schema_version is not None:
+        parts.append(f"Cache schema: {cache_schema_version}")
+    if isinstance(script_version, str) and script_version:
+        parts.append(f"Runner: {script_version}")
+    if isinstance(config_content_hash, str) and config_content_hash:
+        parts.append(f"Config hash: {config_content_hash}")
+
+    return " • ".join(parts)
 
 
 def _infer_param_order_from_columns(columns: Sequence[str]) -> List[str]:
@@ -191,6 +226,7 @@ def _write_dashboard_html(
     title: str,
     scenario_label: str,
     config_path: Path,
+    meta_summary: str,
     pnl_summary_label: str,
     param_order: Sequence[str],
     sweep_values: Mapping[str, Sequence[float | int]],
@@ -212,6 +248,11 @@ def _write_dashboard_html(
     records_smart_router_dex_share_hist: Optional[Sequence[Sequence[int]]],
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_title = _escape_html(title)
+    safe_scenario_label = _escape_html(scenario_label)
+    safe_config_path = _escape_html(str(config_path))
+    safe_meta_summary = _escape_html(meta_summary) if meta_summary else ""
+    meta_summary_html = f'<div class="meta">{safe_meta_summary}</div>' if safe_meta_summary else ""
 
     payload = {
         "title": title,
@@ -256,7 +297,7 @@ def _write_dashboard_html(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{title}</title>
+  <title>{safe_title}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -486,8 +527,9 @@ def _write_dashboard_html(
 </head>
 <body>
   <header>
-    <h1>{title}</h1>
-    <div class="meta">Scenario: <b>{scenario_label}</b> • Config: <code>{config_path}</code></div>
+    <h1>{safe_title}</h1>
+    <div class="meta">Scenario: <b>{safe_scenario_label}</b> • Config: <code>{safe_config_path}</code></div>
+    {meta_summary_html}
   </header>
   <div class="container">
     <div class="panel panel-tall">
@@ -1647,6 +1689,7 @@ def main() -> None:
         sweep_values=sweeps,
         int_params=set(int_params),
     )
+    meta_summary = _build_meta_summary(meta)
 
     # Stable sort by index columns so record order is deterministic.
     dataframe = dataframe.copy()
@@ -1742,12 +1785,25 @@ def main() -> None:
     output_path = args.output
     if output_path is None:
         output_path = global_root / "html" / f"dashboard_{tag}.html"
+    output_path = Path(output_path)
+    if output_path.exists():
+        stem = output_path.stem
+        suffix = output_path.suffix
+        parent = output_path.parent
+        k = 1
+        while True:
+            candidate = parent / f"{stem}_{k}{suffix}"
+            if not candidate.exists():
+                output_path = candidate
+                break
+            k += 1
 
     _write_dashboard_html(
         output_path,
         title=title,
         scenario_label=str(scenario_label),
         config_path=config_path,
+        meta_summary=meta_summary,
         pnl_summary_label=pnl_summary_label,
         param_order=param_order,
         sweep_values=sweeps,

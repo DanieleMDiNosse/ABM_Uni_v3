@@ -11,7 +11,9 @@ Implements:
       JIT is disabled, hide smart/noise routers when their trades_per_block are 0).
 
 Outputs:
-  abm_results/scenarios/<scenario>/multi_runs/{html,png}/
+  abm_results/scenarios/<scenario>/multi_runs/<run_id>/<fee_mode>/{html,png}/
+  abm_results/scenarios/<scenario>/multi_runs/<run_id>/summary.csv
+  abm_results/scenarios/<scenario>/multi_runs/<run_id>/metadata.json
 
 Example:
   python -m scripts.run_multiple --config abm_results/scenarios/test.yml --runs 20 --seed-base 1 --max-workers 8
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -38,8 +41,22 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# Allow `python scripts/run_multiple.py ...` to work from any CWD by ensuring the
+# repo root (parent of `scripts/`) is on `sys.path` so `import core` succeeds.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from scripts import run as run_module
 from core.utils import load_simulation_parameters, scenario_output_root
+from core.artifacts import (
+    build_run_manifest,
+    make_unique_dir,
+    safe_tag,
+    snapshot_file,
+    write_csv_rows,
+    write_json,
+)
 
 
 def _silent_tqdm(iterable=None, **kwargs):
@@ -71,36 +88,9 @@ BASE_PNL_SPECS: Tuple[PnlSeriesSpec, ...] = (
     PnlSeriesSpec("noise_trader_pnl_cum", "Noise trader PnL", "#ff7f0e", "dash"),
     PnlSeriesSpec("arb_pnl_cum", "Arbitrageur PnL", "#2ca02c", None),
     PnlSeriesSpec("lp_pnl_active", "Active LP hedged", "#9467bd", "dash"),
-    PnlSeriesSpec("jiter_pnl_series", "Jiter hedged)", "#d62728", None),
+    PnlSeriesSpec("jiter_pnl_series", "Jiter hedged", "#d62728", None),
     PnlSeriesSpec("lp_pnl_passive", "Passive LP hedged", "#8c564b", "dot"),
 )
-
-
-def _make_unique_dir(path: Path) -> Path:
-    """Create a unique directory, appending a suffix if needed.
-
-    Parameters:
-        path: Target directory path to create.
-
-    Returns:
-        Path: The created directory path (may differ from the input if a suffix
-        was added).
-
-    Notes:
-        If `path` already exists, a suffix `_<n>` is appended until an available
-        path is found. This avoids collisions when keeping artifacts across
-        multiple runs and in the rare case of PID reuse.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    candidate = path
-    suffix = 1
-    while True:
-        try:
-            candidate.mkdir(parents=True, exist_ok=False)
-            return candidate
-        except FileExistsError:
-            candidate = path.with_name(f"{path.name}_{suffix}")
-            suffix += 1
 
 
 def _slice_series(values: Sequence[float], skip: int) -> np.ndarray:
@@ -265,11 +255,17 @@ def _resolve_pnl_specs(params: Dict[str, Any]) -> List[PnlSeriesSpec]:
     passive_share = max(0.0, min(1.0, passive_share))
 
     try:
-        smart_trades = float(params.get("smart_trades_per_block", 0.0))
+        smart_raw = params.get("smart_trades_per_second", None)
+        if smart_raw is None:
+            smart_raw = params.get("smart_trades_per_block", 0.0)
+        smart_trades = float(smart_raw)
     except (TypeError, ValueError):
         smart_trades = 0.0
     try:
-        noise_trades = float(params.get("noise_trades_per_block", 0.0))
+        noise_raw = params.get("noise_trades_per_second", None)
+        if noise_raw is None:
+            noise_raw = params.get("noise_trades_per_block", 0.0)
+        noise_trades = float(noise_raw)
     except (TypeError, ValueError):
         noise_trades = 0.0
 
@@ -483,44 +479,70 @@ def main() -> None:
 
     scenario_root = scenario_output_root(config_path)
     out_root = scenario_root / "multi_runs"
-    png_dir = out_root / "png"
-    html_dir = out_root / "html"
-    png_dir.mkdir(parents=True, exist_ok=True)
-    html_dir.mkdir(parents=True, exist_ok=True)
+    out_root.mkdir(parents=True, exist_ok=True)
 
-    # Use a per-invocation temp root to avoid collisions across concurrent runs
-    # from multiple terminals. We key by PID (with a suffix if it already exists).
-    tmp_base = out_root / "_tmp_runs"
-    run_tmp_root = _make_unique_dir(tmp_base / str(os.getpid()))
+    # Stable invocation id (deterministic base; uniqueness handled via suffix).
+    seed0 = int(args.seed_base) if args.seed_base is not None else int(base_params.get("seed", 1))
+    invocation_id_base = safe_tag(
+        f"{config_path.stem}_runs{int(args.runs)}_seed{seed0}_step{int(args.seed_step)}"
+    )
+    invocation_root = make_unique_dir(out_root / invocation_id_base)
+
+    snapshot_file(config_path, invocation_root / "config_snapshot.yml")
+    manifest = build_run_manifest(script="run_multiple", run_id=invocation_root.name, config_path=config_path)
+    write_json(
+        invocation_root / "metadata.json",
+        {
+            **manifest.to_dict(),
+            "fee_modes": list(fee_modes),
+            "runs": int(args.runs),
+            "seed_base": int(seed0),
+            "seed_step": int(args.seed_step),
+            "max_workers": int(args.max_workers),
+            "config_stem": str(config_path.stem),
+        },
+    )
+
+    # Use a per-invocation temp root to avoid collisions across concurrent runs.
+    run_tmp_root = make_unique_dir(invocation_root / "_tmp_runs")
+
+    base_params_common = dict(base_params)
+    # We need PnL series => light_mode must be False.
+    base_params_common["light_mode"] = False
+    # Avoid per-run plots; we only want the aggregated plot.
+    base_params_common["visualize"] = False
+    # Reduce stdout; note: scripts/run.py still writes a verbose log file unless light_mode=True.
+    base_params_common["verbose"] = False
+
+    summary_rows: List[Dict[str, Any]] = []
 
     for fee_mode in fee_modes:
         print(f"[multi_runs] Generating runs for fee_mode={fee_mode}...")
-        # We need PnL series => light_mode must be False.
-        base_params["light_mode"] = False
-        # Avoid per-run plots; we only want the aggregated plot.
-        base_params["visualize"] = False
-        # Reduce stdout, but note: scripts/run.py still writes a verbose log file unless light_mode=True.
-        base_params["verbose"] = False
-        base_params["fee_mode"] = str(fee_mode)
+        mode_root = invocation_root / safe_tag(fee_mode)
+        png_dir = mode_root / "png"
+        html_dir = mode_root / "html"
+        png_dir.mkdir(parents=True, exist_ok=True)
+        html_dir.mkdir(parents=True, exist_ok=True)
+
+        params = dict(base_params_common)
+        params["fee_mode"] = str(fee_mode)
 
         # Decide which PnL series to include.
-        pnl_specs = _resolve_pnl_specs(base_params)
+        pnl_specs = _resolve_pnl_specs(params)
         pnl_keys = [spec.key for spec in pnl_specs]
         if not pnl_keys:
             raise SystemExit("No PnL series selected; check your config.")
 
         # Stash keys into params so worker can avoid pickling specs objects.
-        base_params["_pnl_keys"] = pnl_keys
-        base_params["_extra_series_keys"] = ["fee_series", "smart_router_dex_share_series"]
+        params["_pnl_keys"] = pnl_keys
+        params["_extra_series_keys"] = ["fee_series", "smart_router_dex_share_series"]
 
-        skip_step = int(base_params.get("skip_step", 0))
-        # fee_mode = str(base_params.get("fee_mode")).lower()
-        seed0 = int(args.seed_base) if args.seed_base is not None else int(base_params.get("seed", 1))
+        skip_step = int(params.get("skip_step", 0))
         seeds = [int(seed0 + i * int(args.seed_step)) for i in range(int(args.runs))]
 
         # Separate fee modes within the same invocation to avoid overwriting artifacts
         # when --keep-run-artifacts is enabled.
-        tmp_root = run_tmp_root / str(fee_mode)
+        tmp_root = run_tmp_root / safe_tag(str(fee_mode))
         tmp_root.mkdir(parents=True, exist_ok=True)
 
         # --- parallel execution -------------------------------------------------
@@ -533,7 +555,7 @@ def main() -> None:
                 executor.submit(
                     _run_one_seed,
                     seed,
-                    base_params=base_params,
+                    base_params=params,
                     tmp_root=tmp_root,
                     keep_run_artifacts=bool(args.keep_run_artifacts),
                 )
@@ -880,14 +902,14 @@ def main() -> None:
         dist_base_name = (
             f"fee_{fee_mode}_{stem}_runs{args.runs}_LPpassiveshare{lp_share_val}_pjit{p_jit_val}"
         )
-        dist_png_path = png_dir / f"{dist_base_name}_{os.getpid()}.png"
-        dist_html_path = html_dir / f"{dist_base_name}_{os.getpid()}.html"
+        dist_png_path = png_dir / f"{dist_base_name}.png"
+        dist_html_path = html_dir / f"{dist_base_name}.html"
         save_plotly_figure(dist_fig, dist_png_path, dist_html_path, source="run_multiple")
 
         log_base_name = (
             f"trade_summary_{fee_mode}_{stem}_runs{args.runs}_LPpassiveshare{lp_share_val}_pjit{p_jit_val}"
         )
-        log_path = out_root / f"{log_base_name}_{os.getpid()}.txt"
+        log_path = mode_root / f"{log_base_name}.txt"
         log_lines = [
             "# Multi-run trade summary",
             f"config = {config_path}",
@@ -930,6 +952,50 @@ def main() -> None:
         ]
         log_path.write_text("\n".join(log_lines) + "\n")
 
+        # Append per-seed summary rows (single table across fee modes).
+        for r in results:
+            row: Dict[str, Any] = {
+                "run_id": invocation_root.name,
+                "fee_mode": str(fee_mode),
+                "seed": int(r.get("seed", 0)),
+                "skip_step": int(skip_step),
+            }
+            for key in pnl_keys:
+                series = r.get(key)
+                if isinstance(series, np.ndarray) and series.size > 0:
+                    row[f"{key}_final"] = float(series[-1])
+                else:
+                    row[f"{key}_final"] = float("nan")
+            fee_series = r.get("fee_series")
+            if isinstance(fee_series, np.ndarray) and fee_series.size > 0:
+                row["fee_mean"] = float(np.nanmean(fee_series))
+                row["fee_median"] = float(np.nanmedian(fee_series))
+            else:
+                row["fee_mean"] = float("nan")
+                row["fee_median"] = float("nan")
+            sr_share = r.get("smart_router_dex_share_series")
+            if isinstance(sr_share, np.ndarray) and sr_share.size > 0:
+                row["smart_router_dex_share_mean"] = float(np.nanmean(sr_share))
+                row["smart_router_dex_share_median"] = float(np.nanmedian(sr_share))
+            else:
+                row["smart_router_dex_share_mean"] = float("nan")
+                row["smart_router_dex_share_median"] = float("nan")
+
+            for key in (
+                "total_smart_router_swaps",
+                "smart_router_swaps_cex_routed",
+                "smart_router_swaps_dex_routed",
+                "smart_router_swaps_rejected_slippage",
+                "total_noise_trader_swaps",
+                "noise_trader_swaps_rejected_slippage",
+                "total_arb_swaps",
+                "arb_no_op_in_band",
+                "arb_swaps_rejected_profitability",
+                "total_jit_trades_executed",
+            ):
+                row[key] = int(r.get(key, 0) or 0)
+            summary_rows.append(row)
+
         print(f"[multi_runs] scenario: {fee_mode}")
         print(f"[multi_runs] seeds:    {seeds[0]}..{seeds[-1]} (n={len(seeds)})")
         print(f"[multi_runs] series:   {', '.join([s.key for s in pnl_specs])}")
@@ -938,16 +1004,16 @@ def main() -> None:
         print(f"[multi_runs] wrote:    {dist_html_path}")
         print(f"[multi_runs] wrote:    {dist_png_path} (requires kaleido for PNG export)")
         print(f"[multi_runs] wrote:    {log_path}")
+        print(f"[multi_runs] run dir:  {mode_root}")
+
+    write_csv_rows(invocation_root / "summary.csv", summary_rows)
+    print(f"[multi_runs] summary:   {invocation_root / 'summary.csv'}")
 
     if not args.keep_run_artifacts:
         # Best-effort cleanup of the temp folders created for this invocation.
         # Each worker already deletes its own seed folder; this removes any
         # leftovers (e.g., if a run crashed mid-way).
         shutil.rmtree(run_tmp_root, ignore_errors=True)
-        try:
-            tmp_base.rmdir()
-        except OSError:
-            pass
 
 
 if __name__ == "__main__":

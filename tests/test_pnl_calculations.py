@@ -11,7 +11,7 @@ Tests cover:
 - Simulation output consistency
 
 Run with:
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=. pytest tests/test_pnl_calculations.py -v
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_pnl_calculations.py -v
 """
 
 import copy

@@ -1,0 +1,432 @@
+% -------------------------------------------------------------------------
+% Block-size sweep write-up (ΔLVR/ΔFees)
+% Based on: docs/LVR_explanation.md and the outputs produced by LVR_vs_blocksize.py
+% Location of artifacts (this run):
+%   images/
+%
+% This text is meant to be pasted into a LaTeX report (requires: amsmath, amssymb, graphicx, booktabs).
+% -------------------------------------------------------------------------
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage{tcolorbox}
+\usepackage{tabularx}
+\usepackage{caption}
+\usepackage[table]{xcolor}
+\definecolor{groupgray}{RGB}{235,235,235} % change to any solid color you like
+
+
+% Define a custom environment that behaves like a beamer block
+\newtcolorbox{block}[1]{
+  colback=blue!5!white,
+  colframe=blue!75!black,
+  title=#1
+}
+\usepackage{authblk}
+\title{Agent-Based Modelling of Uniswap v3:\\
+Microstructure, Dynamic Fees, and Loss-Versus-Rebalancing}
+\author[1]{Daniele Maria Di Nosse\textsuperscript{\dag}}
+\author[1]{Fabrizio Lillo}
+
+\affil[1]{Scuola Normale Superiore, Pisa, Italy}
+\date{\today}
+
+\begin{document}
+
+\section{Block-size sweep: the fee-coverage ratio \texorpdfstring{$\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$}{ΔLVR/ΔFees}}
+
+\subsection{Metric definitions and accounting identity}
+
+Loss-versus-Rebalancing (LVR) is a structural cost of AMM liquidity provision: when the external reference price
+moves, the AMM quote becomes stale and arbitrage trades realign the pool to the external market, extracting value
+from liquidity providers. Following the accounting used in this repository (see \texttt{docs/LVR\_explanation.md}),
+LP wealth decomposes as
+\begin{equation}
+  V^{LP}_t \;=\; V^{reb}_t \;+\; F_t \;-\; \mathrm{LVR}_t,
+\end{equation}
+where:
+\begin{itemize}
+  \item $V^{LP}_t$ is the LP's mark-to-market wealth valued at the end-of-block CEX mid price $m_t$;
+  \item $V^{reb}_t$ is the \emph{rebalancing benchmark} value: it holds the same inventory path as the LP but executes
+        inventory adjustments at the external price $m_t$ (frictionless execution);
+  \item $F_t$ is cumulative fee value (in token1 units, valued at $m_t$);
+  \item $\mathrm{LVR}_t$ is cumulative loss-versus-rebalancing.
+\end{itemize}
+
+Define the \emph{hedged PnL} as
+\begin{equation}
+  \mathrm{PnL}^{hedged}_t \;:=\; V^{LP}_t - V^{reb}_t.
+\end{equation}
+Then the identity above implies
+\begin{equation}
+  \mathrm{PnL}^{hedged}_t \;=\; F_t - \mathrm{LVR}_t.
+  \label{eq:hedged_pnl_identity}
+\end{equation}
+This is the key interpretation tool: on a hedged basis, fees are the ``revenue'' and LVR is the ``structural cost''.
+
+\subsection{Per-block increments and the ratio plotted in the sweep}
+
+The script \texttt{LVR\_vs\_blocksize.py} converts cumulative series into \emph{per-block increments} after discarding a
+burn-in prefix of \texttt{skip\_step} blocks. For any cumulative series $X_t$, define
+\begin{equation}
+  \Delta X_t := X_t - X_{t-1}.
+\end{equation}
+Using \eqref{eq:hedged_pnl_identity}, per block we have
+\begin{equation}
+  \Delta\mathrm{PnL}^{hedged}_t \;=\; \Delta\mathrm{Fees}_t \;-\; \Delta\mathrm{LVR}_t.
+\end{equation}
+
+In this experiment, the denominator is the \emph{fee-flow value in the block}, computed as
+\begin{equation}
+  \Delta\mathrm{Fees}_t
+  \;:=\;
+  (\Delta\mathrm{fees0}_t)\,m_t + (\Delta\mathrm{fees1}_t),
+\end{equation}
+i.e.\ in-block token0 fee flow is valued at the \emph{end-of-block} CEX mid price $m_t$ and added to the in-block token1
+fee flow. This is the script's \texttt{fee\_definition=flow} mode and intentionally avoids any mark-to-market revaluation
+of \emph{previously accumulated} token0 fees.
+
+For each agent cohort, the plotted ``fee coverage'' ratio is
+\begin{equation}
+  r_t \;:=\; \frac{\Delta\mathrm{LVR}_t}{\Delta\mathrm{Fees}_t}.
+  \label{eq:ratio_def}
+\end{equation}
+Combining with the per-block identity gives the most direct interpretation:
+\begin{equation}
+  \Delta\mathrm{PnL}^{hedged}_t \;=\; (1-r_t)\,\Delta\mathrm{Fees}_t.
+  \label{eq:ratio_to_hedged_pnl}
+\end{equation}
+
+\paragraph{Interpretation of the ratio.}
+Equation \eqref{eq:ratio_to_hedged_pnl} turns the ratio into a simple economic diagnostic:
+\begin{itemize}
+  \item If $r_t>1$, then $(1-r_t)<0$ and the block-level hedged PnL is negative:
+        \[
+          \Delta\mathrm{PnL}^{hedged}_t < 0.
+        \]
+        Fees \emph{do not cover} the structural adverse-selection cost (LVR). Liquidity provision is unprofitable
+        on a hedged basis in such blocks.
+  \item If $0<r_t<1$, then the block-level hedged PnL is positive:
+        \[
+          \Delta\mathrm{PnL}^{hedged}_t > 0.
+        \]
+        Fees cover LVR, and $(1-r_t)$ is the fraction of fees that remains as hedged profit in that block.
+        For example, $r_t=0.8$ means $\sim 20\%$ of fee revenue remains after paying the structural LVR cost.
+  \item If $r_t=1$, fees exactly offset LVR and hedged PnL is approximately zero (break-even on a hedged basis).
+  \item If $r_t<0$, then $\Delta\mathrm{LVR}_t<0$ (given $\Delta\mathrm{Fees}_t>0$ in the ratio computation),
+        which implies
+        \[
+          \Delta\mathrm{PnL}^{hedged}_t > \Delta\mathrm{Fees}_t.
+        \]
+        This is a \emph{negative-LVR} regime: the agent's realized execution path (relative to the rebalancing benchmark)
+        is \emph{better than} frictionless trading at $m_t$ for the same inventory changes. For passive LPs this is unusual,
+        but for \emph{active or selectively-timed} strategies (e.g.\ JIT liquidity) it can occur because the strategy chooses
+        when to be exposed and can capture favorable selection.
+\end{itemize}
+
+\paragraph{Important sampling note (denominator filtering).}
+The script masks blocks where $\Delta\mathrm{Fees}_t$ is non-positive or numerically tiny (to avoid unstable ratios).
+Therefore, the ratio distribution is conditional on ``blocks with positive fee flow.'' This is typically appropriate because
+blocks with no trades (and hence no fees) do not meaningfully define a fee-coverage ratio.
+
+\subsection{Cohorts and Jiter-specific adjustment}
+
+The sweep produces results for three cohorts:
+\begin{itemize}
+  \item \textbf{Passive LPs:} baseline LPs with wide, relatively static positions.
+  \item \textbf{Active LPs:} programmatic/repositioning LPs with narrower liquidity and more frequent recentering.
+  \item \textbf{Jiter (JIT LP):} a liquidity provider that mints and burns around large swaps within a block.
+\end{itemize}
+
+For the Jiter, the script adjusts LVR to account for explicit flash-loan financing costs (so we do not misattribute financing
+expense to ``structural LVR''):
+\begin{equation}
+  \Delta\mathrm{LVR}^{jit}_t
+  \;:=\;
+  \Delta\mathrm{Fees}^{jit}_t
+  \;-\;
+  \left(\Delta\mathrm{PnL}^{hedged,jit}_t + \Delta\mathrm{FlashPaid}_t\right).
+  \label{eq:jiter_lvr_def}
+\end{equation}
+The corresponding ratio is $r^{jit}_t=\Delta\mathrm{LVR}^{jit}_t/\Delta\mathrm{Fees}^{jit}_t$.
+
+\paragraph{Selection for ``successful JIT'' blocks.}
+When plotting Jiter distributions, the script additionally filters to blocks in which a JIT cycle successfully surrounds an
+executed swap (recovered from \texttt{jiter\_activity\_cum}). This is a deliberate choice: it focuses the analysis on the
+economics of \emph{executed JIT opportunities} rather than averaging over idle blocks where the strategy did nothing.
+However, this also introduces a potential \emph{selection bias} if successful JIT events are rare (see discussion in the
+static-fee results below).
+
+\subsection{Experiment structure and outputs}
+
+The independent variable is the block size $B=\texttt{block\_time}$, swept from $B=2$ to $B=16$ (inclusive). For each $B$,
+the script runs multiple simulations with different random seeds, converts cumulative series into $\Delta$-series after burn-in,
+and pools the samples across time and seeds.
+
+Artifacts written by the sweep include:
+\begin{itemize}
+  \item \textbf{NPZ bundles} (\texttt{dLVR\_arrays\_*.npz}): raw 3D arrays indexed by $(B,\text{seed},t)$ for both $\Delta\mathrm{LVR}$
+        and $\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$;
+  \item \textbf{CSV summaries} (\texttt{dLVR\_over\_dFees\_summary\_*.csv}): pooled distribution statistics per cohort and $B$
+        (median, percentiles, etc.);
+  \item \textbf{Plots} in \textbf{PNG} and interactive \textbf{HTML} (Plotly): the median ratio vs $B$ with error bars showing the
+        central $95\%$ interval of the pooled samples.
+\end{itemize}
+
+% -------------------------------------------------------------------------
+\section{Results: static fee mode (fixed fee)}
+
+In the \textbf{static} fee mode, the protocol fee is constant (no feedback from toxicity). The key empirical feature in these
+plots is that the LP fee coverage ratio increases strongly with block size: as blocks become ``longer,'' LVR per block grows
+faster than fee revenue per block.
+
+\subsection{Only passive LPs}
+
+% (Replace filename if needed; PIDs differ across runs.)
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_static_flow_test_runs50_pid42272.png}
+  \caption{Static fees, passive LP only: median and 95\% interval of $r=\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$ vs block size $B$.}
+  \label{fig:static_passive_only_ratio}
+\end{figure}
+
+Passive LPs exhibit $r>1$ across all $B$, and the median ratio grows with $B$.
+In the CSV summary (\texttt{.../dLVR\_over\_dFees\_summary\_static\_flow\_test\_runs50\_pid42272.csv}),
+the median is approximately
+\[
+  r_{\mathrm{passive}} \approx 1.26 \text{ at } B=2,
+  \qquad
+  r_{\mathrm{passive}} \approx 3.50 \text{ at } B=16.
+\]
+From \eqref{eq:ratio_to_hedged_pnl}, the typical block has negative hedged PnL, and this worsens with $B$:
+\[
+  \Delta\mathrm{PnL}^{hedged}_t
+  \approx
+  (1-1.26)\Delta\mathrm{Fees}_t \approx -0.26\,\Delta\mathrm{Fees}_t \quad (B=2),
+\]
+\[
+  \Delta\mathrm{PnL}^{hedged}_t
+  \approx
+  (1-3.50)\Delta\mathrm{Fees}_t \approx -2.50\,\Delta\mathrm{Fees}_t \quad (B=16).
+\]
+Economically, passive LPs are systematically exposed to adverse selection: when the reference price moves within a block, the AMM
+quote becomes stale for longer, arbitrage extracts more value, and fixed fees are insufficient to compensate.
+
+\subsection{Passive + active LPs}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_static_flow_test_runs50_pid42482.png}
+  \caption{Static fees, active and passive LPs: median and 95\% interval of $r=\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$ vs $B$.}
+  \label{fig:static_active_passive_ratio}
+\end{figure}
+
+Both cohorts again have $r>1$, and both rise with $B$. Quantitatively (from
+\texttt{.../dLVR\_over\_dFees\_summary\_static\_flow\_test\_runs50\_pid42482.csv}):
+\[
+  r_{\mathrm{active}} \approx 1.57 \text{ at } B=2,\quad r_{\mathrm{active}} \approx 4.14 \text{ at } B=16,
+\]
+\[
+  r_{\mathrm{passive}} \approx 1.53 \text{ at } B=2,\quad r_{\mathrm{passive}} \approx 3.96 \text{ at } B=16.
+\]
+
+The economic message is that \textbf{concentration increases LVR exposure per unit fee} under a fixed fee schedule.
+Active LPs (narrower liquidity, more concentrated marginal liquidity) are traded against more aggressively when the price moves,
+which increases the ``pick-off'' component of returns. Without a compensating fee increase, the active LP cohort exhibits the
+largest fee coverage ratios (and hence the worst hedged profitability).
+
+\subsection{Passive + active LPs + Jiter}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_static_flow_test_runs50_pid42657.png}
+  \caption{Static fees, active+passive LPs and Jiter: median and 95\% interval of $r=\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$ vs $B$.}
+  \label{fig:static_with_jiter_ratio}
+\end{figure}
+
+The LP cohorts remain in the $r>1$ regime and continue to rise with $B$ (consistent with the previous figure).
+The new feature is the \textbf{Jiter's negative ratio}, with median roughly
+\[
+  r_{\mathrm{jit}} \approx -5.8 \text{ at } B=2,
+  \qquad
+  r_{\mathrm{jit}} \approx -8.8 \text{ at } B=16
+\]
+(from \texttt{.../dLVR\_over\_dFees\_summary\_static\_flow\_test\_runs50\_pid42657.csv}).
+
+By \eqref{eq:ratio_to_hedged_pnl} and the Jiter definition \eqref{eq:jiter_lvr_def}, $r_{\mathrm{jit}}<0$ implies that in these
+blocks the Jiter's hedged PnL (net of flash costs) exceeds fee revenue:
+\[
+  \Delta\mathrm{PnL}^{hedged,jit}_t + \Delta\mathrm{FlashPaid}_t
+  \;>\;
+  \Delta\mathrm{Fees}^{jit}_t,
+\]
+equivalently $\Delta\mathrm{LVR}^{jit}_t<0$.
+
+\paragraph{Economic interpretation.}
+Negative ``LVR'' should be read as \textbf{favorable selection} for an \emph{actively timed} strategy: conditional on entering only
+around specific swaps, the Jiter can earn fees while avoiding most inventory risk and avoiding being present during adverse
+arbitrage episodes. In that sense, the strategy can outperform the frictionless rebalancing benchmark given the same realized
+inventory changes.
+
+\paragraph{Selection bias warning (crucial in the static-fee case).}
+In the static-fee run, the Jiter statistics are computed only on \emph{successful JIT blocks} (where a mint/burn roundtrip surrounds
+an executed swap), and the number of such blocks is extremely small (e.g.\ $n\approx 5$--$17$ pooled samples per $B$ in the CSV).
+This induces a \textbf{strong selection bias}: the sample is dominated by a handful of rare, extremely profitable JIT opportunities.
+If the strategy attempts JIT frequently but only succeeds when conditions are especially favorable, then conditioning on success
+selects precisely those extreme outcomes, which can easily push the measured $\Delta\mathrm{LVR}^{jit}$ negative and make
+$r_{\mathrm{jit}}$ strongly negative.
+In other words, in the static-fee configuration the Jiter plot is best interpreted as:
+\begin{quote}
+  \emph{``When a JIT opportunity actually executes, it tends to be very profitable relative to the benchmark''}
+\end{quote}
+rather than as an unconditional, time-average statement about all blocks.
+
+% -------------------------------------------------------------------------
+\section{Results: toxicity fee mode (fee responds to toxicity)}
+
+In the \textbf{toxicity} fee mode, the fee responds to a toxicity/basis signal. The key empirical feature is that the fee coverage
+ratio becomes \textbf{stable and below one} for LPs: fees adapt upward in precisely those environments where LVR pressure is high,
+restoring hedged profitability.
+
+\subsection{Only passive LPs}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_toxicity_flow_test_runs50_pid13640.png}
+  \caption{Toxicity fees, passive LP only: median and 95\% interval of $r=\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$ vs $B$.}
+  \label{fig:toxicity_passive_only_ratio}
+\end{figure}
+
+Passive LPs exhibit $r<1$ and nearly flat in $B$. From
+\texttt{.../dLVR\_over\_dFees\_summary\_toxicity\_flow\_test\_runs50\_pid13640.csv}, the median is approximately
+\[
+  r_{\mathrm{passive}} \approx 0.74 \text{ for } B=2\ldots 16.
+\]
+Thus the typical block has positive hedged profitability:
+\[
+  \Delta\mathrm{PnL}^{hedged}_t \approx (1-0.74)\Delta\mathrm{Fees}_t \approx 0.26\,\Delta\mathrm{Fees}_t.
+\]
+Economically, the toxicity controller is doing what it is designed to do: increase fee revenue in environments where adverse
+selection (and hence LVR) is elevated, so that LPs are compensated on a hedged basis.
+
+\subsection{Passive + active LPs}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_toxicity_flow_test_runs50_pid13959.png}
+  \caption{Toxicity fees, active and passive LPs: median and 95\% interval of $r=\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$ vs $B$.}
+  \label{fig:toxicity_active_passive_ratio}
+\end{figure}
+
+Both cohorts remain below one, with medians roughly in the $0.8$--$0.9$ range (see
+\texttt{.../dLVR\_over\_dFees\_summary\_toxicity\_flow\_test\_runs50\_pid13959.csv}):
+\[
+  r_{\mathrm{active}} \approx 0.87 \text{ at } B=2,\quad r_{\mathrm{active}} \approx 0.83 \text{ at } B=16,
+\]
+\[
+  r_{\mathrm{passive}} \approx 0.85 \text{ at } B=2,\quad r_{\mathrm{passive}} \approx 0.81 \text{ at } B=16.
+\]
+The economic message is that fee adaptivity largely offsets the greater adverse selection exposure of concentrated liquidity.
+Active LPs still tend to have slightly larger $r$ (more LVR per unit fee), but the controller keeps them in a regime where fees cover
+LVR in the median block.
+
+\subsection{Passive + active LPs + Jiter}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_toxicity_flow_test_runs50_pid14207.png}
+  \caption{Toxicity fees, active+passive LPs and Jiter: median and 95\% interval of $r=\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$ vs $B$.}
+  \label{fig:toxicity_with_jiter_ratio}
+\end{figure}
+
+LP cohorts remain near $r\approx 0.84$--$0.87$.
+The Jiter shows a lower median ratio, around
+\[
+  r_{\mathrm{jit}} \approx 0.57 \text{ at } B=2,\quad r_{\mathrm{jit}} \approx 0.54 \text{ at } B=16
+\]
+(from \texttt{.../dLVR\_over\_dFees\_summary\_toxicity\_flow\_test\_runs50\_pid14207.csv}).
+
+Economically, $r_{\mathrm{jit}}<1$ indicates that JIT liquidity keeps a larger fraction of fees as hedged profit (net of flash costs)
+than the average LP cohort:
+\[
+  \Delta\mathrm{PnL}^{hedged,jit}_t
+  \approx
+  (1-r_{\mathrm{jit}})\Delta\mathrm{Fees}^{jit}_t
+  \;\approx\;
+  0.43\,\Delta\mathrm{Fees}^{jit}_t
+  \quad (\text{median}).
+\]
+Unlike the static-fee case, the Jiter ratio here is positive (no systematic negative-LVR regime), and the sample size of successful
+JIT events is large, so selection effects are much weaker and the estimate is more representative of typical JIT performance when it
+does execute.
+
+% -------------------------------------------------------------------------
+\section{Why does the ratio grow roughly linearly with block size?}
+
+Two complementary explanations are useful: one theoretical (diffusion scaling), and one model-specific (how activity is parameterized).
+
+\subsection{Diffusion intuition: LVR grows with elapsed time between quote updates}
+
+In the LVR theory, when the external reference price follows a diffusion with instantaneous volatility $\sigma_t$, LVR accrues at a
+rate proportional to $\sigma_t^2$ and marginal liquidity. In particular, in continuous time LVR over an interval is an integral of a
+volatility-squared term (see \texttt{docs/LVR\_explanation.md} for the Uniswap v3 specialization).
+
+Holding other factors fixed, the important scaling is:
+\begin{equation}
+  \mathbb{E}[\mathrm{LVR} \text{ over an interval of length } \Delta t]
+  \;\propto\;
+  \sigma^2 \,\Delta t.
+  \label{eq:lvr_time_scaling}
+\end{equation}
+In the simulator, increasing $B=\texttt{block\_time}$ makes each block represent a longer interval before the ``end-of-block'' price
+$m_t$ is realized and before the pool is compared against it. Larger blocks therefore produce larger typical price changes within
+a block (variance scales with time), which increases the magnitude of mispricing and arbitrage extraction in that block, consistent
+with \eqref{eq:lvr_time_scaling}. This naturally produces approximately linear growth of $\Delta\mathrm{LVR}$ with $B$.
+
+\subsection{Model-specific: fees per block need not scale with block duration}
+
+The ratio is $\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$. Even if $\Delta\mathrm{LVR}$ grows with $B$, the ratio will only remain stable if
+fee revenue also grows proportionally.
+
+In this ABM configuration, trader arrivals are specified largely \emph{per block} (e.g.\ expected number of trade intents per block),
+not per unit of continuous time. As a result, increasing $B$ can raise LVR per block (because each block contains a longer exposure
+to price diffusion and stale quotes) without mechanically increasing the number of fee-generating trades per block by the same factor.
+Under \textbf{static fees}, the fee rate does not respond, so $\Delta\mathrm{Fees}$ grows weakly compared to $\Delta\mathrm{LVR}$ and the
+ratio rises with $B$.
+
+Under \textbf{toxicity fees}, by construction the protocol fee increases when the environment is more toxic (larger basis / more
+adverse selection). Increasing $B$ tends to increase measured toxicity because quotes are stale for longer and deviations between DEX
+and reference price become larger. The controller therefore increases $\Delta\mathrm{Fees}$ in the same regimes where $\Delta\mathrm{LVR}$
+would otherwise rise, keeping the ratio comparatively flat and below one.
+
+\subsection{Heavy tails and why medians matter}
+
+Because the ratio divides by $\Delta\mathrm{Fees}$, blocks with very small (but positive) fee flows can generate extremely large ratios
+even if $\Delta\mathrm{LVR}$ is moderate. This creates heavy-tailed distributions and makes means unstable.
+The plots therefore emphasize medians (and 95\% intervals) as robust summaries of ``typical'' fee coverage.
+
+% -------------------------------------------------------------------------
+\section{Summary of economic takeaways}
+
+\begin{itemize}
+  \item \textbf{Static fee mode:} both passive and active LP cohorts have $\Delta\mathrm{LVR}/\Delta\mathrm{Fees}>1$, increasingly so at
+        larger $B$. The structural adverse selection cost dominates fixed fee revenue, producing negative hedged profitability.
+        Active (more concentrated) LPs tend to have the worst coverage ratios.
+  \item \textbf{Toxicity fee mode:} the ratio drops below one and becomes much more stable across $B$. This indicates the controller
+        is broadly successful at matching fee revenue to adverse selection intensity, restoring positive hedged profitability for LPs.
+  \item \textbf{Jiter:} in toxicity mode the Jiter has $0<\Delta\mathrm{LVR}/\Delta\mathrm{Fees}<1$ and typically keeps a large fraction
+        of fees as hedged profit (net of flash costs). In static mode the Jiter ratio appears strongly negative, but this is best
+        understood as a consequence of (i) selective timing, and (ii) strong selection bias from conditioning on a tiny number of
+        successful JIT executions: only a handful of extremely profitable JIT opportunities appear in the sample, pushing measured
+        $\Delta\mathrm{LVR}$ negative.
+\end{itemize}
+
+\end{document}

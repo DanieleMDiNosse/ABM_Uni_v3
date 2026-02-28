@@ -407,6 +407,7 @@ def bootstrap_initial_binomial_hill_sharded(
     seed_mint_prob: float = 0.0,
     min_L_per_tick: float = 1e-9,
     tau: int = 20,
+    tau_seconds: Optional[float] = None,
     plot: bool = False,
     ax: Optional[Axes] = None,
     title: Optional[str] = None,
@@ -434,7 +435,13 @@ def bootstrap_initial_binomial_hill_sharded(
             is_seed=True,
         )
         # async timing so they act at different steps
-        lp.review_rate = 1.0 / max(1, tau)
+        if tau_seconds is not None:
+            tau_seconds_f = float(tau_seconds)
+            if not math.isfinite(tau_seconds_f) or tau_seconds_f <= 0.0:
+                raise ValueError(f"tau_seconds must be a finite positive number: got {tau_seconds!r}")
+            lp.review_rate = min(1.0, 1.0 / max(1e-12, float(tau_seconds_f)))
+        else:
+            lp.review_rate = 1.0 / max(1, tau)
         lp.next_review = int(np.random.geometric(lp.review_rate))
         lp.cooldown = 0
         lp.can_act = False
@@ -626,9 +633,13 @@ def load_simulation_parameters(config_path: Path, simulate_func=None) -> Tuple[s
     """
     Load simulation parameters from a YAML configuration file.
 
-    The configuration must contain a `simulate` mapping with every parameter
-    accepted by `simulate`. An optional `scenario` key can be provided for
-    labeling outputs; if omitted, the fee mode is used as the label.
+    The configuration must contain a `simulate` mapping with all **required**
+    parameters accepted by `simulate`. Optional parameters may be omitted; they
+    are populated from the `simulate()` function signature defaults.
+
+    If a top-level `fee_mode` is present, it is treated as the scenario label
+    and is injected into the `simulate` parameter mapping (with a consistency
+    check if `simulate.fee_mode` is also provided).
     """
     if simulate_func is None:
         from scripts.run import simulate as simulate_func

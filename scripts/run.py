@@ -4,13 +4,21 @@ X (token0) is like ETH and Y  is like USDC.
 """
 # from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Allow `python scripts/run.py ...` to work from any CWD by ensuring the repo root
+# (parent of `scripts/`) is on `sys.path` so `import core` succeeds.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import argparse
 import math
 import os
 import random
 from datetime import datetime
 from tqdm import tqdm
-from pathlib import Path
 from typing import Any, Dict, Tuple, List, Optional, Callable, Set
 from dataclasses import dataclass
 
@@ -60,6 +68,9 @@ def plotting_results(
     steps: np.ndarray,
     P_series: np.ndarray,
     M_series: np.ndarray,
+    cex_dex_spread_token1: np.ndarray,
+    arb_residual_gap_steps: List[int],
+    arb_residual_gap_token1: List[float],
     X_active_end: np.ndarray,
     Y_active_end: np.ndarray,
     band_lo_target: np.ndarray,
@@ -143,7 +154,7 @@ def plotting_results(
         Whether to include a CEX sigma panel (regime/noisy-sine/Heston modes).
     block_time
         Number of micro steps per block (used for micro/block ACF labeling).
-    steps, P_series, M_series, X_active_end, Y_active_end, band_lo_target, band_hi_target, L_end, L_pre_step, L_pre_trader, L_pre_arb_eff
+    steps, P_series, M_series, cex_dex_spread_token1, arb_residual_gap_steps, arb_residual_gap_token1, X_active_end, Y_active_end, band_lo_target, band_hi_target, L_end, L_pre_step, L_pre_trader, L_pre_arb_eff
         Block-level series (arrays) produced by the simulation.
     jiter_wealth_series, jiter_pnl_series, arb_pnl_cum, sr_pnl_cum, noise_pnl_cum
         Block-level PnL/wealth series (arrays) produced by the simulation.
@@ -199,6 +210,9 @@ def plotting_results(
     ...     steps=np.arange(3),
     ...     P_series=np.array([1.0, 1.01, 1.00]),
     ...     M_series=np.array([1.0, 1.02, 0.99]),
+    ...     cex_dex_spread_token1=np.array([0.0, -0.01, 0.01]),
+    ...     arb_residual_gap_steps=[],
+    ...     arb_residual_gap_token1=[],
     ...     X_active_end=np.zeros(3),
     ...     Y_active_end=np.zeros(3),
     ...     band_lo_target=np.zeros(3),
@@ -265,6 +279,7 @@ def plotting_results(
     steps_v = steps[s0:]
     P_series_v = P_series[s0:]
     M_series_v = M_series[s0:]
+    cex_dex_spread_token1_v = cex_dex_spread_token1[s0:]
     X_active_end_v = X_active_end[s0:]
     Y_active_end_v = Y_active_end[s0:]
     band_lo_target_v = band_lo_target[s0:]
@@ -481,6 +496,98 @@ def plotting_results(
     fig1.update_yaxes(title_text="Count", type="log", row=1, col=2)
     fig1.update_yaxes(title_text="Count", type="log", row=2, col=2)
     _save_plotly("1_price", fig1)
+
+    # ----- 1d) Gap diagnostics panel (2x2): block spread + post-arb residual -----
+    residual_steps_arr = np.asarray(arb_residual_gap_steps, dtype=int)
+    residual_gap_arr = np.asarray(arb_residual_gap_token1, dtype=float)
+    residual_mask = (residual_steps_arr >= int(s0)) & np.isfinite(residual_gap_arr)
+    residual_steps_plot = residual_steps_arr[residual_mask]
+    residual_gap_plot = residual_gap_arr[residual_mask]
+    spread_v = np.asarray(cex_dex_spread_token1_v, dtype=float)
+    fig1d = make_subplots(
+        rows=2,
+        cols=2,
+        column_widths=[0.72, 0.28],
+        horizontal_spacing=0.08,
+        vertical_spacing=0.12,
+        subplot_titles=(
+            "End-of-block signed gap",
+            "End-of-block gap distribution",
+            "Post-arb residual gap (successful only)",
+            "Post-arb residual distribution",
+        ),
+    )
+    fig1d.add_trace(
+        go.Scatter(
+            x=steps_list,
+            y=spread_v,
+            mode="lines",
+            name="P_DEX - P_CEX (block)",
+            line=dict(width=1.8, color="#2ca02c"),
+        ),
+        row=1,
+        col=1,
+    )
+    fig1d.add_hline(
+        y=0.0,
+        line=dict(width=1.0, color="#444444", dash="dash"),
+        row=1,
+        col=1,
+    )
+    fig1d.add_trace(
+        go.Histogram(
+            x=_finite(spread_v),
+            nbinsx=60,
+            marker_color="#2ca02c",
+            opacity=0.85,
+            showlegend=False,
+        ),
+        row=1,
+        col=2,
+    )
+    fig1d.add_trace(
+        go.Scatter(
+            x=residual_steps_plot,
+            y=residual_gap_plot,
+            mode="lines+markers",
+            name="P_DEX - P_CEX (post-arb)",
+            line=dict(width=1.8, color="#9467bd"),
+            marker=dict(size=5),
+        ),
+        row=2,
+        col=1,
+    )
+    fig1d.add_hline(
+        y=0.0,
+        line=dict(width=1.0, color="#444444", dash="dash"),
+        row=2,
+        col=1,
+    )
+    fig1d.add_trace(
+        go.Histogram(
+            x=_finite(residual_gap_plot),
+            nbinsx=60,
+            marker_color="#9467bd",
+            opacity=0.85,
+            showlegend=False,
+        ),
+        row=2,
+        col=2,
+    )
+    fig1d.update_layout(
+        template="plotly_white",
+        title=f"CEX-DEX Gap Diagnostics (post-arb n={len(residual_gap_plot)})",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    )
+    fig1d.update_xaxes(title_text="Block", row=1, col=1)
+    fig1d.update_yaxes(title_text="P_DEX - P_CEX (token1/token0)", row=1, col=1)
+    fig1d.update_xaxes(title_text="P_DEX - P_CEX (token1/token0)", row=1, col=2)
+    fig1d.update_yaxes(title_text="Count", type="log", row=1, col=2)
+    fig1d.update_xaxes(title_text="Block", row=2, col=1)
+    fig1d.update_yaxes(title_text="P_DEX - P_CEX (token1/token0)", row=2, col=1)
+    fig1d.update_xaxes(title_text="P_DEX - P_CEX (token1/token0)", row=2, col=2)
+    fig1d.update_yaxes(title_text="Count", type="log", row=2, col=2)
+    _save_plotly("1d_gap_diagnostics_2x2", fig1d)
 
     # ----- 1b) Micro-time price panel -----
     if len(M_micro) == len(P_micro) == len(micro_steps) and len(micro_steps) > 0:
@@ -1696,6 +1803,14 @@ from core.utils import (
     load_simulation_parameters,
     scenario_output_root,
 )
+from core.artifacts import (
+    build_run_manifest,
+    make_unique_dir,
+    safe_tag,
+    snapshot_file,
+    write_csv_rows,
+    write_json,
+)
 from core.agents import (
     LPAgent,
     Position,
@@ -1784,17 +1899,9 @@ def simulate(
     cex_mu: float,
     cex_sigma: float,
     
-    # === Trade flow parameters ===
-    smart_trades_per_block: float,
-    noise_trades_per_block: float,
-    
     # === LP population parameters ===
     N_LP: int,
     passive_lp_share: float,
-    tau: int,
-    narrow_mints_per_block: float,
-    passive_mints_per_block: float,
-    passive_burns_per_block: float,
     
     # === LP width parameters ===
     w_min_ticks: int,
@@ -1836,6 +1943,25 @@ def simulate(
     fee_step_bps_max: float, # max step per update (bps)
     fee_cooldown: int,         # blocks between fee changes (hysteresis)
     k_lvr: float = 0.0,     # feedback gain for "lvr_fee_ewma" (dimensionless)
+
+    # === Arrival-rate parameters ===
+    # Preferred: per-second Poisson intensities (micro-step = 1 second). Expected arrivals per
+    # block naturally scale with `block_time` (seconds per block).
+    smart_trades_per_second: Optional[float] = None,
+    noise_trades_per_second: Optional[float] = None,
+    narrow_mints_per_second: Optional[float] = None,
+    passive_mints_per_second: Optional[float] = None,
+    passive_burns_per_second: Optional[float] = None,
+    tau_seconds: Optional[float] = None,
+
+    # Legacy (deprecated): expected counts per block. Used only when the corresponding
+    # `*_per_second` parameter is not provided.
+    smart_trades_per_block: Optional[float] = None,
+    noise_trades_per_block: Optional[float] = None,
+    narrow_mints_per_block: Optional[float] = None,
+    passive_mints_per_block: Optional[float] = None,
+    passive_burns_per_block: Optional[float] = None,
+    tau: Optional[int] = None,
     
     # === Cost parameters ===
     flash_loan_fee: float = 0.0,  # percentage cost on arbitrage notional (e.g., 0.0005 = 5 bps)
@@ -1950,27 +2076,152 @@ def simulate(
 
     passive_share = max(0.0, min(1.0, passive_lp_share))
     
-    # Trade arrivals are modeled as a Poisson process per micro-step.
-    # Each block has B micro-steps, so lambda_micro = trades_per_block / B.
+    # ---------------------------------------------------------------------
+    # Arrival-rate semantics
+    # ---------------------------------------------------------------------
+    # One micro-step is treated as ~1 second of "real time".
+    #
+    # Legacy knobs (kept for backward compatibility):
+    #   - smart_trades_per_block / noise_trades_per_block are expected intents per *block*.
+    #     The code converts them to a per-micro-step intensity: lambda_micro = lambda_block / block_time.
+    #
+    # Real-time knobs (new; override legacy when provided):
+    #   - *_per_second are Poisson intensities per *second* (micro-step), so expected per-block
+    #     arrivals scale with block_time: E[N_block] = block_time * lambda_second.
     B = block_time
-    smart_trades_per_block = max(0.0, float(smart_trades_per_block))
-    noise_trades_per_block = max(0.0, float(noise_trades_per_block))
-    smart_lambda_micro = smart_trades_per_block / B
-    noise_lambda_micro = noise_trades_per_block / B
+
+    smart_trades_per_block_f: Optional[float] = None
+    if smart_trades_per_block is not None:
+        smart_trades_per_block_f = max(0.0, float(smart_trades_per_block))
+    noise_trades_per_block_f: Optional[float] = None
+    if noise_trades_per_block is not None:
+        noise_trades_per_block_f = max(0.0, float(noise_trades_per_block))
+
+    smart_trades_per_second_f: Optional[float] = None
+    if smart_trades_per_second is not None:
+        smart_trades_per_second_f = max(0.0, float(smart_trades_per_second))
+        if smart_trades_per_block_f is not None and smart_trades_per_block_f > 0.0 and verbose:
+            _vprint("[CONFIG] WARNING: smart_trades_per_second is set; ignoring smart_trades_per_block.")
+
+    noise_trades_per_second_f: Optional[float] = None
+    if noise_trades_per_second is not None:
+        noise_trades_per_second_f = max(0.0, float(noise_trades_per_second))
+        if noise_trades_per_block_f is not None and noise_trades_per_block_f > 0.0 and verbose:
+            _vprint("[CONFIG] WARNING: noise_trades_per_second is set; ignoring noise_trades_per_block.")
+
+    if smart_trades_per_second_f is None and smart_trades_per_block_f is None:
+        raise ValueError(
+            "Missing smart-router arrival rate: set either smart_trades_per_second (preferred) "
+            "or smart_trades_per_block (legacy)."
+        )
+    if noise_trades_per_second_f is None and noise_trades_per_block_f is None:
+        raise ValueError(
+            "Missing noise-trader arrival rate: set either noise_trades_per_second (preferred) "
+            "or noise_trades_per_block (legacy)."
+        )
+
+    if smart_trades_per_second_f is not None:
+        smart_lambda_micro = float(smart_trades_per_second_f)
+        smart_trades_expected_per_block = float(smart_lambda_micro) * float(B)
+    else:
+        smart_lambda_micro = float(smart_trades_per_block_f) / float(B)
+        smart_trades_expected_per_block = float(smart_trades_per_block_f)
+
+    if noise_trades_per_second_f is not None:
+        noise_lambda_micro = float(noise_trades_per_second_f)
+        noise_trades_expected_per_block = float(noise_lambda_micro) * float(B)
+    else:
+        noise_lambda_micro = float(noise_trades_per_block_f) / float(B)
+        noise_trades_expected_per_block = float(noise_trades_per_block_f)
+
     # Track which cohorts are active for plotting/metrics.
     lp_active_enabled = passive_share < 1.0
     lp_passive_enabled = passive_share > 0.0
-    smart_router_enabled = smart_trades_per_block > 0.0
-    noise_trader_enabled = noise_trades_per_block > 0.0
+    smart_router_enabled = smart_lambda_micro > 0.0
+    noise_trader_enabled = noise_lambda_micro > 0.0
 
     jiter_enabled = p_jit > 0.0 and N_jit > 0 and liquidity_perc_jit > 0.0
     jiter_agent: Optional[LPAgent] = None
 
     # narrow_agents = max(1e-12, (1.0 - passive_share) * max(1, N_LP))
     # passive_agents = max(1e-12, passive_share * max(1, N_LP))
-    narrow_mints_per_block = max(0.0, float(narrow_mints_per_block))
-    passive_mints_per_block = max(0.0, float(passive_mints_per_block))
-    passive_burns_per_block = max(0.0, float(passive_burns_per_block))
+    narrow_mints_per_block_f: Optional[float] = None
+    if narrow_mints_per_block is not None:
+        narrow_mints_per_block_f = max(0.0, float(narrow_mints_per_block))
+    passive_mints_per_block_f: Optional[float] = None
+    if passive_mints_per_block is not None:
+        passive_mints_per_block_f = max(0.0, float(passive_mints_per_block))
+    passive_burns_per_block_f: Optional[float] = None
+    if passive_burns_per_block is not None:
+        passive_burns_per_block_f = max(0.0, float(passive_burns_per_block))
+
+    narrow_mints_per_second_f: Optional[float] = None
+    if narrow_mints_per_second is not None:
+        narrow_mints_per_second_f = max(0.0, float(narrow_mints_per_second))
+        if narrow_mints_per_block_f is not None and narrow_mints_per_block_f > 0.0 and verbose:
+            _vprint("[CONFIG] WARNING: narrow_mints_per_second is set; ignoring narrow_mints_per_block.")
+    passive_mints_per_second_f: Optional[float] = None
+    if passive_mints_per_second is not None:
+        passive_mints_per_second_f = max(0.0, float(passive_mints_per_second))
+        if passive_mints_per_block_f is not None and passive_mints_per_block_f > 0.0 and verbose:
+            _vprint("[CONFIG] WARNING: passive_mints_per_second is set; ignoring passive_mints_per_block.")
+    passive_burns_per_second_f: Optional[float] = None
+    if passive_burns_per_second is not None:
+        passive_burns_per_second_f = max(0.0, float(passive_burns_per_second))
+        if passive_burns_per_block_f is not None and passive_burns_per_block_f > 0.0 and verbose:
+            _vprint("[CONFIG] WARNING: passive_burns_per_second is set; ignoring passive_burns_per_block.")
+
+    if narrow_mints_per_second_f is None and narrow_mints_per_block_f is None:
+        raise ValueError(
+            "Missing narrow-LP mint arrival rate: set either narrow_mints_per_second (preferred) "
+            "or narrow_mints_per_block (legacy)."
+        )
+    if passive_mints_per_second_f is None and passive_mints_per_block_f is None:
+        raise ValueError(
+            "Missing passive-LP mint arrival rate: set either passive_mints_per_second (preferred) "
+            "or passive_mints_per_block (legacy)."
+        )
+    if passive_burns_per_second_f is None and passive_burns_per_block_f is None:
+        raise ValueError(
+            "Missing passive-LP burn arrival rate: set either passive_burns_per_second (preferred) "
+            "or passive_burns_per_block (legacy)."
+        )
+
+    # Effective per-block Poisson means used by the scheduler.
+    narrow_mints_lambda_block = (
+        float(narrow_mints_per_second_f) * float(B) if narrow_mints_per_second_f is not None else float(narrow_mints_per_block_f)
+    )
+    passive_mints_lambda_block = (
+        float(passive_mints_per_second_f) * float(B) if passive_mints_per_second_f is not None else float(passive_mints_per_block_f)
+    )
+    passive_burns_lambda_block = (
+        float(passive_burns_per_second_f) * float(B) if passive_burns_per_second_f is not None else float(passive_burns_per_block_f)
+    )
+
+    tau_seconds_f: Optional[float] = None
+    if tau_seconds is not None:
+        tau_seconds_f = float(tau_seconds)
+        if not math.isfinite(tau_seconds_f) or tau_seconds_f <= 0.0:
+            raise ValueError(f"tau_seconds must be a finite positive number: got {tau_seconds!r}")
+        if verbose:
+            _vprint("[CONFIG] tau_seconds is set; using per-second LP review clocks (tau is legacy/optional).")
+
+    tau_int: Optional[int] = None
+    if tau is not None:
+        try:
+            tau_int = int(tau)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"tau must be an integer > 0: got {tau!r}") from exc
+        if tau_int <= 0:
+            raise ValueError(f"tau must be an integer > 0: got {tau!r}")
+    if tau_seconds_f is None and tau_int is None:
+        raise ValueError(
+            "Missing LP review clock: set either tau_seconds (preferred; seconds) or tau (legacy; blocks)."
+        )
+    if tau_int is None:
+        # tau is unused when tau_seconds is set, but we keep a valid value for any
+        # legacy code paths that still expect an int.
+        tau_int = 1
 
     # --- Log Annualized Volatility for Clarity ---
     # cex_sigma is per-micro-step (1 second).
@@ -2048,7 +2299,16 @@ def simulate(
         _vprint(f"[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
         sigma_for_ref = cex_sigma
     _vprint(f"[CONFIG] Initial fee f0: {initial_params.get('f0', 0.0005)*10000:.1f} bps")
-    _vprint(f"[CONFIG] LP passive share: {passive_share:.2%}, N_LP={N_LP}, P JIT={p_jit}\nSmart-Router target: {smart_trades_per_block:.2f} Noise trader target: {noise_trades_per_block:.2f}\nNarrow LP mints/block: {narrow_mints_per_block:.2f} Passive LP mints/block: {passive_mints_per_block:.2f} Passive LP burns/block: {passive_burns_per_block:.2f}\n")
+    _vprint(
+        "[CONFIG] "
+        f"LP passive share: {passive_share:.2%}, N_LP={N_LP}, P JIT={p_jit}\n"
+        f"         Trader arrivals: smart λ_micro={smart_lambda_micro:.3g}/s (E/block={smart_trades_expected_per_block:.3g}), "
+        f"noise λ_micro={noise_lambda_micro:.3g}/s (E/block={noise_trades_expected_per_block:.3g})\n"
+        f"         LP targets: narrow mints E/block={narrow_mints_lambda_block:.3g}, "
+        f"passive mints E/block={passive_mints_lambda_block:.3g}, "
+        f"passive burns E/block={passive_burns_lambda_block:.3g}; "
+        f"LP review clock: {'tau_seconds=' + str(tau_seconds_f) if tau_seconds_f is not None else 'tau=' + str(tau_int)}\n"
+    )
 
     # --- Build pool + reference market + LP agents ----------------------------
     pool, m0 = build_empty_pool()
@@ -2124,7 +2384,13 @@ def simulate(
             )
         )
         lp = LPs[-1]
-        lp.review_rate = 1.0 / max(1, tau)
+        if tau_seconds_f is not None:
+            # Per-second geometric review clock (micro-step = 1 second). We only check
+            # "due" status at block boundaries, but the waiting time is measured in seconds.
+            lp.review_rate = min(1.0, 1.0 / max(1e-12, float(tau_seconds_f)))
+        else:
+            # Legacy per-block geometric review clock.
+            lp.review_rate = 1.0 / max(1, int(tau_int))
         lp.next_review = int(np.random.geometric(lp.review_rate))
         lp.cooldown = 0
         lp.can_act = False
@@ -2137,7 +2403,8 @@ def simulate(
         num_seed_lps=20,
         seed_lp_id_base=10_000,
         seed_mint_prob=0.0,
-        tau=tau,
+        tau=int(tau_int),
+        tau_seconds=tau_seconds_f,
         plot=False,
         seed_is_passive=True,
     )
@@ -2313,6 +2580,8 @@ def simulate(
     trader_y_series, arb_y_series = [], []
     trader_steps, trader_dirs = [], []
     arb_steps, arb_dirs = [], []
+    arb_residual_gap_steps: List[int] = []
+    arb_residual_gap_token1: List[float] = []
     mint_steps, mint_sizes, burn_steps, burn_sizes = [], [], [], []
     mint_is_passive: List[bool] = []
     burn_is_passive: List[bool] = []
@@ -2476,6 +2745,8 @@ def simulate(
         trader_dirs = _NullList()
         arb_steps = _NullList()
         arb_dirs = _NullList()
+        arb_residual_gap_steps = _NullList()
+        arb_residual_gap_token1 = _NullList()
         mint_sizes = _NullList()
         burn_sizes = _NullList()
         mint_is_passive = _NullList()
@@ -2764,7 +3035,13 @@ def simulate(
             f"L_active={pool.L_active:.4f} | tick={pool.tick} (impact applied)\n"
         )
 
-        lp.cooldown = np.random.randint(3, 9)  # 3–8 steps of "hands off"
+        cooldown_blocks = int(np.random.randint(3, 9))  # 3–8 blocks worth of "hands off" (legacy semantics)
+        if tau_seconds_f is not None:
+            # In per-second review-clock mode, treat cooldown in seconds so the implied
+            # "hands off" duration scales with block_time.
+            lp.cooldown = int(cooldown_blocks * int(B))
+        else:
+            lp.cooldown = int(cooldown_blocks)
         _rebalance_lp_to_target(lp, ref.m, pool.S)
 
 
@@ -3860,6 +4137,9 @@ def simulate(
                                 f"[t={t:03d}] arb swap down dx_in={in_used:.6f} dy_out={y_out_from_dex:.6f} "
                                 f"| price {price_before:.4f}->{pool.price:.4f} | tick {tick_before}->{pool.tick} (impact applied)\n"
                             )
+                        # Residual gap is measured immediately after the successful arb swap.
+                        arb_residual_gap_steps.append(t)
+                        arb_residual_gap_token1.append(float(pool.price - ref.m))
                         executed = int(in_used > 0)
                         _arb_execs += executed
                         total_arb_swaps_executed += executed
@@ -4023,16 +4303,17 @@ def simulate(
 
         # --- LP scheduling ---
         # Figure out which LPs are due to act this step.
+        lp_clock_dt = int(B) if tau_seconds_f is not None else 1
         due = []
         for i, lp in enumerate(LPs):
             if getattr(lp, "is_jiter", False):
                 continue
             if lp.cooldown > 0:
-                lp.cooldown -= 1
+                lp.cooldown = max(0, int(lp.cooldown) - lp_clock_dt)
                 # let the review clock keep ticking while cooling down
-                lp.next_review = max(1, lp.next_review - 1)
+                lp.next_review = max(1, int(lp.next_review) - lp_clock_dt)
                 continue
-            lp.next_review -= 1
+            lp.next_review = int(lp.next_review) - lp_clock_dt
             if lp.next_review <= 0:
                 due.append(i)
                 lp.next_review = int(np.random.geometric(lp.review_rate))
@@ -4085,7 +4366,7 @@ def simulate(
         _enable(due)
 
         # Burns (TP/SL + passive Poisson targets)
-        if passive_burns_per_block > 0.0:
+        if passive_burns_lambda_block > 0.0:
             burnable_positions: List[Tuple[int, int, int, float]] = []
             for lp_idx in due:
                 lp = LPs[lp_idx]
@@ -4096,7 +4377,7 @@ def simulate(
                 for pos in getattr(lp, "positions", []):
                     burnable_positions.append((lp.id, pos.lower, pos.upper, float(pos.L)))
             if burnable_positions:
-                n_burn_intents = int(np.random.poisson(passive_burns_per_block))
+                n_burn_intents = int(np.random.poisson(passive_burns_lambda_block))
                 n_burn_intents = min(n_burn_intents, len(burnable_positions))
                 if n_burn_intents > 0:
                     for lp_id, lower, upper, L_val in random.sample(burnable_positions, k=n_burn_intents):
@@ -4185,7 +4466,7 @@ def simulate(
             mempool_orders.append({'type':'lp_mint','lp_id': lp.id,'lower': lower,'upper': upper,'eta': eta})
 
         # New mints (Poisson targets; respect due/cooldown)
-        if narrow_mints_per_block > 0.0:
+        if narrow_mints_lambda_block > 0.0:
             narrow_candidates = []
             for lp_idx in due:
                 lp = LPs[lp_idx]
@@ -4197,11 +4478,11 @@ def simulate(
                     continue
                 narrow_candidates.append(lp)
             if narrow_candidates:
-                n_mints = int(np.random.poisson(narrow_mints_per_block))
+                n_mints = int(np.random.poisson(narrow_mints_lambda_block))
                 for _ in range(n_mints):
                     _enqueue_lp_mint(random.choice(narrow_candidates), is_passive_mint=False)
 
-        if passive_mints_per_block > 0.0:
+        if passive_mints_lambda_block > 0.0:
             passive_candidates = []
             for lp_idx in due:
                 lp = LPs[lp_idx]
@@ -4213,7 +4494,7 @@ def simulate(
                     continue
                 passive_candidates.append(lp)
             if passive_candidates:
-                n_mints = int(np.random.poisson(passive_mints_per_block))
+                n_mints = int(np.random.poisson(passive_mints_lambda_block))
                 for _ in range(n_mints):
                     _enqueue_lp_mint(random.choice(passive_candidates), is_passive_mint=True)
 
@@ -4684,6 +4965,9 @@ def simulate(
     # Persist DEX price series for downstream analysis in each scenario folder.
     output_data_dir = results_root_path / "output_data"
     output_data_dir.mkdir(parents=True, exist_ok=True)
+    cex_dex_spread_token1 = (
+        np.asarray(P_series, dtype=float) - np.asarray(M_series, dtype=float)
+    )
     np.save(
         output_data_dir / "dex_price_end_of_block.npy",
         np.asarray(P_series, dtype=float),
@@ -4691,6 +4975,18 @@ def simulate(
     np.save(
         output_data_dir / "dex_price_intrablock.npy",
         np.asarray(P_micro, dtype=float),
+    )
+    np.save(
+        output_data_dir / "cex_dex_spread_end_of_block.npy",
+        cex_dex_spread_token1,
+    )
+    np.save(
+        output_data_dir / "arb_residual_gap_steps.npy",
+        np.asarray(arb_residual_gap_steps, dtype=int),
+    )
+    np.save(
+        output_data_dir / "arb_residual_gap_token1.npy",
+        np.asarray(arb_residual_gap_token1, dtype=float),
     )
 
     if light_mode:
@@ -4707,6 +5003,9 @@ def simulate(
             "smart_router_dex_share_series": list(sr_dex_share_series),
             "smart_router_dex_share_overall": float(sr_dex_share_overall),
             "smart_router_dex_share_mean": float(sr_dex_share_mean),
+            "cex_dex_spread_token1": cex_dex_spread_token1.tolist(),
+            "arb_residual_gap_steps": list(arb_residual_gap_steps),
+            "arb_residual_gap_token1": list(arb_residual_gap_token1),
             "lp_pnl_active": list(lp_pnl_active_series),
             "lp_pnl_passive": list(lp_pnl_passive_series),
             "lp_unhedged_active": list(lp_unhedged_active_series),
@@ -4856,6 +5155,9 @@ def simulate(
             steps=steps,
             P_series=P_series,
             M_series=M_series,
+            cex_dex_spread_token1=cex_dex_spread_token1,
+            arb_residual_gap_steps=arb_residual_gap_steps,
+            arb_residual_gap_token1=arb_residual_gap_token1,
             X_active_end=X_active_end,
             Y_active_end=Y_active_end,
             band_lo_target=band_lo_target,
@@ -4920,6 +5222,9 @@ def simulate(
     return {
         "DEX_price": P_series,
         "CEX_price": M_series,
+        "cex_dex_spread_token1": cex_dex_spread_token1,
+        "arb_residual_gap_steps": arb_residual_gap_steps,
+        "arb_residual_gap_token1": arb_residual_gap_token1,
         "cex_sigma_series": cex_sigma_series.tolist(),
         "cex_regime_series": cex_regime_series.tolist(),
         "band_lo": band_lo_target,
@@ -5044,20 +5349,106 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    pid_str = str(os.getpid())
-    print(f"[pid] {pid_str}")
     config_path = Path(args.config).expanduser().resolve()
     scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
 
-    # Derive a scenario-specific output root under abm_results/scenarios/<name>
+    # Derive a scenario-specific output root under abm_results/scenarios/<name>.
     scenario_root = scenario_output_root(config_path)
     params = dict(params)
-    params["results_root"] = scenario_root
 
-    print(f"[config] {config_path}")
-    print(f"[scenario] {scenario_label} (output -> {scenario_root})")
+    seed = int(params.get("seed", 0))
+    fee_mode = str(params.get("fee_mode", scenario_label))
+    run_id_base = safe_tag(f"{fee_mode}_seed{seed}")
+    run_root = make_unique_dir(scenario_root / "runs" / run_id_base)
+
+    snapshot_file(config_path, run_root / "config_snapshot.yml")
+    manifest = build_run_manifest(script="run", run_id=run_root.name, config_path=config_path)
+
+    def _jsonable(v: Any) -> Any:
+        if isinstance(v, Path):
+            return str(v)
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            return v
+        if isinstance(v, (list, tuple)):
+            return [_jsonable(x) for x in v]
+        if isinstance(v, dict):
+            return {str(k): _jsonable(val) for k, val in v.items()}
+        try:
+            return float(v)
+        except Exception:
+            return str(v)
+
+    metadata: Dict[str, Any] = dict(manifest.to_dict())
+    import sys
+    metadata.update(
+        {
+            "scenario_label": str(scenario_label),
+            "fee_mode": str(fee_mode),
+            "seed": int(seed),
+            "scenario_root": str(scenario_root),
+            "run_root": str(run_root),
+            "argv": list(sys.argv),
+            "simulate_params": {k: _jsonable(v) for k, v in params.items()},
+        }
+    )
+    write_json(run_root / "metadata.json", metadata)
+
+    params["results_root"] = run_root
+
+    print(f"[run] pid:      {os.getpid()}")
+    print(f"[run] config:   {config_path}")
+    print(f"[run] scenario: {scenario_label}")
+    print(f"[run] output:   {run_root}")
 
     out = simulate(**params)
+
+    def _last(values: Any) -> float:
+        if isinstance(values, (list, tuple)) and values:
+            try:
+                return float(values[-1])
+            except Exception:
+                return float("nan")
+        return float("nan")
+
+    def _float_or_nan(value: Any) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float("nan")
+
+    summary_row = {
+        "run_id": run_root.name,
+        "config_path": str(config_path),
+        "scenario_label": str(scenario_label),
+        "fee_mode": str(fee_mode),
+        "seed": int(seed),
+        "block_time": int(params.get("block_time", 0) or 0),
+        "T": int(params.get("T", 0) or 0),
+        "skip_step": int(params.get("skip_step", 0) or 0),
+        "passive_lp_share": _float_or_nan(params.get("passive_lp_share", params.get("lp_passive_share"))),
+        "p_jit": _float_or_nan(params.get("p_jit")),
+        "arb_pnl_cum_final": _last(out.get("arb_pnl_cum")),
+        "smart_router_pnl_cum_final": _last(out.get("smart_router_pnl_cum")),
+        "noise_trader_pnl_cum_final": _last(out.get("noise_trader_pnl_cum")),
+        "lp_pnl_active_final": _last(out.get("lp_pnl_active_series", out.get("lp_pnl_active"))),
+        "lp_pnl_passive_final": _last(out.get("lp_pnl_passive_series", out.get("lp_pnl_passive"))),
+        "jiter_pnl_final": _last(out.get("jiter_pnl_series")),
+        "total_noise_trader_swaps": int(out.get("total_noise_trader_swaps", 0) or 0),
+        "total_smart_router_swaps": int(out.get("total_smart_router_swaps", 0) or 0),
+        "total_arb_swaps": int(out.get("total_arb_swaps", 0) or 0),
+        "total_jit_trades_executed": int(out.get("total_jit_trades_executed", 0) or 0),
+    }
+    write_csv_rows(run_root / "summary.csv", [summary_row])
+    write_json(
+        scenario_root / "latest_run.json",
+        {
+            "run_id": run_root.name,
+            "run_root": str(run_root),
+            "config_path": str(config_path),
+            "fee_mode": str(fee_mode),
+            "seed": int(seed),
+        },
+    )
 
     # make liquidity GIF
     if bool(params.get("liquidity_for_gif", params.get("liquidty_for_gif", False))):
@@ -5067,7 +5458,7 @@ if __name__ == "__main__":
             base_s=out["grid_base_s"],
             g=out["grid_g"],
             out_path=str(
-                scenario_root
+                run_root
                 / f"liquidity_evolution_{scenario_label}_{params.get('cex_sigma')}_{params.get('T')}.gif"
             ),
             fps=20,

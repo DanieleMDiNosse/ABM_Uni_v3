@@ -37,7 +37,8 @@ Stored results (written under `abm_results/grid_search/dashboard_nd/`):
     Failed points are still appended, but with NaNs/zeros in the summary columns; error details
     are recorded separately in `errors_*.csv` (see below).
   - `data/meta_<config_stem>_<fingerprint>.json`: reproducibility metadata (sweeps, param order,
-    metrics, seed mode, fee histogram bin edges).
+    metrics, seed mode, fee histogram bin edges, cache schema version, script version,
+    and effective config-content hash).
   - `data/errors_<config_stem>_<fingerprint>.csv`: per-failure diagnostics (error type/message and
     the corresponding `i__*` / `v__*` sweep coordinates).
 
@@ -47,15 +48,21 @@ To build the interactive HTML dashboard (PnL surface + fee histogram) from the c
 Notes:
   - This script runs the full simulation for every parameter combination (potentially expensive).
   - Results are cached to a scenario-scoped CSV to support resume / incremental runs.
+  - Worker simulations write to isolated temporary folders under
+    `abm_results/grid_search/dashboard_nd/_tmp_runs/<tag>/` and are cleaned automatically.
 """
 
 from __future__ import annotations
 
+import atexit
 import argparse
 import hashlib
 import json
 import logging
 import os
+import shutil
+import sys
+import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from itertools import product
@@ -66,8 +73,13 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from scripts import run as run_module
 from core.utils import load_simulation_parameters
+from core.artifacts import build_run_manifest, snapshot_file, write_json
 
 
 def _silent_tqdm(iterable=None, **kwargs):
@@ -87,6 +99,8 @@ BASE_CONFIG_PATH = Path("abm_results/scenarios/test.yml")
 RUNS_PER_POINT_DEFAULT = 15
 SEED_BASE_DEFAULT = 1
 FEE_HIST_BINS_DEFAULT = 60
+CACHE_SCHEMA_VERSION = 2
+SCRIPT_VERSION = "nd_grid_runner_v2"
 
 # PnL aggregation strategy for the cache (kept in the fingerprint/meta for reproducibility).
 PNL_SUMMARY_KIND = "step_rate_mean_diff"
@@ -120,11 +134,13 @@ def linspace_int(start: int, stop: int, steps: int) -> List[int]:
 # the cartesian product of all values.
 DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
     # "passive_lp_share": np.linspace(0.0, 1.0, 3).tolist(),
-    "narrow_mints_per_block": linspace_int(0, 2, 5),
-    "smart_trades_per_block": linspace_int(0, 2, 5),
-    "passive_mints_per_block": linspace_int(0, 2, 5),
-    "noise_trades_per_block": linspace_int(0, 2, 5),
-    "passive_burns_per_block": linspace_int(0, 2, 5),
+    # Real-time arrival rates: micro-step = 1 second, so expected arrivals per block scale
+    # with `block_time`. These override the legacy `*_per_block` knobs in `scripts/run.py`.
+    "narrow_mints_per_second": [0.0, 0.10, 0.20],
+    "smart_trades_per_second": [0.0, 0.16, 0.32],
+    "passive_mints_per_second": [0.0, 0.10, 0.20],
+    "noise_trades_per_second": [0.0, 0.16, 0.32],
+    "passive_burns_per_second": [0.0, 0.10, 0.20],
     "k_sigma": np.linspace(0.0, 2, 5).tolist(),
     "mint_mu": np.linspace(-1, -0.1, 5).tolist(),
     "mint_sigma": np.linspace(1, 2, 5).tolist(),
@@ -149,7 +165,6 @@ DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
 # INT_PARAMS: set[str] = {
 #     "narrow_mints_per_block",
 #     "passive_mints_per_block",
-#     "noise_trades_per_block",
 #     "passive_burns_per_block",
 # }
 INT_PARAMS: set[str] = {}
@@ -172,6 +187,48 @@ def _slice_series(values: Sequence[float], skip: int) -> np.ndarray:
     return array[skip_clamped:]
 
 
+def _to_hashable_json(value: Any) -> Any:
+    """Convert nested values to deterministic JSON-safe primitives."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        val = float(value)
+        if np.isnan(val):
+            return "NaN"
+        if np.isposinf(val):
+            return "Infinity"
+        if np.isneginf(val):
+            return "-Infinity"
+        return val
+    if isinstance(value, dict):
+        return {str(k): _to_hashable_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_hashable_json(v) for v in value]
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    if isinstance(value, float):
+        if np.isnan(value):
+            return "NaN"
+        if np.isposinf(value):
+            return "Infinity"
+        if np.isneginf(value):
+            return "-Infinity"
+        return value
+    return str(value)
+
+
+def _effective_config_content_hash(*, scenario_label: str, base_params: Mapping[str, Any]) -> str:
+    """Hash the effective scenario content used by the sweep runner."""
+    payload = {
+        "scenario_label": str(scenario_label),
+        "simulate_params": _to_hashable_json(dict(base_params)),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
 def _canon_fingerprint_payload(
     *,
     sweeps: Mapping[str, Sequence[float | int]],
@@ -181,7 +238,8 @@ def _canon_fingerprint_payload(
     fee_hist_bins: int,
     smart_router_dex_share_hist_bins: int,
     pnl_summary: str,
-) -> str:
+    config_content_hash: str,
+) -> Tuple[str, Dict[str, Any]]:
     payload = {
         "sweeps": {k: list(v) for k, v in sorted(sweeps.items())},
         "runs_per_point": int(runs_per_point),
@@ -190,9 +248,30 @@ def _canon_fingerprint_payload(
         "fee_hist_bins": int(fee_hist_bins),
         "smart_router_dex_share_hist_bins": int(smart_router_dex_share_hist_bins),
         "pnl_summary": str(pnl_summary),
+        "script_version": str(SCRIPT_VERSION),
+        "cache_schema_version": int(CACHE_SCHEMA_VERSION),
+        "config_content_hash": str(config_content_hash),
     }
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.md5(raw).hexdigest()[:12]
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:12], payload
+
+
+def _make_worker_run_root(
+    *,
+    worker_temp_root: Path,
+    point_index: int,
+    run_index: int,
+    seed_value: int,
+) -> Path:
+    """Create a unique temporary run directory for one worker simulation."""
+    point_root = worker_temp_root / f"pt_{int(point_index):08d}"
+    point_root.mkdir(parents=True, exist_ok=True)
+    return Path(
+        tempfile.mkdtemp(
+            prefix=f"run_{int(run_index):04d}_seed_{int(seed_value)}_",
+            dir=str(point_root),
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -260,8 +339,11 @@ def _evaluate_grid_point(
     runs_per_point: int,
     common_seeds: bool,
     global_seed_base: int,
+    worker_temp_root: str,
 ) -> Dict[str, Any]:
     logging.getLogger("uniswapv3_pool").setLevel(logging.ERROR)
+    worker_temp_root_path = Path(worker_temp_root)
+    point_temp_root = worker_temp_root_path / f"pt_{int(point.index):08d}"
     params = dict(base_params)
     for name, idx in zip(param_order, point.indices):
         value = sweep_values[name][int(idx)]
@@ -297,7 +379,15 @@ def _evaluate_grid_point(
                 seed_value = int(point.seed_base + run_index)
             params["seed"] = seed_value
 
+            run_temp_root: Optional[Path] = None
             try:
+                run_temp_root = _make_worker_run_root(
+                    worker_temp_root=worker_temp_root_path,
+                    point_index=point.index,
+                    run_index=run_index,
+                    seed_value=seed_value,
+                )
+                params["results_root"] = run_temp_root
                 output = simulate(**params)
             except Exception as exc:
                 ok = False
@@ -306,6 +396,9 @@ def _evaluate_grid_point(
                 error_run_index = int(run_index)
                 error_seed = int(seed_value)
                 break
+            finally:
+                if run_temp_root is not None:
+                    shutil.rmtree(run_temp_root, ignore_errors=True)
 
             for metric_key, _ in PNL_METRICS:
                 series = _slice_series(output.get(metric_key, []), skip_step)
@@ -364,6 +457,9 @@ def _evaluate_grid_point(
         ok = False
         error_type = type(exc).__name__
         error_message = str(exc)
+    finally:
+        # Best-effort cleanup of this point's temp root (it should be empty after per-run cleanup).
+        shutil.rmtree(point_temp_root, ignore_errors=True)
 
     if ok:
         fee_arr = np.asarray(fee_values, dtype=float)
@@ -494,6 +590,7 @@ def main() -> None:
     parser.add_argument("--recompute", action="store_true", help="Ignore cache and recompute all grid points.")
     parser.add_argument("--dry-run", action="store_true", help="Print the resolved grid and exit.")
     args = parser.parse_args()
+    config_path = args.config.expanduser().resolve()
 
     runs_per_point = int(args.runs_per_point)
     if runs_per_point <= 0:
@@ -507,8 +604,9 @@ def main() -> None:
     if len(param_order) < 2:
         raise SystemExit("Need at least 2 swept parameters to build a surface.")
 
-    scenario_label, base_params = load_simulation_parameters(args.config, simulate_func=simulate)
-    base_params["results_root"] = Path("abm_results") / "grid_search"
+    scenario_label, loaded_params = load_simulation_parameters(config_path, simulate_func=simulate)
+    base_params = dict(loaded_params)
+    config_content_hash = _effective_config_content_hash(scenario_label=scenario_label, base_params=base_params)
 
     f_min = float(base_params.get("f_min", 0.0))
     f_max = float(base_params.get("f_max", 0.0))
@@ -517,7 +615,7 @@ def main() -> None:
     fee_bin_edges = np.linspace(f_min, f_max, fee_hist_bins + 1, dtype=float)
     smart_router_dex_share_bin_edges = np.linspace(0.0, 1.0, fee_hist_bins + 1, dtype=float)
 
-    fingerprint = _canon_fingerprint_payload(
+    fingerprint, fingerprint_payload = _canon_fingerprint_payload(
         sweeps=sweeps,
         runs_per_point=runs_per_point,
         seed_base=int(args.seed_base),
@@ -525,18 +623,20 @@ def main() -> None:
         fee_hist_bins=fee_hist_bins,
         smart_router_dex_share_hist_bins=fee_hist_bins,
         pnl_summary=PNL_SUMMARY_KIND,
+        config_content_hash=config_content_hash,
     )
 
     # --- outputs -------------------------------------------------------------
     global_root = Path("abm_results") / "grid_search" / "dashboard_nd"
 
-    stem = args.config.stem
+    stem = config_path.stem
     tag = f"{stem}_{fingerprint}"
 
     csv_global = global_root / "data" / f"grid_{tag}.csv"
     meta_global = global_root / "data" / f"meta_{tag}.json"
     errors_global = global_root / "data" / f"errors_{tag}.csv"
     verbose_progress = global_root / "logs" / f"progress_{tag}.txt"
+    worker_tmp_root = global_root / "_tmp_runs" / tag
 
     # --- dry run -------------------------------------------------------------
     grid_sizes = {k: len(v) for k, v in sweeps.items()}
@@ -547,7 +647,7 @@ def main() -> None:
     slice_total = int(index_stop - index_start)
     if args.dry_run:
         print("Resolved ND grid:")
-        print(f"  config: {args.config}")
+        print(f"  config: {config_path}")
         print(f"  scenario_label (from YAML): {scenario_label}")
         print(f"  runs_per_point: {runs_per_point}")
         print(f"  seed_mode: {'common' if args.common_seeds else 'per_point'} (seed_base={args.seed_base})")
@@ -563,6 +663,8 @@ def main() -> None:
         print(f"  total grid points: {total_points}")
         print(f"  cache (global): {csv_global}")
         print(f"  meta (global):  {meta_global}")
+        print(f"  worker temp root: {worker_tmp_root} (created + cleaned at runtime)")
+        print(f"  config_content_hash: {config_content_hash}")
         return
 
     # --- build grid ----------------------------------------------------------
@@ -581,16 +683,29 @@ def main() -> None:
             existing |= set(failed_cached)
 
     print(
-        f"[dashboard_nd] config={args.config} | grid={total_points} points | "
+        f"[dashboard_nd] config={config_path} | grid={total_points} points | "
         f"slice=[{index_start},{index_stop}) ({slice_total} points) | workers={args.max_workers}"
     )
     print(f"[dashboard_nd] cache (global): {csv_global}")
     meta_global.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path = meta_global.parent / f"config_snapshot_{tag}.yml"
+    snapshot_file(config_path, snapshot_path)
+    manifest = build_run_manifest(script="run_parameter_surface_nd_pnl_fee_dashboard", run_id=tag, config_path=config_path)
     meta_payload = {
         "tag": tag,
         "fingerprint": fingerprint,
+        "fingerprint_payload": fingerprint_payload,
+        "cache_schema_version": int(CACHE_SCHEMA_VERSION),
+        "script_version": str(SCRIPT_VERSION),
+        "config_content_hash": str(config_content_hash),
         "scenario_label": scenario_label,
-        "config_path": str(args.config),
+        "config_path": str(config_path),
+        "config_snapshot": str(snapshot_path),
+        "worker_temp_root": str(worker_tmp_root),
+        "created_at_utc": manifest.created_at_utc,
+        "git_commit": manifest.git_commit,
+        "python": manifest.python,
+        "platform": manifest.platform,
         "param_order": list(param_order),
         "sweeps": {k: list(v) for k, v in sweeps.items()},
         "int_params": sorted(INT_PARAMS),
@@ -611,10 +726,12 @@ def main() -> None:
         "smart_router_dex_share_hist_bins": int(fee_hist_bins),
         "smart_router_dex_share_bin_edges": smart_router_dex_share_bin_edges.tolist(),
     }
-    meta_global.write_text(json.dumps(meta_payload, indent=2, sort_keys=True), encoding="utf-8")
+    write_json(meta_global, meta_payload)
     print(f"[dashboard_nd] meta (global):  {meta_global}")
 
     # --- run simulations -----------------------------------------------------
+    worker_tmp_root.mkdir(parents=True, exist_ok=True)
+    atexit.register(shutil.rmtree, worker_tmp_root, True)
     pending_rows: List[Dict[str, Any]] = []
     progress_overall: Optional[tqdm] = (
         tqdm(total=int(slice_total), desc="Grid points (slice)", unit="pt") if slice_total > 0 else None
@@ -667,6 +784,7 @@ def main() -> None:
                     runs_per_point=runs_per_point,
                     common_seeds=bool(args.common_seeds),
                     global_seed_base=int(args.seed_base),
+                    worker_temp_root=str(worker_tmp_root),
                 )
                 pending.add(future)
                 run_in_slice += 1
@@ -786,6 +904,7 @@ def main() -> None:
         "[dashboard_nd] build HTML with:\n"
         f"  python -m scripts.build_parameter_surface_nd_pnl_fee_dashboard --cache {csv_global} --meta {meta_global} --output {html_default}"
     )
+    shutil.rmtree(worker_tmp_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

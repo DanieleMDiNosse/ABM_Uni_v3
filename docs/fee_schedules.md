@@ -35,7 +35,7 @@ There are five supported fee modes:
 2.  **Volatility-based (CEX)** (`volatility_cex`)
 3.  **Volatility-based (DEX)** (`volatility_dex`)
 4.  **Toxicity-based** (`toxicity`)
-5.  **LVR-gap EWMA-based** (`lvr_fee_ewma`)
+<!-- 5.  **LVR-gap EWMA-based** (`lvr_fee_ewma`) -->
 
 ### 1. Static Fee
 
@@ -112,7 +112,7 @@ Since this controller is *pure-signal* (no additive baseline), when $\beta^{\tex
 *   **Parameters:**
     *   $k_{basis}$: Scaling factor for basis ticks (parameter `k_basis`).
 
-### 5. LVR-gap EWMA-based Fee
+<!-- ### 5. LVR-gap EWMA-based Fee
 
 This mode adjusts the fee using the EWMA of the per-step gap between LVR and fees, normalized by the executed DEX notional. The controller raises fees when LVR exceeds fees and lowers them when fees exceed LVR.
 
@@ -136,7 +136,7 @@ $$ f_{raw} = f_{current} + k_{lvr} \cdot g_{\hat{t}} $$
     This uses the absolute input notional of executed DEX swaps in token1 units (including arbitrage). Concretely, inputs in token0 are converted to token1 notional using the *pre-execution DEX price* for that swap. If $\text{Notional}_t = 0$, the controller skips the update for that step and leaves the fee unchanged.
 
 *   **Parameters:**
-    *   $k_{lvr}$: Feedback gain (parameter `k_lvr`), applied around the current fee.
+    *   $k_{lvr}$: Feedback gain (parameter `k_lvr`), applied around the current fee. -->
 
 ## Fee Update Mechanism (Controller)
 

@@ -22,6 +22,7 @@ to visualize the implied distributions for that scenario.
 import argparse
 import math
 import random
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,7 +33,22 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# Allow `python scripts/visualize_distributions.py ...` to work from any CWD by
+# ensuring the repo root (parent of `scripts/`) is on `sys.path` so `import core`
+# succeeds.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from core.utils import ReferenceMarket, build_empty_pool, scenario_output_root
+from core.artifacts import (
+    build_run_manifest,
+    make_unique_dir,
+    safe_tag,
+    snapshot_file,
+    write_csv_rows,
+    write_json,
+)
 
 
 # =============================================================================
@@ -87,15 +103,24 @@ class DistributionParams:
         LP mint-scale log-normal parameters (in log space).
     tau : float
         Mean LP review interval in steps (geometric distribution).
+    tau_seconds : float | None
+        Optional real-time LP review interval in seconds (micro-step = 1 second). When set,
+        it overrides `tau` for scheduling semantics in the main simulator.
     k_out_min, k_out_max : int
         Inclusive bounds for the discrete uniform draw of LP out-of-range
         recenter thresholds.
     block_time : int
         Micro-steps per block (used for per-micro-step Poisson visualizations).
     smart_trades_per_block, noise_trades_per_block : float
-        Expected trader intents per block (converted to per-micro-step intensities in scripts/run.py).
+        Legacy expected trader intents per block.
+    smart_trades_per_second, noise_trades_per_second : float | None
+        Optional real-time Poisson intensities per second (micro-step). When set, they override
+        the legacy per-block knobs in the main simulator.
     narrow_mints_per_block, passive_mints_per_block, passive_burns_per_block : float
-        Expected LP event targets per block.
+        Legacy expected LP event targets per block.
+    narrow_mints_per_second, passive_mints_per_second, passive_burns_per_second : float | None
+        Optional real-time LP target intensities per second. When set, expected targets per block
+        scale with `block_time`.
     p_jit : float
         Bernoulli arrival probability per block for the JIT searcher.
     N_jit : int
@@ -147,14 +172,20 @@ class DistributionParams:
     mint_mu: float = -1.0
     mint_sigma: float = 1.5
     tau: float = 5.0
+    tau_seconds: Optional[float] = None
     k_out_min: int = 10
     k_out_max: int = 20
     block_time: int = 5
     smart_trades_per_block: float = 0.8
     noise_trades_per_block: float = 0.8
+    smart_trades_per_second: Optional[float] = None
+    noise_trades_per_second: Optional[float] = None
     narrow_mints_per_block: float = 0.5
     passive_mints_per_block: float = 0.5
     passive_burns_per_block: float = 0.5
+    narrow_mints_per_second: Optional[float] = None
+    passive_mints_per_second: Optional[float] = None
+    passive_burns_per_second: Optional[float] = None
     p_jit: float = 0.0
     N_jit: int = 1
     liquidity_perc_jit: float = 0.90
@@ -351,15 +382,41 @@ def build_distribution_params(
         trader_sigma=float(simulate_params.get("trader_sigma", DistributionParams.trader_sigma)),
         mint_mu=float(simulate_params.get("mint_mu", DistributionParams.mint_mu)),
         mint_sigma=float(simulate_params.get("mint_sigma", DistributionParams.mint_sigma)),
-        tau=float(simulate_params.get("tau", DistributionParams.tau)),
+        tau=float(DistributionParams.tau if simulate_params.get("tau") is None else simulate_params.get("tau")),
+        tau_seconds=_coerce_optional_float(simulate_params.get("tau_seconds", DistributionParams.tau_seconds)),
         k_out_min=int(simulate_params.get("k_out_min", DistributionParams.k_out_min)),
         k_out_max=int(simulate_params.get("k_out_max", DistributionParams.k_out_max)),
         block_time=max(1, block_time),
-        smart_trades_per_block=float(simulate_params.get("smart_trades_per_block", DistributionParams.smart_trades_per_block)),
-        noise_trades_per_block=float(simulate_params.get("noise_trades_per_block", DistributionParams.noise_trades_per_block)),
-        narrow_mints_per_block=float(simulate_params.get("narrow_mints_per_block", DistributionParams.narrow_mints_per_block)),
-        passive_mints_per_block=float(simulate_params.get("passive_mints_per_block", DistributionParams.passive_mints_per_block)),
-        passive_burns_per_block=float(simulate_params.get("passive_burns_per_block", DistributionParams.passive_burns_per_block)),
+        smart_trades_per_block=float(
+            DistributionParams.smart_trades_per_block
+            if simulate_params.get("smart_trades_per_block") is None
+            else simulate_params.get("smart_trades_per_block")
+        ),
+        noise_trades_per_block=float(
+            DistributionParams.noise_trades_per_block
+            if simulate_params.get("noise_trades_per_block") is None
+            else simulate_params.get("noise_trades_per_block")
+        ),
+        smart_trades_per_second=_coerce_optional_float(simulate_params.get("smart_trades_per_second", DistributionParams.smart_trades_per_second)),
+        noise_trades_per_second=_coerce_optional_float(simulate_params.get("noise_trades_per_second", DistributionParams.noise_trades_per_second)),
+        narrow_mints_per_block=float(
+            DistributionParams.narrow_mints_per_block
+            if simulate_params.get("narrow_mints_per_block") is None
+            else simulate_params.get("narrow_mints_per_block")
+        ),
+        passive_mints_per_block=float(
+            DistributionParams.passive_mints_per_block
+            if simulate_params.get("passive_mints_per_block") is None
+            else simulate_params.get("passive_mints_per_block")
+        ),
+        passive_burns_per_block=float(
+            DistributionParams.passive_burns_per_block
+            if simulate_params.get("passive_burns_per_block") is None
+            else simulate_params.get("passive_burns_per_block")
+        ),
+        narrow_mints_per_second=_coerce_optional_float(simulate_params.get("narrow_mints_per_second", DistributionParams.narrow_mints_per_second)),
+        passive_mints_per_second=_coerce_optional_float(simulate_params.get("passive_mints_per_second", DistributionParams.passive_mints_per_second)),
+        passive_burns_per_second=_coerce_optional_float(simulate_params.get("passive_burns_per_second", DistributionParams.passive_burns_per_second)),
         p_jit=float(simulate_params.get("p_jit", DistributionParams.p_jit)),
         N_jit=int(simulate_params.get("N_jit", DistributionParams.N_jit)),
         liquidity_perc_jit=float(simulate_params.get("liquidity_perc_jit", DistributionParams.liquidity_perc_jit)),
@@ -971,7 +1028,9 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
         sigma_log=float(params.mint_sigma),
         n_samples=int(params.n_samples),
     )
-    review_intervals = sample_review_intervals(tau=float(params.tau), n_samples=int(params.n_samples))
+    tau_for_review = float(params.tau_seconds) if params.tau_seconds is not None else float(params.tau)
+    tau_unit = "s" if params.tau_seconds is not None else "blocks"
+    review_intervals = sample_review_intervals(tau=tau_for_review, n_samples=int(params.n_samples))
 
     k_out_min = int(params.k_out_min)
     k_out_max = int(params.k_out_max)
@@ -990,7 +1049,7 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
             f"LP width noise (Binomial, tick_spacing={tick_spacing})",
             "Trader notional distribution (log-normal)",
             "LP wallet utilization η = min(1, Z)",
-            f"LP review intervals (Geometric, mean≈{float(params.tau):g})",
+            f"LP review intervals (Geometric, mean≈{tau_for_review:g} {tau_unit})",
             f"Out-of-range recenter threshold (UniformInt[{k_out_min},{k_out_max}])",
         ),
     )
@@ -1081,9 +1140,12 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
 
     Notes
     -----
-    `scripts/run.py` samples trader intents per micro-step with intensity
-    λ_micro = trades_per_block / block_time. The sum across a block remains
-    Poisson(trades_per_block), but the micro-step view is helpful for intuition.
+    The main simulator supports two compatible arrival-rate parameterizations:
+
+    - Legacy per-block: provide `*_per_block` and the simulator uses per-micro-step intensity
+      `λ_micro = λ_block / block_time`, so the block sum is `Poisson(λ_block)`.
+    - Real-time per-second: provide `*_per_second` and the simulator uses `λ_micro = λ_second`
+      (micro-step = 1 second), so the block sum is `Poisson(block_time * λ_second)`.
 
     Examples
     --------
@@ -1093,21 +1155,48 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
     """
     np.random.seed(int(params.seed) + 2)
 
-    smart_micro = sample_poisson_per_micro_step(
-        float(params.smart_trades_per_block),
-        int(params.block_time),
-        int(params.n_samples),
+    B = max(1, int(params.block_time))
+    n_samples = int(params.n_samples)
+
+    if params.smart_trades_per_second is not None:
+        smart_lambda_micro = max(0.0, float(params.smart_trades_per_second))
+        smart_lambda_block = smart_lambda_micro * float(B)
+        smart_micro = np.random.poisson(smart_lambda_micro, size=n_samples).astype(float)
+    else:
+        smart_lambda_block = max(0.0, float(params.smart_trades_per_block))
+        smart_lambda_micro = smart_lambda_block / float(B)
+        smart_micro = sample_poisson_per_micro_step(smart_lambda_block, B, n_samples)
+
+    if params.noise_trades_per_second is not None:
+        noise_lambda_micro = max(0.0, float(params.noise_trades_per_second))
+        noise_lambda_block = noise_lambda_micro * float(B)
+        noise_micro = np.random.poisson(noise_lambda_micro, size=n_samples).astype(float)
+    else:
+        noise_lambda_block = max(0.0, float(params.noise_trades_per_block))
+        noise_lambda_micro = noise_lambda_block / float(B)
+        noise_micro = sample_poisson_per_micro_step(noise_lambda_block, B, n_samples)
+
+    narrow_lambda_block = (
+        max(0.0, float(params.narrow_mints_per_second)) * float(B)
+        if params.narrow_mints_per_second is not None
+        else max(0.0, float(params.narrow_mints_per_block))
     )
-    noise_micro = sample_poisson_per_micro_step(
-        float(params.noise_trades_per_block),
-        int(params.block_time),
-        int(params.n_samples),
+    passive_mints_lambda_block = (
+        max(0.0, float(params.passive_mints_per_second)) * float(B)
+        if params.passive_mints_per_second is not None
+        else max(0.0, float(params.passive_mints_per_block))
     )
-    smart_block = sample_poisson_per_block(float(params.smart_trades_per_block), int(params.n_samples))
-    noise_block = sample_poisson_per_block(float(params.noise_trades_per_block), int(params.n_samples))
-    narrow_mints = sample_poisson_per_block(float(params.narrow_mints_per_block), int(params.n_samples))
-    passive_mints = sample_poisson_per_block(float(params.passive_mints_per_block), int(params.n_samples))
-    passive_burns = sample_poisson_per_block(float(params.passive_burns_per_block), int(params.n_samples))
+    passive_burns_lambda_block = (
+        max(0.0, float(params.passive_burns_per_second)) * float(B)
+        if params.passive_burns_per_second is not None
+        else max(0.0, float(params.passive_burns_per_block))
+    )
+
+    smart_block = sample_poisson_per_block(float(smart_lambda_block), n_samples)
+    noise_block = sample_poisson_per_block(float(noise_lambda_block), n_samples)
+    narrow_mints = sample_poisson_per_block(float(narrow_lambda_block), n_samples)
+    passive_mints = sample_poisson_per_block(float(passive_mints_lambda_block), n_samples)
+    passive_burns = sample_poisson_per_block(float(passive_burns_lambda_block), n_samples)
 
     p_jit = float(params.p_jit)
     p_jit = max(0.0, min(1.0, p_jit))
@@ -1118,14 +1207,14 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
         rows=3,
         cols=3,
         subplot_titles=(
-            f"Smart intents / micro-step (λ={float(params.smart_trades_per_block)/max(1,int(params.block_time)):.3g})",
-            f"Noise intents / micro-step (λ={float(params.noise_trades_per_block)/max(1,int(params.block_time)):.3g})",
+            f"Smart intents / micro-step (1s) (λ={float(smart_lambda_micro):.3g})",
+            f"Noise intents / micro-step (1s) (λ={float(noise_lambda_micro):.3g})",
             f"JIT attempt / block (Bernoulli p={p_jit:.3g})",
-            f"Smart intents / block (λ={float(params.smart_trades_per_block):g})",
-            f"Noise intents / block (λ={float(params.noise_trades_per_block):g})",
-            f"Narrow mint targets / block (λ={float(params.narrow_mints_per_block):g})",
-            f"Passive mint targets / block (λ={float(params.passive_mints_per_block):g})",
-            f"Passive burn targets / block (λ={float(params.passive_burns_per_block):g})",
+            f"Smart intents / block (λ={float(smart_lambda_block):g})",
+            f"Noise intents / block (λ={float(noise_lambda_block):g})",
+            f"Narrow mint targets / block (λ={float(narrow_lambda_block):g})",
+            f"Passive mint targets / block (λ={float(passive_mints_lambda_block):g})",
+            f"Passive burn targets / block (λ={float(passive_burns_lambda_block):g})",
             "",
         ),
     )
@@ -1256,7 +1345,7 @@ def main() -> None:
     Notes
     -----
     Writes to the same scenario output convention as `scripts/run.py`:
-    `abm_results/scenarios/<scenario_name>/{html,png}`.
+    `abm_results/scenarios/<scenario_name>/distributions/<run_id>/{html,png}`.
 
     Examples
     --------
@@ -1296,8 +1385,32 @@ def main() -> None:
         _run_self_check(params)
 
     scenario_root = scenario_output_root(config_path)
-    html_dir = scenario_root / "html"
-    png_dir = scenario_root / "png"
+    out_root_base = scenario_root / "distributions"
+    out_root_base.mkdir(parents=True, exist_ok=True)
+    run_id_base = safe_tag(f"{scenario_label}_steps{int(args.n_steps)}_samples{int(args.n_samples)}")
+    out_root = make_unique_dir(out_root_base / run_id_base)
+
+    snapshot_file(config_path, out_root / "config_snapshot.yml")
+    manifest = build_run_manifest(script="visualize_distributions", run_id=out_root.name, config_path=config_path)
+    write_json(out_root / "metadata.json", {**manifest.to_dict(), "scenario_label": str(scenario_label)})
+    write_csv_rows(
+        out_root / "summary.csv",
+        [
+            {
+                "run_id": out_root.name,
+                "config_path": str(config_path),
+                "scenario_label": str(scenario_label),
+                "seed": int(getattr(params, "seed", 0)),
+                "n_steps": int(getattr(params, "n_steps", 0)),
+                "n_samples": int(getattr(params, "n_samples", 0)),
+                "cex_sigma_mode": str(getattr(params, "cex_sigma_mode", "")),
+                "cex_sigma": float(getattr(params, "cex_sigma", float("nan"))),
+            }
+        ],
+    )
+
+    html_dir = out_root / "html"
+    png_dir = out_root / "png"
 
     prices, vols = simulate_reference_market_path(params)
     fig_market = plot_reference_market_paths(prices, vols, sigma_mode=params.cex_sigma_mode)
@@ -1331,6 +1444,7 @@ def main() -> None:
         height=1050,
         scale=1.0,
     )
+    print(f"[distributions] wrote: {out_root}")
 
 
 if __name__ == "__main__":

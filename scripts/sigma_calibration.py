@@ -226,12 +226,27 @@ def main() -> None:
                 "sigma_annualized": sigma_ann,
             }
         )
+
+        def _unique_path(path: Path) -> Path:
+            path = Path(path)
+            if not path.exists():
+                return path
+            stem = path.stem
+            suffix = path.suffix
+            parent = path.parent
+            k = 1
+            while True:
+                candidate = parent / f"{stem}_{k}{suffix}"
+                if not candidate.exists():
+                    return candidate
+                k += 1
+
         if args.save_csv:
-            out_csv = args.save_csv
+            out_csv = _unique_path(args.save_csv)
             out_df.to_csv(out_csv, index=True)
             print(f"Wrote volatility series to {out_csv}")
         if args.save_parquet:
-            out_parquet = args.save_parquet
+            out_parquet = _unique_path(args.save_parquet)
             out_df.to_parquet(out_parquet, index=True)
             print(f"Wrote volatility series to {out_parquet}")
 

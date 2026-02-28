@@ -11,7 +11,7 @@ focusing on:
 6. Agent-specific edge cases
 
 Run with:
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=. pytest tests/test_pnl_accounting_consistency.py -v
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_pnl_accounting_consistency.py -v
 """
 
 import copy
@@ -614,6 +614,7 @@ class TestPnLEdgeCases:
         # Check all series lengths match T
         assert len(out["DEX_price"]) == T
         assert len(out["CEX_price"]) == T
+        assert len(out["cex_dex_spread_token1"]) == T
         assert len(out["trader_pnl_steps"]) == T
         assert len(out["trader_pnl_cum"]) == T
         assert len(out["arb_pnl_steps"]) == T
@@ -621,6 +622,48 @@ class TestPnLEdgeCases:
         assert len(out["lp_pnl_total"]) == T
         assert len(out["lp_unhedged_total"]) == T
         assert len(out["lp_lvr_total_series"]) == T
+        assert len(out["arb_residual_gap_steps"]) == len(out["arb_residual_gap_token1"])
+
+    def test_cex_dex_spread_series_matches_price_difference(self, tmp_path):
+        """
+        Signed CEX-DEX spread should equal DEX minus CEX price at each block.
+        """
+        out = simulate(**_base_simulate_kwargs(
+            tmp_path,
+            T=10,
+            seed=11,
+            noise_trades_per_block=4.0,
+            slippage_tolerance=0.5,
+        ))
+
+        spread = np.asarray(out["cex_dex_spread_token1"], dtype=float)
+        dex = np.asarray(out["DEX_price"], dtype=float)
+        cex = np.asarray(out["CEX_price"], dtype=float)
+
+        assert spread.shape == dex.shape
+        assert spread.shape == cex.shape
+        np.testing.assert_allclose(spread, dex - cex, rtol=1e-12, atol=1e-12)
+
+    def test_post_arb_residual_gap_series_is_well_formed(self, tmp_path):
+        """
+        Post-arb residual gap diagnostics should have aligned step/value series.
+        """
+        T = 12
+        out = simulate(**_base_simulate_kwargs(
+            tmp_path,
+            T=T,
+            seed=19,
+            noise_trades_per_block=4.0,
+            slippage_tolerance=0.5,
+        ))
+
+        steps = np.asarray(out["arb_residual_gap_steps"], dtype=int)
+        gaps = np.asarray(out["arb_residual_gap_token1"], dtype=float)
+
+        assert steps.shape == gaps.shape
+        if steps.size > 0:
+            assert np.all((steps >= 0) & (steps < T))
+            assert np.all(np.isfinite(gaps))
 
     def test_cumulative_pnl_equals_sum_of_steps(self, tmp_path):
         """

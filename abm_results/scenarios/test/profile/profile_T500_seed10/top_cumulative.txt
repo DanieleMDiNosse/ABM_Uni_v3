@@ -1,0 +1,38 @@
+         1322880 function calls (1322872 primitive calls) in 4.251 seconds
+
+   Ordered by: cumulative time
+   List reduced from 250 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.469    0.469    4.255    4.255 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:1889(simulate)
+      500    0.017    0.000    1.751    0.004 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3573(execute_mempool_orders)
+     1538    0.041    0.000    1.706    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3583(_exec_one)
+    29303    0.190    0.000    0.864    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2723(_rebalance_lp_to_target)
+     3439    0.164    0.000    0.647    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2766(_broadcast_price_move)
+      762    0.003    0.000    0.585    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2777(_flush_pending_rebalance)
+    29333    0.353    0.000    0.584    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:129(lp_token0_exposure)
+      762    0.056    0.000    0.582    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2733(_rebalance_by_ids)
+   103170    0.335    0.000    0.483    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2756(_accrue_price_move)
+      883    0.220    0.000    0.407    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2786(allocate_fees)
+     1940    0.010    0.000    0.392    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:65(active_liquidity_at_tick)
+     1940    0.107    0.000    0.378    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:45(_ensure)
+     1001    0.022    0.000    0.369    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2741(_rebalance_all)
+      252    0.003    0.000    0.367    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3119(arbitrage_to_target)
+   208106    0.299    0.000    0.299    0.000 {built-in method builtins.abs}
+   189493    0.276    0.000    0.276    0.000 {built-in method builtins.getattr}
+      500    0.010    0.000    0.269    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2368(_assert_active_liquidity_state_full)
+   132181    0.200    0.000    0.200    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/numba_accel.py:25(_current_amounts_impl)
+   133955    0.194    0.000    0.194    0.000 {method 'get' of 'dict' objects}
+      357    0.092    0.000    0.176    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:47(<listcomp>)
+      252    0.004    0.000    0.164    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3066(swap_exact_to_target)
+      500    0.005    0.000    0.160    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3220(preview_arbitrage_to_target)
+      500    0.002    0.000    0.144    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3144(_clone_pool_for_preview)
+      501    0.002    0.000    0.141    0.000 <string>:2(__init__)
+      250    0.004    0.000    0.141    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:256(swap_y_to_x)
+     2500    0.008    0.000    0.140    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:360(diffuse_only)
+      501    0.004    0.000    0.140    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:141(__post_init__)
+      502    0.004    0.000    0.135    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:165(recompute_active_L)
+      260    0.004    0.000    0.134    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:205(swap_x_to_y)
+     2500    0.071    0.000    0.132    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:295(_diffuse_heston)
+
+

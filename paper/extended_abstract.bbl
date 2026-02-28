@@ -1,0 +1,59 @@
+\begin{thebibliography}{10}
+
+\bibitem{adams2021}
+H.~Adams, N.~Zinsmeister, M.~Salem, R.~Keefer, and D.~Robinson.
+\newblock {Uniswap v3 Core Whitepaper}.
+\newblock \url{https://uniswap.org/whitepaper-v3.pdf}, 2021.
+
+\bibitem{angeris2021analysisuniswapmarkets}
+G.~Angeris, H.-T. Kao, R.~Chiang, C.~Noyes, and T.~Chitra.
+\newblock An analysis of uniswap markets, 2021.
+
+\bibitem{cartea2023}
+{\'A}.~Cartea, F.~Drissi, and M.~Monga.
+\newblock Decentralised finance and automated market making: Predictable loss
+  and optimal liquidity provision.
+\newblock {\em arXiv preprint arXiv:2309.08431}, 2023.
+
+\bibitem{cohen2023}
+S.~N. Cohen, M.~Sabate-Vidales, D.~Siska, and L.~Szpruch.
+\newblock Inefficiency of cfms: Hedging perspective and agent-based
+  simulations, 2023.
+\newblock SSRN Working Paper \url{https://ssrn.com/abstract=4352120}.
+
+\bibitem{flashboys}
+P.~Daian, S.~Goldfeder, T.~Kell, Y.~Li, X.~Zhao, I.~Bentov, L.~Breidenbach, and
+  A.~Juels.
+\newblock Flash boys 2.0: Frontrunning in decentralized exchanges, miner
+  extractable value, and consensus instability.
+\newblock In {\em 2020 IEEE Symposium on Security and Privacy (SP)}, pages
+  910--927, 2020.
+
+\bibitem{abm_uni_v3_repo}
+D.~M. Di~Nosse.
+\newblock {ABM\_Uni\_v3: Agent-Based Model of Uniswap v3 with Dynamic Fees}.
+\newblock \url{https://github.com/DanieleMDiNosse/ABM_Uni_v3}, 2026.
+\newblock GitHub repository. Version: e42840e. Accessed: 2026-02-23.
+
+\bibitem{fritsch2024}
+R.~Fritsch and A.~Canidio.
+\newblock Measuring arbitrage losses and profitability of amm liquidity.
+\newblock {\em arXiv preprint arXiv:2404.05803}, 2024.
+
+\bibitem{heimbach2022}
+L.~Heimbach, E.~Schertenleib, and R.~Wattenhofer.
+\newblock Risks and returns of uniswap v3 liquidity providers.
+\newblock In {\em Proceedings of the 4th ACM Conference on Advances in
+  Financial Technologies (AFT '22)}, 2022.
+
+\bibitem{milionis2023}
+J.~Milionis, C.~C. Moallemi, T.~Roughgarden, and A.~L. Zhang.
+\newblock Automated market making and loss-versus-rebalancing.
+\newblock {\em arXiv preprint arXiv:2208.06046}, 2023.
+
+\bibitem{wan2022just}
+X.~Wan and A.~Adams.
+\newblock Just-in-time liquidity on the uniswap protocol.
+\newblock {\em Available at SSRN 4382303}, 2022.
+
+\end{thebibliography}
