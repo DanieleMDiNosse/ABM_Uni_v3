@@ -196,6 +196,7 @@ abm_results/**/*.parquet
 abm_results/**/*.png
 abm_results/**/*.prof
 animation_frames/
+abm_results/scenarios/test/lvr_vs_blocksize/
 
 # personal notebook
 personal.ipynb

@@ -69,7 +69,7 @@ simulate:
   # Total number of LP agents instantiated in the simulation
   N_LP: 10
   # Fraction of LP agents designated as passive baseline providers
-  passive_lp_share: 1
+  passive_lp_share: 0.5
   # Poisson intensities per second for LP actions (micro-step = 1 second).
   narrow_mints_per_second: 0.10   # ~= 0.5 per 5-second block
   passive_mints_per_second: 0.10  # ~= 0.5 per 5-second block
@@ -106,7 +106,7 @@ simulate:
 
   ##### JIT LP (Jiter) #####
   # Bernoulli arrival probability per block (Jiter runs only when block_time > 1)
-  p_jit: 0
+  p_jit: 1
   # Target up to top-N swaps by input size per arriving block
   N_jit: 3
   # Target share of active liquidity to temporarily add in a narrow band (0-1)
