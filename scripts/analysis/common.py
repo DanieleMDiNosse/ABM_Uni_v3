@@ -45,6 +45,7 @@ ANALYSIS_KEYS: List[str] = [
     "arb_pnl_cum", "smart_router_pnl_cum", "noise_trader_pnl_cum",
     # DEX share
     "smart_router_dex_share_series", "smart_router_dex_share_steps",
+    "smart_router_dex_share_mean", "smart_router_dex_share_overall",
     # Scalar counts
     "total_arb_swaps", "arb_no_op_in_band", "arb_swaps_rejected_profitability",
     "total_noise_trader_swaps", "total_smart_router_swaps", "total_jit_trades_executed",

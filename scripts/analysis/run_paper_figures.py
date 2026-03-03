@@ -36,6 +36,7 @@ from scripts.analysis.common import (
     ANALYSIS_KEYS, run_multi_seed, save_figure,
 )
 from scripts.analysis.pnl_heatmap import pnl_summary_table
+from scripts.analysis.scalar_heatmaps import dex_share_heatmap, fee_value_heatmap
 from scripts.analysis.volatility_conditioned import volatility_binned_analysis
 
 # ---------------------------------------------------------------------------
@@ -143,12 +144,24 @@ def main() -> None:
     fig = pnl_summary_table(all_results)
     save_figure(fig, out_dir, "pnl_heatmap")
 
-    # 2. Volatility-conditioned analysis
+    # 2. DEX share heatmap
+    print("  → DEX share heatmap")
+    fig = dex_share_heatmap(all_results)
+    save_figure(fig, out_dir, "dex_share_heatmap")
+
+    # 3. Fee value heatmap
+    print("  → Fee value heatmap")
+    fig = fee_value_heatmap(all_results)
+    save_figure(fig, out_dir, "fee_value_heatmap")
+
+    # 4. Volatility-conditioned analysis
     for model in args.models:
         for fee_mode in args.fee_modes:
             label = _label(model, fee_mode)
             results = all_results[label]
             for cohort in ("passive", "active"):
+                if model == "Model0" and cohort == "active":
+                    continue
                 tag = f"vol_cond_{model}_{fee_mode}_{cohort}"
                 print(f"  → {tag}")
                 fig = volatility_binned_analysis(
