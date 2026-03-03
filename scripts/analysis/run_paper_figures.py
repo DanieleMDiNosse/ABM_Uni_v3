@@ -37,7 +37,6 @@ from scripts.analysis.common import (
 )
 from scripts.analysis.pnl_heatmap import pnl_summary_table
 from scripts.analysis.volatility_conditioned import volatility_binned_analysis
-from scripts.analysis.jit_fee_capture import jit_fee_share, jit_entry_fee_distribution
 
 # ---------------------------------------------------------------------------
 # Model definitions
@@ -156,20 +155,6 @@ def main() -> None:
                     results, n_bins=3, skip=skip, cohort=cohort,
                 )
                 save_figure(fig, out_dir, tag)
-
-    # 3. JIT fee capture (only for Model2)
-    for fee_mode in args.fee_modes:
-        label = _label("Model2", fee_mode)
-        if label not in all_results:
-            continue
-        results = all_results[label]
-        print(f"  → JIT fee share: Model2 {fee_mode}")
-        fig = jit_fee_share(results, skip=skip)
-        save_figure(fig, out_dir, f"jit_fee_share_Model2_{fee_mode}")
-
-        print(f"  → JIT entry fee dist: Model2 {fee_mode}")
-        fig = jit_entry_fee_distribution(results, skip=skip)
-        save_figure(fig, out_dir, f"jit_entry_fee_dist_Model2_{fee_mode}")
 
     print(f"[run_paper_figures] Done. Outputs in {out_dir}/")
 

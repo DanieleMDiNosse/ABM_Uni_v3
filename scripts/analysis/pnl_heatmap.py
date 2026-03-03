@@ -22,6 +22,21 @@ _COHORT_KEYS = {
     "JIT": "jiter_pnl_series",
 }
 
+# Cohorts that are inactive for each model variant.
+_INACTIVE: Dict[str, set] = {
+    "Model0": {"Active LP", "JIT"},
+    "Model1": {"JIT"},
+    "Model2": set(),
+}
+
+
+def _is_inactive(cohort: str, scenario_label: str) -> bool:
+    """Return True if *cohort* is not active in the scenario."""
+    for model, inactive_set in _INACTIVE.items():
+        if model in scenario_label and cohort in inactive_set:
+            return True
+    return False
+
 
 def pnl_summary_table(
     scenario_results: Dict[str, List[Dict[str, Any]]],
@@ -54,11 +69,15 @@ def pnl_summary_table(
         row_ann: List[str] = []
         key = _COHORT_KEYS[cohort]
         for label in scenario_labels:
+            if _is_inactive(cohort, label):
+                row_z.append(float("nan"))
+                row_ann.append("")
+                continue
             runs = scenario_results[label]
             vals = final_values(runs, key)
             if vals.size == 0:
                 row_z.append(float("nan"))
-                row_ann.append("N/A")
+                row_ann.append("")
             else:
                 mu = float(np.mean(vals))
                 sigma = float(np.std(vals))

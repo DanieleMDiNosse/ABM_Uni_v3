@@ -100,28 +100,39 @@ def volatility_binned_analysis(
         bin_labels = [f"Q{i+1}" for i in range(n_bins)]
 
     mean_pnl = []
+    se_pnl = []
     mean_ratio = []
+    se_ratio = []
     mean_fee = []
+    se_fee = []
     sigma_range_labels = []
 
     for b in range(n_bins):
         mask = bin_idx == b
-        if mask.sum() == 0:
-            mean_pnl.append(0.0)
-            mean_ratio.append(float("nan"))
-            mean_fee.append(0.0)
+        count = mask.sum()
+        if count == 0:
+            mean_pnl.append(0.0); se_pnl.append(0.0)
+            mean_ratio.append(float("nan")); se_ratio.append(0.0)
+            mean_fee.append(0.0); se_fee.append(0.0)
             sigma_range_labels.append(bin_labels[b])
             continue
         df = d_fee_cat[mask]
         dl = d_lvr_cat[mask]
         hedged = df - dl
         mean_pnl.append(float(np.mean(hedged)))
+        se_pnl.append(float(np.std(hedged, ddof=1) / np.sqrt(count)))
 
         total_fee = float(np.sum(df))
         total_lvr = float(np.sum(dl))
         ratio = total_lvr / total_fee if abs(total_fee) > 1e-12 else float("nan")
         mean_ratio.append(ratio)
-        mean_fee.append(float(np.mean(fee_lvl_cat[mask])))
+        per_block_ratio = np.where(np.abs(df) > 1e-12, dl / df, np.nan)
+        valid = per_block_ratio[np.isfinite(per_block_ratio)]
+        se_ratio.append(float(np.std(valid, ddof=1) / np.sqrt(len(valid))) if len(valid) > 1 else 0.0)
+
+        fl = fee_lvl_cat[mask]
+        mean_fee.append(float(np.mean(fl)))
+        se_fee.append(float(np.std(fl, ddof=1) / np.sqrt(count)))
 
         lo = float(edges[b])
         hi = float(edges[b + 1])
@@ -139,10 +150,13 @@ def volatility_binned_analysis(
     bar_colors = [COLORS["passive_lp"] if cohort == "passive" else COLORS["active_lp"]] * n_bins
     pnl_colors = ["#2ca02c" if v >= 0 else "#d62728" for v in mean_pnl]
     fig.add_trace(go.Bar(x=sigma_range_labels, y=mean_pnl, marker_color=pnl_colors,
+                         error_y=dict(type="data", array=se_pnl, visible=True),
                          name="Hedged PnL"), row=1, col=1)
     fig.add_trace(go.Bar(x=sigma_range_labels, y=mean_ratio, marker_color="#e377c2",
+                         error_y=dict(type="data", array=se_ratio, visible=True),
                          name="ΔLVR/ΔFees"), row=1, col=2)
     fig.add_trace(go.Bar(x=sigma_range_labels, y=mean_fee, marker_color="#333333",
+                         error_y=dict(type="data", array=se_fee, visible=True),
                          name="Fee level"), row=1, col=3)
 
     fig.add_hline(y=0, line=dict(color="gray", dash="dot", width=1), row=1, col=1)
