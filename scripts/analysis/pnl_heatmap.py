@@ -88,8 +88,8 @@ def pnl_summary_table(
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
         title="Hedged PnL summary (mean ± σ across seeds)",
-        xaxis=dict(title="Scenario", tickangle=-35, tickfont=dict(size=12)),
-        yaxis=dict(title="LP Cohort", tickfont=dict(size=14)),
+        xaxis=dict(title="Scenario", tickangle=-35, tickfont=dict(size=14)),
+        yaxis=dict(title="LP Cohort", tickfont=dict(size=16)),
         font=FONT,
         height=350 + 60 * len(cohorts),
     )

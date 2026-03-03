@@ -36,10 +36,8 @@ from scripts.analysis.common import (
     ANALYSIS_KEYS, run_multi_seed, save_figure,
 )
 from scripts.analysis.pnl_heatmap import pnl_summary_table
-from scripts.analysis.fee_lvr_decomposition import fee_lvr_panels
 from scripts.analysis.volatility_conditioned import volatility_binned_analysis
 from scripts.analysis.jit_fee_capture import jit_fee_share, jit_entry_fee_distribution
-from scripts.analysis.welfare_decomposition import welfare_breakdown
 
 # ---------------------------------------------------------------------------
 # Model definitions
@@ -146,23 +144,7 @@ def main() -> None:
     fig = pnl_summary_table(all_results)
     save_figure(fig, out_dir, "pnl_heatmap")
 
-    # 2. Welfare decomposition
-    print("  → Welfare decomposition")
-    fig = welfare_breakdown(all_results)
-    save_figure(fig, out_dir, "welfare_breakdown")
-
-    # 3. Fee / LVR decomposition (for selected scenarios)
-    for model in args.models:
-        for fee_mode in args.fee_modes:
-            label = _label(model, fee_mode)
-            results = all_results[label]
-            for cohort in ("passive", "active"):
-                tag = f"fee_lvr_{model}_{fee_mode}_{cohort}"
-                print(f"  → {tag}")
-                fig = fee_lvr_panels(results, cohort=cohort, skip=skip)
-                save_figure(fig, out_dir, tag)
-
-    # 4. Volatility-conditioned analysis
+    # 2. Volatility-conditioned analysis
     for model in args.models:
         for fee_mode in args.fee_modes:
             label = _label(model, fee_mode)
@@ -175,7 +157,7 @@ def main() -> None:
                 )
                 save_figure(fig, out_dir, tag)
 
-    # 5. JIT fee capture (only for Model2)
+    # 3. JIT fee capture (only for Model2)
     for fee_mode in args.fee_modes:
         label = _label("Model2", fee_mode)
         if label not in all_results:
