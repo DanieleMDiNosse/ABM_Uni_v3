@@ -92,24 +92,28 @@ def pnl_summary_table(
     abs_max = max(abs_max, 1e-6)
 
     fig = go.Figure(data=go.Heatmap(
-        z=z_arr,
-        x=scenario_labels,
-        y=cohorts,
-        colorscale="RdYlGn",
-        zmin=-abs_max,
-        zmax=abs_max,
-        text=annotations,
-        texttemplate="%{text}",
-        textfont=dict(size=16),
-        hovertemplate="Scenario: %{x}<br>Cohort: %{y}<br>Mean PnL: %{z:.2f}<extra></extra>",
-        colorbar=dict(title="Mean hedged PnL<br>(token-1)"),
-    ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        # title="Hedged PnL summary (mean ± σ across seeds)",
-        xaxis=dict(title="Scenario", tickangle=-35, tickfont=dict(size=18)),
-        yaxis=dict(title="LP Cohort", tickfont=dict(size=18)),
-        font=FONT,
-        height=450 + 100 * len(cohorts),
-    )
+      z=z_arr,
+      x=scenario_labels,
+      y=cohorts,
+      colorscale="RdYlGn",
+      zmin=-abs_max,
+      zmax=abs_max,
+      # remove heatmap text rendering (we’ll replace it with annotations)
+      text=None,
+      texttemplate=None,
+      hovertemplate="Scenario: %{x}<br>Cohort: %{y}<br>Mean PnL: %{z:.2f}<extra></extra>",
+      colorbar=dict(title="Mean hedged PnL<br>(token-1)"),
+  ))
+
+    for i, cohort in enumerate(cohorts):
+        for j, scen in enumerate(scenario_labels):
+            fig.add_annotation(
+                x=scen, y=cohort,
+                xref="x", yref="y",
+                text=str(annotations[i][j]),
+                showarrow=False,
+                textangle=90,
+                font=dict(size=16),
+                xanchor="center", yanchor="middle",
+            )
     return fig
