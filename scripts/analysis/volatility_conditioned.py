@@ -1,0 +1,165 @@
+"""scripts/analysis/volatility_conditioned.py — Volatility-binned analysis.
+
+Bins simulation blocks by the CEX instantaneous volatility σ_t (from
+``cex_sigma_series``) and computes, for each bin:
+  - mean per-block hedged PnL  (ΔF − ΔLVR),
+  - mean per-block LVR / fee ratio,
+  - mean fee level.
+
+This directly tests the paper's claim that dynamic fees protect LPs
+during high-volatility regimes.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+from scripts.analysis.common import (
+    COLORS, FONT, PLOTLY_TEMPLATE, diff_cumulative, slice_series,
+)
+
+_COHORT_MAP = {
+    "passive": ("lp_fee_value_passive_series", "lp_lvr_passive_series"),
+    "active":  ("lp_fee_value_active_series",  "lp_lvr_active_series"),
+    "total":   ("lp_fee_value_total_series",   "lp_lvr_total_series"),
+}
+
+
+def volatility_binned_analysis(
+    results: List[Dict[str, Any]],
+    *,
+    n_bins: int = 3,
+    skip: int = 0,
+    cohort: str = "total",
+    bin_labels: Optional[List[str]] = None,
+) -> go.Figure:
+    """Bin blocks by σ_t quantile and show per-bin hedged-PnL and LVR/fee ratio.
+
+    Parameters
+    ----------
+    results : list[dict]
+        Per-seed output dicts.
+    n_bins : int
+        Number of volatility quantile bins (default 3 → low / med / high).
+    skip : int
+        Burn-in blocks to discard.
+    cohort : str
+        ``"passive"``, ``"active"``, or ``"total"``.
+
+    Returns
+    -------
+    go.Figure  (2-row subplot: per-bin hedged PnL, per-bin LVR/fee ratio)
+    """
+    fee_key, lvr_key = _COHORT_MAP[cohort]
+
+    # Pool per-block increments across all seeds.
+    all_sigma: List[np.ndarray] = []
+    all_d_fee: List[np.ndarray] = []
+    all_d_lvr: List[np.ndarray] = []
+    all_fee_level: List[np.ndarray] = []
+
+    for r in results:
+        sigma = slice_series(r.get("cex_sigma_series", []), skip)
+        fees_cum = slice_series(r.get(fee_key, []), skip)
+        lvr_cum = slice_series(r.get(lvr_key, []), skip)
+        fee_lvl = slice_series(r.get("fee_series", []), skip)
+
+        n = min(sigma.size, fees_cum.size, lvr_cum.size, fee_lvl.size)
+        if n < 2:
+            continue
+
+        sigma = sigma[:n]
+        d_fee = diff_cumulative(fees_cum[:n])
+        d_lvr = diff_cumulative(lvr_cum[:n])
+        fee_lvl = fee_lvl[:n]
+
+        all_sigma.append(sigma)
+        all_d_fee.append(d_fee)
+        all_d_lvr.append(d_lvr)
+        all_fee_level.append(fee_lvl)
+
+    if not all_sigma:
+        fig = go.Figure()
+        fig.add_annotation(text="No data", showarrow=False, x=0.5, y=0.5)
+        return fig
+
+    sigma_cat = np.concatenate(all_sigma)
+    d_fee_cat = np.concatenate(all_d_fee)
+    d_lvr_cat = np.concatenate(all_d_lvr)
+    fee_lvl_cat = np.concatenate(all_fee_level)
+
+    # Compute quantile edges.
+    edges = np.quantile(sigma_cat, np.linspace(0, 1, n_bins + 1))
+    bin_idx = np.digitize(sigma_cat, edges[1:-1])  # 0 .. n_bins-1
+
+    if bin_labels is None:
+        bin_labels = [f"Q{i+1}" for i in range(n_bins)]
+
+    mean_pnl = []
+    mean_ratio = []
+    mean_fee = []
+    sigma_range_labels = []
+
+    for b in range(n_bins):
+        mask = bin_idx == b
+        if mask.sum() == 0:
+            mean_pnl.append(0.0)
+            mean_ratio.append(float("nan"))
+            mean_fee.append(0.0)
+            sigma_range_labels.append(bin_labels[b])
+            continue
+        df = d_fee_cat[mask]
+        dl = d_lvr_cat[mask]
+        hedged = df - dl
+        mean_pnl.append(float(np.mean(hedged)))
+
+        total_fee = float(np.sum(df))
+        total_lvr = float(np.sum(dl))
+        ratio = total_lvr / total_fee if abs(total_fee) > 1e-12 else float("nan")
+        mean_ratio.append(ratio)
+        mean_fee.append(float(np.mean(fee_lvl_cat[mask])))
+
+        lo = float(edges[b])
+        hi = float(edges[b + 1])
+        sigma_range_labels.append(f"{bin_labels[b]}<br>[{lo:.2e}, {hi:.2e}]")
+
+    fig = make_subplots(
+        rows=1, cols=3, shared_xaxes=True,
+        subplot_titles=(
+            f"Mean per-block hedged PnL ({cohort})",
+            f"Aggregate ΔLVR / ΔFees ({cohort})",
+            "Mean fee level",
+        ),
+    )
+
+    bar_colors = [COLORS["passive_lp"] if cohort == "passive" else COLORS["active_lp"]] * n_bins
+    pnl_colors = ["#2ca02c" if v >= 0 else "#d62728" for v in mean_pnl]
+    fig.add_trace(go.Bar(x=sigma_range_labels, y=mean_pnl, marker_color=pnl_colors,
+                         name="Hedged PnL"), row=1, col=1)
+    fig.add_trace(go.Bar(x=sigma_range_labels, y=mean_ratio, marker_color="#e377c2",
+                         name="ΔLVR/ΔFees"), row=1, col=2)
+    fig.add_trace(go.Bar(x=sigma_range_labels, y=mean_fee, marker_color="#333333",
+                         name="Fee level"), row=1, col=3)
+
+    fig.add_hline(y=0, line=dict(color="gray", dash="dot", width=1), row=1, col=1)
+    fig.add_hline(y=1, line=dict(color="gray", dash="dot", width=1), row=1, col=2)
+
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE,
+        title=f"Volatility-conditioned analysis — {cohort} LPs ({n_bins} bins)",
+        font=FONT,
+        showlegend=False,
+        height=450,
+    )
+    fig.update_xaxes(title_text="σ_t quantile", row=1, col=1)
+    fig.update_xaxes(title_text="σ_t quantile", row=1, col=2)
+    fig.update_xaxes(title_text="σ_t quantile", row=1, col=3)
+    fig.update_yaxes(title_text="Token-1 / block", row=1, col=1)
+    fig.update_yaxes(title_text="Ratio", row=1, col=2)
+    fig.update_yaxes(title_text="Fee rate", row=1, col=3)
+
+    return fig
