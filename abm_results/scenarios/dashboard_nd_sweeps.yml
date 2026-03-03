@@ -1,0 +1,55 @@
+# Sweep configuration for `scripts/run_parameter_surface_nd_pnl_fee_dashboard.py`.
+#
+# This file only defines the *sweep space* (discrete parameter values) and a few
+# global overrides applied on top of the base scenario YAML (e.g. `test.yml`).
+#
+# Usage (example):
+#   conda activate main
+#   python -m scripts.run_parameter_surface_nd_pnl_fee_dashboard \
+#     --config abm_results/scenarios/test.yml \
+#     --sweep-config abm_results/scenarios/dashboard_nd_sweeps.yml \
+#     --dry-run
+#
+# Notes
+# - The surface dashboard expects discrete sweeps (a grid). If you want Sobol/LHS
+#   sampling, use `scripts/run_experiment_design.py` instead.
+# - `fee_mode` here overrides the one in the base scenario YAML (top-level or
+#   simulate.fee_mode).
+
+version: 1
+name: dashboard_nd_default
+
+# Optional: override the base scenario's fee_mode.
+# Valid values (see `scripts/run.py`): static, toxicity, volatility_cex, volatility_dex, lvr_fee_ewma
+fee_mode: volatility_dex
+
+# Parameters that should be cast to int when passed to simulate() and displayed as ints.
+int_params: []
+
+# Sweeps: mapping param -> either:
+#   - a list of numeric values, OR
+#   - a generator spec:
+#       {values: [...]}
+#       {linspace: {start: ..., stop: ..., num: ...}}
+#       {geomspace: {start: ..., stop: ..., num: ...}}   # start/stop must be > 0
+#       {linspace_int: {start: ..., stop: ..., steps: ...}}  # inclusive, de-duped ints
+sweeps:
+  # Real-time arrival rates (micro-step = 1 second).
+  narrow_mints_per_second: [0.10, 0.20, 0.30, 0.40]
+  smart_trades_per_second: [0.16, 0.32, 0.48, 0.64]
+  passive_mints_per_second: [0.10, 0.20, 0.30, 0.40]
+  noise_trades_per_second: [0.16, 0.32, 0.48, 0.64]
+  passive_burns_per_second: [0.10, 0.20, 0.30, 0.40]
+  passive_width_pct: [5.0, 10.0, 15.0, 20.0]
+
+  # TP and SL parameters.
+  # theta_T: [0.05, 0.1, 0.2]
+  # theta_SL: [0.05, 0.1, 0.2]
+
+  # Distribution parameters.
+  trader_mean: [1.5, 2.5, 3.0, 3.5]
+  mint_mu: [-0.5, -1.0, -1.5]
+
+  # Fee-controller and LP size parameters.
+  k_sigma:
+    linspace: {start: 0.00, stop: 2.0, num: 4}

@@ -36,7 +36,7 @@
 \contentsline {paragraph}{PnL Decomposition}{18}{section*.16}%
 \contentsline {subsubsection}{\numberline {3.4.3}Smart router}{19}{subsubsection.3.4.3}%
 \contentsline {subsubsection}{\numberline {3.4.4}Noise Trader}{20}{subsubsection.3.4.4}%
-\contentsline {paragraph}{Target events per block.}{20}{section*.17}%
+\contentsline {paragraph}{Micro-step event probabilities.}{20}{section*.17}%
 \contentsline {subsection}{\numberline {3.5}Dynamic Fee Schedules}{21}{subsection.3.5}%
 \contentsline {paragraph}{EWMA smoothing}{21}{section*.18}%
 \contentsline {paragraph}{Static fee}{21}{section*.19}%
@@ -49,4 +49,4 @@
 \contentsline {subsection}{\numberline {4.2}Baseline case}{26}{subsection.4.2}%
 \contentsline {subsection}{\numberline {4.3}Dynamic case}{26}{subsection.4.3}%
 \contentsline {subsection}{\numberline {4.4}LVR vs fees vs block size}{28}{subsection.4.4}%
-\contentsline {section}{\numberline {5}Conclusions}{36}{section.5}%
+\contentsline {section}{\numberline {5}Conclusions}{35}{section.5}%

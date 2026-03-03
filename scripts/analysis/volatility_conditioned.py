@@ -164,7 +164,7 @@ def volatility_binned_analysis(
 
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
-        title=f"Volatility-conditioned analysis — {cohort} LPs ({n_bins} bins)",
+        # title=f"Volatility-conditioned analysis — {cohort} LPs ({n_bins} bins)",
         font=FONT,
         showlegend=False,
         height=450,

@@ -901,23 +901,20 @@ Noise traders pay fees to LPs and add volume, but their trades also move the AMM
 from the CEX mid, creating opportunities for arbitrageurs and, hence, contributing to LVR. The noise trader's PnL is computed at the end of each block using the CEX price to convert everything in token 1.
 
 
-\paragraph{Target events per block.}
-As already said in Section \ref{subsubsec:mempool}, the simulator advances in discrete blocks (indexed by $t=1,\dots,T$). Each block contains $B$ micro-steps (indexed by $\tau=1,\dots, B$) that represent within-block order arrival, while execution is aggregated at the block boundary via a mempool replay. For each event class $e$ (e.g., noise trades, LP mints, LP burns), the configuration specifies a target intensity per block $\lambda_e$ in units of expected events per block.
+\paragraph{Micro-step event probabilities.}
+As already said in Section \ref{subsubsec:mempool}, the simulator advances in discrete blocks (indexed by $t=1,\dots,T$). Each block contains $B$ micro-steps (indexed by $\tau=1,\dots, B$) that represent within-block order arrival, while execution is aggregated at the block boundary via a mempool replay. For each event class $e$ (e.g., noise trades, LP mints, LP burns), the configuration specifies a micro-step arrival probability $p_e\in[0,1]$.
 
-To convert these real-valued targets into integer event counts while preserving the intended average rate, realized arrivals are sampled from a Poisson model. For event types that arrive during micro-steps, we use
+Within each block, arrivals are sampled independently across micro-steps as
 \[
-N_{e,t,k}\sim \text{Poisson}\!\left(\frac{\lambda_e}{B}\right),\qquad k=1,\dots,B,
+A_{e,t,\tau}\sim \text{Bernoulli}(p_e),\qquad \tau=1,\dots,B,
 \]
-so that the total number of arrivals within block $t$ satisfies
+and one event of type $e$ is instantiated whenever $A_{e,t,\tau}=1$. The resulting number of arrivals within block $t$ is
 \[
-N_{e,t}=\sum_{k=1}^B N_{e,t,k}\sim \text{Poisson}(\lambda_e),
+N_{e,t}=\sum_{\tau=1}^B A_{e,t,\tau}\sim \text{Binomial}(B,p_e),
 \]
-hence $\mathbb{E}[N_{e,t}]=\lambda_e$ and the expected number of events per block is invariant to the choice of $B$. For event types scheduled once per block, we draw directly
-\[
-N_{e,t}\sim \text{Poisson}(\lambda_e).
-\]
+hence $\mathbb{E}[N_{e,t}]=Bp_e$ and the expected number of events per block scales linearly with the block time $B$.
 
-Each realized event is instantiated as an intent and assigned to an eligible agent (or position) drawn from the corresponding candidate set (e.g., agents that are “due” and not in cooldown), allowing multiple intents per agent in a block when applicable. All intents accumulated over the block are then executed at the block boundary (mempool replay), which decouples stochastic arrival from on-chain ordering while keeping the per-block targets interpretable and directly controllable through $\lambda_e$.
+Each realized event is instantiated as an intent and assigned to an eligible agent (or position) drawn from the corresponding candidate set (e.g., agents that are “due” and not in cooldown), allowing multiple intents per agent in a block when applicable. All intents accumulated over the block are then executed at the block boundary (mempool replay), which decouples stochastic arrival from on-chain ordering while keeping the arrival process directly controllable through $p_e$.
 
 
 
@@ -1510,24 +1507,28 @@ The LVR theory implies that holding other factors fixed, the important scaling i
   \label{eq:lvr_time_scaling}
 \end{equation}
 In the simulator, increasing $B$ makes each block represent a longer interval before the end-of-block price
-$m_t$ is realized and before the pool is compared against it. Larger blocks therefore produce larger typical price changes within a block (variance scales with time), which increases the magnitude of mispricing and arbitrage extraction in that block, consistent with \eqref{eq:lvr_time_scaling}. This naturally produces approximately linear growth of $\Delta\text{LVR}_t$ with $B$.
-However, in general, even if $\Delta\mathrm{LVR}_t$ grows with $B$, the ratio $R_T$ will only remain stable if
-fee revenue also grows proportionally.
-In this ABM configuration, trader arrivals are specified as expected number of trade intents per block,
-not per unit of continuous time. As a result, increasing $B$ can raise LVR per block without mechanically increasing the number of fee-generating trades per block by the same factor.
+$m_t$ is realized and before the pool is compared against it. Larger blocks therefore produce larger typical price 
+changes within a block (variance scales with time), which increases the magnitude of mispricing and arbitrage 
+extraction in that block, consistent with \eqref{eq:lvr_time_scaling}. This naturally produces approximately linear 
+growth of $\Delta\text{LVR}_t$ with $B$. However, in general, even if $\Delta\mathrm{LVR}_t$ grows with $B$, the 
+ratio $R_t$ will only remain stable if fee revenue also grows proportionally.
+Agents' arrivals are parameterized as per-micro-step rates (for both liquidity takers and LP review/refresh events), 
+so that the expected number of fee-generating trades and LP actions in a block scales approximately linearly with $B$. 
 
-Figure \ref{fig:static_vs_toxicity_ratio} shows the results of this analysis, comparing the static fee case and the toxicity-driven fee case. The main findings are:
+Figure \ref{fig:static_vs_volatility_dex_ratio} reports the results of this analysis, comparing the static fee case and 
+the DEX-volatility-driven fee case. The main findings are:
 \begin{itemize}
-  \item \textbf{Static fee mode:} both passive and active LP cohorts have $\Delta\text{LVR}_t/\Delta{F}_t>1$, increasingly so at
-        larger $B$. The structural adverse selection cost dominates fixed fee revenue, producing negative hedged profitability.
-        Active (more concentrated) LPs tend to have the worst coverage ratios.
-  \item \textbf{Toxicity fee mode:} the ratio drops below one and becomes much more stable across $B$. This indicates the controller
-        is broadly successful at matching fee revenue to adverse selection intensity, restoring positive hedged profitability for LPs.
-  \item \textbf{Jiter:} in toxicity mode the Jiter has $0<\Delta\text{LVR}_t/\Delta{F}_t<1$ and typically keeps a large fraction
-        of fees as hedged profit (net of flash costs). In static mode the Jiter ratio appears strongly negative, but this is best
-        understood as a consequence of (i) selective timing, and (ii) strong selection bias from conditioning on a tiny number of
-        successful JIT executions: only a handful of extremely profitable JIT opportunities appear in the sample, pushing measured
-        $\Delta\text{LVR}_t$ negative.
+  \item \textbf{Static fee mode:} both passive and active LP cohorts have $\Delta\text{LVR}_t/\Delta{F}_t>1$ for all $B$, 
+  with a fairly stable median coverage ratio (around $\approx 2.2$--$2.5$). Fees therefore cover only a fraction of 
+  adverse selection costs, and hedged PnL remains negative. Active (more concentrated) LPs have slightly worse 
+  coverage ratios than passive LPs.
+  \item \textbf{DEX-volatility fee mode:} the coverage ratio decreases with $B$ and crosses below one for sufficiently 
+  large blocks (around $B\gtrsim 5$ in this configuration). This indicates that the controller increases fee revenue 
+  faster than LVR accrual as blocks get longer, restoring positive hedged profitability for both LP cohorts in the large-$B$ regime.
+  \item \textbf{Jiter:} ratios are reported conditional on successful JIT executions. Under static fees the number of 
+  successful JIT opportunities is very small, so the estimated ratio is extremely noisy and can appear strongly negative. 
+  Under volatility-driven fees, successful JIT events become much more frequent and the ratio remains close to zero and 
+  well below one, consistent with the Jiter capturing elevated fees with limited associated LVR (net of flash costs).
 \end{itemize}
 
 \begin{figure}[h]
@@ -1536,19 +1537,19 @@ Figure \ref{fig:static_vs_toxicity_ratio} shows the results of this analysis, co
   \begin{subfigure}{\linewidth}
     \centering
     \caption*{\textbf{Static}}
-    \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_static_flow_test_runs50_pid42657.png}
+    \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_static_flow_test_runs100.png}
   \end{subfigure}
 
   \vspace{0.5em}
 
   \begin{subfigure}{\linewidth}
     \centering
-    \caption*{\textbf{Toxicity}}
-    \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_toxicity_flow_test_runs50_pid14207.png}
+    \caption*{\textbf{Volatility (DEX)}}
+    \includegraphics[width=\linewidth]{images/dLVR_over_dFees_medians_vs_block_time_volatility_dex_flow_test_runs100.png}
   \end{subfigure}
 
-  \caption{Median of $r=\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$ vs block time $B$ for active+passive LPs and Jiter.}
-  \label{fig:static_vs_toxicity_ratio}
+  \caption{Median of $r=\Delta\mathrm{LVR}/\Delta\mathrm{Fees}$ vs block time $B$ for active+passive LPs and Jiter (100 runs).}
+  \label{fig:static_vs_volatility_dex_ratio}
 \end{figure}
 
 
@@ -1560,7 +1561,7 @@ Across the baseline configurations, the simulations confirm a central microstruc
 
 Model 1 highlights a core trade-off created by concentrated liquidity. Introducing active LPs increases depth near the prevailing price, improving DEX competitiveness and raising the router’s DEX share; however, the same concentration amplifies exposure to LVR, pushing active LP hedged PnL below that of passive LPs under most fee regimes. Notably, the toxicity-driven controller is the only specification in which both passive and active LP cohorts achieve positive hedged profits, underscoring that where and when fees respond matters more than simply charging higher fees on average. In other words, adaptive pricing can be beneficial, but only if the control signal is aligned with the microstructural source of adverse selection rather than with broad market variability alone.
 
-Model 2 introduces an MEV searcher performing Just-In-Time (JIT) liquidity. The results emphasize a second, protocol-design-relevant tension: mechanisms that protect LPs from arbitrage (dynamic fees) can simultaneously increase the returns to latency/priority strategies that appropriate fee flow. In the static-fee setting, the JIT agent is approximately break-even, whiYou have to highlight what is the problem at handle other LP cohorts remain negative on a hedged basis. Under dynamic fees, the JIT strategy becomes profitable, because it can time liquidity to capture elevated fees while keeping inventory exposure short-lived, yet passive and active LPs fail to attain positive hedged PnL under any of the tested schedules. This outcome is economically coherent: when large swaps are systematically wrapped by JIT liquidity, the fee stream that would otherwise compensate longer-horizon LPs is diverted to the searcher precisely during the most lucrative blocks, leaving residual LPs to bear LVR without sufficient fee income.
+Model 2 introduces an MEV searcher performing Just-In-Time (JIT) liquidity. The results emphasize a second, protocol-design-relevant tension: mechanisms that protect LPs from arbitrage (dynamic fees) can simultaneously increase the returns to latency/priority strategies that appropriate fee flow. In the static-fee setting, the JIT agent is approximately break-even, while other LP cohorts remain negative on a hedged basis. Under dynamic fees, the JIT strategy becomes profitable, because it can time liquidity to capture elevated fees while keeping inventory exposure short-lived, yet passive and active LPs fail to attain positive hedged PnL under any of the tested schedules. This outcome is economically coherent: when large swaps are systematically wrapped by JIT liquidity, the fee stream that would otherwise compensate longer-horizon LPs is diverted to the searcher precisely during the most lucrative blocks, leaving residual LPs to bear LVR without sufficient fee income.
 
 Overall, the experiments support three broad conclusions. First, LVR is fundamentally a microstructure cost, magnified by discrete-time execution and latency, and it is better evaluated through modeling the execution layer and not just via continuous-time diffusion intuition. Second, dynamic fees can improve the sustainability of liquidity provision, but effectiveness depends on using signals that are tightly linked to adverse selection (e.g., excess basis/toxicity) and on managing the endogenous response of order routing. Third, MEV/JIT dynamics can dominate the distribution of fee revenue, potentially negating the benefits of adaptive fees for ordinary LPs unless fee mechanisms and execution rules are co-designed with MEV-resilience in mind.
 

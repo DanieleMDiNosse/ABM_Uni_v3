@@ -36,7 +36,7 @@ from scripts.analysis.common import (
     ANALYSIS_KEYS, run_multi_seed, save_figure,
 )
 from scripts.analysis.pnl_heatmap import pnl_summary_table
-from scripts.analysis.scalar_heatmaps import dex_share_heatmap, fee_value_heatmap
+from scripts.analysis.scalar_heatmaps import dex_share_barplot, fee_value_barplot, mean_fee_barplot
 from scripts.analysis.volatility_conditioned import volatility_binned_analysis
 
 # ---------------------------------------------------------------------------
@@ -144,17 +144,22 @@ def main() -> None:
     fig = pnl_summary_table(all_results)
     save_figure(fig, out_dir, "pnl_heatmap")
 
-    # 2. DEX share heatmap
-    print("  → DEX share heatmap")
-    fig = dex_share_heatmap(all_results)
-    save_figure(fig, out_dir, "dex_share_heatmap")
+    # 2. DEX share bar plot
+    print("  → DEX share bar plot")
+    fig = dex_share_barplot(all_results)
+    save_figure(fig, out_dir, "dex_share_barplot")
 
-    # 3. Fee value heatmap
-    print("  → Fee value heatmap")
-    fig = fee_value_heatmap(all_results)
-    save_figure(fig, out_dir, "fee_value_heatmap")
+    # 3. Fee value bar plot
+    print("  → Fee value bar plot")
+    fig = fee_value_barplot(all_results)
+    save_figure(fig, out_dir, "fee_value_barplot")
 
-    # 4. Volatility-conditioned analysis
+    # 4. Mean fee level bar plot (dynamic fee modes only)
+    print("  → Mean fee level bar plot")
+    fig = mean_fee_barplot(all_results)
+    save_figure(fig, out_dir, "mean_fee_barplot")
+
+    # 5. Volatility-conditioned analysis
     for model in args.models:
         for fee_mode in args.fee_modes:
             label = _label(model, fee_mode)

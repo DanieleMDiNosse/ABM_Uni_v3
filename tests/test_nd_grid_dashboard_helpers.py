@@ -5,12 +5,15 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
+
 from scripts.build_parameter_surface_nd_pnl_fee_dashboard import _build_meta_summary
 from scripts.run_parameter_surface_nd_pnl_fee_dashboard import (
     CACHE_SCHEMA_VERSION,
     SCRIPT_VERSION,
     _canon_fingerprint_payload,
     _effective_config_content_hash,
+    _load_sweep_config,
     _make_worker_run_root,
 )
 
@@ -53,6 +56,7 @@ def test_fingerprint_changes_when_config_hash_changes() -> None:
     """Fingerprint must invalidate when effective config hash changes."""
     common_kwargs = {
         "sweeps": {"k_sigma": [0.0, 1.0], "mint_sigma": [1.0, 2.0]},
+        "int_params": [],
         "runs_per_point": 2,
         "seed_base": 1,
         "common_seeds": False,
@@ -75,6 +79,23 @@ def test_fingerprint_changes_when_config_hash_changes() -> None:
     assert payload_b["config_content_hash"] == "cccc3333dddd4444"
     assert payload_a["script_version"] == SCRIPT_VERSION
     assert payload_a["cache_schema_version"] == CACHE_SCHEMA_VERSION
+
+
+def test_fingerprint_changes_when_int_params_changes() -> None:
+    """Fingerprint must invalidate when int-casting rules change."""
+    common_kwargs = {
+        "sweeps": {"k_sigma": [0.0, 1.0], "mint_sigma": [1.0, 2.0]},
+        "runs_per_point": 2,
+        "seed_base": 1,
+        "common_seeds": False,
+        "fee_hist_bins": 8,
+        "smart_router_dex_share_hist_bins": 8,
+        "pnl_summary": "step_rate_mean_diff",
+        "config_content_hash": "aaaa1111bbbb2222",
+    }
+    fp_a, _ = _canon_fingerprint_payload(**common_kwargs, int_params=[])
+    fp_b, _ = _canon_fingerprint_payload(**common_kwargs, int_params=["k_sigma"])
+    assert fp_a != fp_b
 
 
 def test_make_worker_run_root_creates_unique_dirs(tmp_path: Path) -> None:
@@ -122,3 +143,35 @@ def test_build_meta_summary_is_backward_compatible() -> None:
     assert _build_meta_summary(None) == ""
     assert _build_meta_summary({}) == ""
 
+
+def test_load_sweep_config_parses_generators(tmp_path: Path) -> None:
+    """Sweep-config YAML should support generator specs and fee_mode override."""
+    sweep_path = tmp_path / "sweep.yml"
+    sweep_path.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "name: demo",
+                "fee_mode: static",
+                "int_params: [N_LP]",
+                "sweeps:",
+                "  k_sigma:",
+                "    linspace: {start: 0.0, stop: 2.0, num: 3}",
+                "  x:",
+                "    geomspace: {start: 1.0, stop: 100.0, num: 3}",
+                "  N_LP:",
+                "    linspace_int: {start: 1, stop: 5, steps: 3}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = _load_sweep_config(sweep_path)
+    assert cfg.version == 1
+    assert cfg.name == "demo"
+    assert cfg.fee_mode == "static"
+    assert cfg.int_params == {"N_LP"}
+    assert cfg.sweeps["k_sigma"] == pytest.approx([0.0, 1.0, 2.0])
+    assert cfg.sweeps["x"] == pytest.approx([1.0, 10.0, 100.0])
+    assert cfg.sweeps["N_LP"] == [1, 3, 5]

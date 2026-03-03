@@ -5,11 +5,16 @@ Precompute an N-parameter grid and cache results to CSV.
 This script is intentionally "cache-only": it runs the expensive simulations and writes a
 scenario-scoped CSV that can be resumed/incrementally extended.
 
+Sweep definition:
+  - Default: in-script `DEFAULT_SWEEPS` (backwards compatible).
+  - Recommended: pass `--sweep-config path/to/sweeps.yml` to define sweep values in YAML and
+    (optionally) override `fee_mode` relative to the base scenario config.
+
 Stored results (written under `abm_results/grid_search/dashboard_nd/`):
   - `data/grid_<config_stem>_<fingerprint>.csv`: one row per grid point with:
       - Sweep coordinates:
           - `i__<param>`: index of the swept value for `<param>` (0..len(values)-1)
-          - `v__<param>`: actual swept value used for `<param>` (cast to int for `INT_PARAMS`)
+          - `v__<param>`: actual swept value used for `<param>` (cast to int for `int_params`)
       - PnL summaries (horizon-normalized, aggregated across runs/seeds):
           - First, for each run/seed and each PnL time series `x_t`, we compute the per-step rate:
               `rate = mean(diff(x_{t0:}))`, where `t0 = skip_step`.
@@ -72,6 +77,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -96,7 +102,7 @@ simulate = run_module.simulate
 
 BASE_CONFIG_PATH = Path("abm_results/scenarios/test.yml")
 
-RUNS_PER_POINT_DEFAULT = 15
+RUNS_PER_POINT_DEFAULT = 5
 SEED_BASE_DEFAULT = 1
 FEE_HIST_BINS_DEFAULT = 60
 CACHE_SCHEMA_VERSION = 2
@@ -128,10 +134,16 @@ def linspace_int(start: int, stop: int, steps: int) -> List[int]:
 
 
 # -----------------------------------------------------------------------------
-# Sweep configuration (edit here)
+# Sweep configuration (YAML recommended)
 # -----------------------------------------------------------------------------
 # Provide discrete values for each parameter you want to sweep. The full grid is
 # the cartesian product of all values.
+#
+# Recommended workflow:
+#   - Put sweeps in a YAML file and pass `--sweep-config ...` so you don't have
+#     to edit this script to change parameter spaces.
+#   - Keep the in-script defaults below as a conservative fallback (backwards
+#     compatibility + quick experiments).
 DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
     # "passive_lp_share": np.linspace(0.0, 1.0, 3).tolist(),
     # Real-time arrival rates: micro-step = 1 second, so expected arrivals per block scale
@@ -148,27 +160,264 @@ DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
     # "p_jit": np.linspace(0.0, 1.0, 3).tolist(),
 }
 
-# DEFAULT_SWEEPS: Dict[str, Sequence[float | int]] = {
-#     "passive_lp_share": [0.7, 0.5],
-#     "narrow_mints_per_block": [0, 5],
-#     "passive_mints_per_block": [0, 5],
-#     "noise_trades_per_block": [0, 5],
-#     "passive_burns_per_block": [0, 5],
-#     "k_sigma": [0.0, 5.0],
-#     "theta_T": [0.95, 0.9999],
-#     "p_jit": [0.0, 1.0],
-
-# }
-
-
-# Parameters treated as integers for UI display + casting.
-# INT_PARAMS: set[str] = {
-#     "narrow_mints_per_block",
-#     "passive_mints_per_block",
-#     "passive_burns_per_block",
-# }
-INT_PARAMS: set[str] = {}
+DEFAULT_INT_PARAMS: set[str] = set()
 # -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SweepConfig:
+    """Parsed sweep configuration for the ND grid runner."""
+
+    sweeps: Dict[str, List[float | int]]
+    int_params: set[str]
+    fee_mode: Optional[str]
+    version: int
+    name: Optional[str]
+    source_path: Path
+
+
+def _as_finite_float(value: Any, *, context: str) -> float:
+    """Convert a value to a finite float, raising a helpful error if it fails."""
+    if isinstance(value, bool):
+        raise ValueError(f"{context}: expected a number, got bool={value!r}")
+    try:
+        out = float(value)
+    except Exception as exc:
+        raise ValueError(f"{context}: expected a number, got {value!r}") from exc
+    if not np.isfinite(out):
+        raise ValueError(f"{context}: expected a finite number, got {value!r}")
+    return float(out)
+
+
+def _parse_sweep_values(spec: Any, *, param_name: str) -> List[float | int]:
+    """Parse a sweep spec into an explicit list of discrete values."""
+    if isinstance(spec, list):
+        if not spec:
+            raise ValueError(f"sweeps.{param_name}: list must be non-empty.")
+        return [_as_finite_float(v, context=f"sweeps.{param_name}[{i}]") for i, v in enumerate(spec)]
+
+    if not isinstance(spec, dict):
+        raise ValueError(
+            f"sweeps.{param_name}: expected a list of values or a mapping spec, got {type(spec).__name__}."
+        )
+
+    kind: Optional[str] = None
+    payload: Any = None
+    if "kind" in spec:
+        kind_raw = spec.get("kind")
+        if not isinstance(kind_raw, str) or not kind_raw:
+            raise ValueError(f"sweeps.{param_name}.kind must be a non-empty string.")
+        kind = kind_raw
+        payload = spec
+    else:
+        for candidate in ("values", "linspace", "geomspace", "linspace_int"):
+            if candidate in spec:
+                kind = candidate
+                payload = spec[candidate]
+                break
+
+    if kind is None:
+        raise ValueError(
+            f"sweeps.{param_name}: unrecognized spec; expected one of: values/linspace/geomspace/linspace_int."
+        )
+
+    kind_norm = str(kind).lower()
+    if kind_norm == "values":
+        values = payload if not isinstance(payload, dict) else payload.get("values")
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"sweeps.{param_name}: values must be a non-empty list.")
+        return [_as_finite_float(v, context=f"sweeps.{param_name}.values[{i}]") for i, v in enumerate(values)]
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"sweeps.{param_name}: {kind_norm} spec must be a mapping.")
+
+    if kind_norm == "linspace":
+        start = _as_finite_float(payload.get("start"), context=f"sweeps.{param_name}.linspace.start")
+        stop = _as_finite_float(payload.get("stop"), context=f"sweeps.{param_name}.linspace.stop")
+        num_raw = payload.get("num")
+        try:
+            num = int(num_raw)
+        except Exception as exc:
+            raise ValueError(f"sweeps.{param_name}.linspace.num must be an int, got {num_raw!r}") from exc
+        if num <= 0:
+            raise ValueError(f"sweeps.{param_name}.linspace.num must be > 0, got {num}")
+        return np.linspace(float(start), float(stop), int(num), dtype=float).tolist()
+
+    if kind_norm == "geomspace":
+        start = _as_finite_float(payload.get("start"), context=f"sweeps.{param_name}.geomspace.start")
+        stop = _as_finite_float(payload.get("stop"), context=f"sweeps.{param_name}.geomspace.stop")
+        num_raw = payload.get("num")
+        try:
+            num = int(num_raw)
+        except Exception as exc:
+            raise ValueError(f"sweeps.{param_name}.geomspace.num must be an int, got {num_raw!r}") from exc
+        if num <= 0:
+            raise ValueError(f"sweeps.{param_name}.geomspace.num must be > 0, got {num}")
+        if start <= 0.0 or stop <= 0.0:
+            raise ValueError(f"sweeps.{param_name}.geomspace requires start/stop > 0 (got start={start}, stop={stop}).")
+        return np.geomspace(float(start), float(stop), int(num), dtype=float).tolist()
+
+    if kind_norm == "linspace_int":
+        start_raw = payload.get("start")
+        stop_raw = payload.get("stop")
+        steps_raw = payload.get("steps", payload.get("num"))
+        try:
+            start = int(start_raw)
+            stop = int(stop_raw)
+            steps = int(steps_raw)
+        except Exception as exc:
+            raise ValueError(
+                f"sweeps.{param_name}.linspace_int expects int start/stop/steps, got "
+                f"start={start_raw!r}, stop={stop_raw!r}, steps={steps_raw!r}."
+            ) from exc
+        return linspace_int(start=start, stop=stop, steps=steps)
+
+    raise ValueError(f"sweeps.{param_name}: unsupported spec kind={kind!r}.")
+
+
+def _load_sweep_config(config_path: Path) -> SweepConfig:
+    """Load and validate a sweep-config YAML file."""
+    p = Path(config_path).expanduser().resolve()
+    if not p.exists():
+        raise FileNotFoundError(f"Missing sweep-config YAML: {p}")
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"Sweep-config root must be a mapping: {p}")
+
+    version_raw = raw.get("version", 1)
+    try:
+        version = int(version_raw)
+    except Exception as exc:
+        raise ValueError(f"Sweep-config version must be an int, got {version_raw!r} ({p})") from exc
+    if version != 1:
+        raise ValueError(f"Unsupported sweep-config version={version} (expected 1): {p}")
+
+    name_raw = raw.get("name")
+    name = str(name_raw) if isinstance(name_raw, str) and name_raw else None
+
+    fee_mode_raw = raw.get("fee_mode")
+    fee_mode: Optional[str]
+    if fee_mode_raw is None:
+        fee_mode = None
+    elif isinstance(fee_mode_raw, str) and fee_mode_raw:
+        fee_mode = str(fee_mode_raw)
+    else:
+        raise ValueError(f"fee_mode must be a string or null in sweep-config: {p}")
+
+    int_params_raw = raw.get("int_params", [])
+    if int_params_raw is None:
+        int_params_raw = []
+    if not isinstance(int_params_raw, list) or not all(isinstance(v, str) and v for v in int_params_raw):
+        raise ValueError(f"int_params must be a list of non-empty strings in sweep-config: {p}")
+    int_params = {str(v) for v in int_params_raw}
+
+    sweeps_raw = raw.get("sweeps")
+    if not isinstance(sweeps_raw, dict) or not sweeps_raw:
+        raise ValueError(f"sweeps must be a non-empty mapping in sweep-config: {p}")
+
+    sweeps: Dict[str, List[float | int]] = {}
+    for k, v in sweeps_raw.items():
+        if not isinstance(k, str) or not k:
+            raise ValueError(f"sweeps keys must be non-empty strings in sweep-config: {p}")
+        values = _parse_sweep_values(v, param_name=str(k))
+        if not values:
+            raise ValueError(f"sweeps.{k}: resolved values must be non-empty ({p})")
+        sweeps[str(k)] = values
+
+    return SweepConfig(
+        sweeps=sweeps,
+        int_params=int_params,
+        fee_mode=fee_mode,
+        version=version,
+        name=name,
+        source_path=p,
+    )
+
+
+def _preview_values(values: Sequence[Any], *, max_items: int = 10) -> List[Any]:
+    """Return a short list preview for display purposes."""
+    vals = list(values)
+    if len(vals) <= int(max_items):
+        return vals
+    head = vals[:5]
+    tail = vals[-2:]
+    return list(head) + ["..."] + list(tail)
+
+
+def _print_resolved_run_header(
+    *,
+    config_path: Path,
+    sweep_config: Optional[SweepConfig],
+    tag: str,
+    fingerprint: str,
+    scenario_label_from_yaml: str,
+    scenario_label_effective: str,
+    config_content_hash: str,
+    runs_per_point: int,
+    seed_base: int,
+    common_seeds: bool,
+    max_workers: int,
+    fee_hist_bins: int,
+    f_min: float,
+    f_max: float,
+    index_start: int,
+    index_stop: int,
+    slice_total: int,
+    total_points: int,
+    param_order: Sequence[str],
+    sweeps: Mapping[str, Sequence[float | int]],
+    int_params: set[str],
+    recompute: bool,
+    retry_failed: bool,
+    ok_cached: set[Tuple[int, ...]],
+    failed_cached: set[Tuple[int, ...]],
+    existing_total: int,
+    csv_global: Path,
+    meta_global: Path,
+    errors_global: Path,
+    worker_tmp_root: Path,
+) -> None:
+    """Print a human-readable summary of the resolved run configuration."""
+    seed_mode = "common" if common_seeds else "per_point"
+    fee_mode_line = (
+        f"{scenario_label_effective}"
+        if str(scenario_label_from_yaml) == str(scenario_label_effective)
+        else f"base={scenario_label_from_yaml} -> effective={scenario_label_effective}"
+    )
+    cached_total = int(len(ok_cached) + len(failed_cached))
+    eval_runs_upper = int(slice_total) * int(runs_per_point)
+
+    print("[dashboard_nd] Resolved run:")
+    print(f"  tag: {tag}")
+    print(f"  fingerprint: {fingerprint}")
+    print(f"  config: {config_path}")
+    if sweep_config is not None:
+        sc_name = "" if sweep_config.name is None else f" ({sweep_config.name})"
+        print(f"  sweep_config: {sweep_config.source_path} [v{sweep_config.version}]{sc_name}")
+    else:
+        print("  sweep_config: (in-script DEFAULT_SWEEPS)")
+    print(f"  fee_mode: {fee_mode_line}")
+    if int_params:
+        print(f"  int_params: {sorted(int_params)}")
+    print(f"  grid: {total_points} points | slice=[{index_start},{index_stop}) => {slice_total} points")
+    print(f"  compute: workers={max_workers} | runs_per_point={runs_per_point} | seed_mode={seed_mode} (seed_base={seed_base})")
+    print(f"  compute: upper bound simulator calls in slice = {eval_runs_upper}")
+    print(f"  fee histogram: bins={fee_hist_bins} (edges from f_min={f_min} to f_max={f_max})")
+    print("  cache/resume:")
+    print(f"    - recompute={bool(recompute)} | retry_failed={bool(retry_failed)}")
+    print(f"    - cached points (global): ok={len(ok_cached)}, failed={len(failed_cached)}, total={cached_total}")
+    print(f"    - existing points skipped (global): {existing_total}")
+    print("  sweeps:")
+    for name in param_order:
+        values = sweeps[name]
+        preview = _preview_values(values, max_items=10)
+        print(f"    - {name}: {len(values)} values: {preview}")
+    print("  outputs:")
+    print(f"    - cache CSV: {csv_global}")
+    print(f"    - meta JSON: {meta_global}")
+    print(f"    - errors CSV: {errors_global}")
+    print(f"    - worker temp root: {worker_tmp_root} (created + cleaned at runtime)")
+    print(f"  config_content_hash: {config_content_hash}")
 
 
 PNL_METRICS: Tuple[Tuple[str, str], ...] = (
@@ -232,6 +481,7 @@ def _effective_config_content_hash(*, scenario_label: str, base_params: Mapping[
 def _canon_fingerprint_payload(
     *,
     sweeps: Mapping[str, Sequence[float | int]],
+    int_params: Sequence[str],
     runs_per_point: int,
     seed_base: int,
     common_seeds: bool,
@@ -242,6 +492,7 @@ def _canon_fingerprint_payload(
 ) -> Tuple[str, Dict[str, Any]]:
     payload = {
         "sweeps": {k: list(v) for k, v in sorted(sweeps.items())},
+        "int_params": list(int_params),
         "runs_per_point": int(runs_per_point),
         "seed_base": int(seed_base),
         "common_seeds": bool(common_seeds),
@@ -334,6 +585,7 @@ def _evaluate_grid_point(
     base_params: Dict[str, Any],
     param_order: Sequence[str],
     sweep_values: Mapping[str, Sequence[float | int]],
+    int_params: set[str],
     fee_bins: np.ndarray,
     smart_router_dex_share_bins: np.ndarray,
     runs_per_point: int,
@@ -347,7 +599,7 @@ def _evaluate_grid_point(
     params = dict(base_params)
     for name, idx in zip(param_order, point.indices):
         value = sweep_values[name][int(idx)]
-        if name in INT_PARAMS:
+        if name in int_params:
             params[name] = int(round(float(value)))
         else:
             params[name] = float(value)
@@ -521,6 +773,7 @@ def _result_to_row(
     *,
     param_order: Sequence[str],
     sweep_values: Mapping[str, Sequence[float | int]],
+    int_params: set[str],
     runs_per_point: int,
     fee_hist_bins: int,
 ) -> Dict[str, Any]:
@@ -541,7 +794,7 @@ def _result_to_row(
     for name, idx in zip(param_order, indices):
         row[f"i__{name}"] = int(idx)
         value = sweep_values[name][int(idx)]
-        if name in INT_PARAMS:
+        if name in int_params:
             row[f"v__{name}"] = int(round(float(value)))
         else:
             row[f"v__{name}"] = float(value)
@@ -565,6 +818,12 @@ def main() -> None:
         description="N-parameter grid runner (cached CSV outputs). Use scripts/build_parameter_surface_nd_pnl_fee_dashboard.py to render HTML."
     )
     parser.add_argument("--config", type=Path, default=BASE_CONFIG_PATH, help="Base YAML scenario config path.")
+    parser.add_argument(
+        "--sweep-config",
+        type=Path,
+        default=None,
+        help="Optional YAML sweep-config (sweeps + int_params + fee_mode override). When omitted, uses in-script DEFAULT_SWEEPS.",
+    )
     parser.add_argument("--runs-per-point", type=int, default=RUNS_PER_POINT_DEFAULT)
     parser.add_argument("--seed-base", type=int, default=SEED_BASE_DEFAULT)
     parser.add_argument("--common-seeds", action="store_true", help="Use the same seeds for all grid points.")
@@ -599,13 +858,37 @@ def main() -> None:
     if fee_hist_bins <= 1:
         raise SystemExit("--fee-hist-bins must be > 1.")
 
-    sweeps = {k: list(v) for k, v in DEFAULT_SWEEPS.items()}
+    sweep_config: Optional[SweepConfig] = None
+    if args.sweep_config is not None:
+        sweep_config = _load_sweep_config(args.sweep_config)
+        sweeps = {k: list(v) for k, v in sweep_config.sweeps.items()}
+        int_params = set(sweep_config.int_params)
+    else:
+        sweeps = {k: list(v) for k, v in DEFAULT_SWEEPS.items()}
+        int_params = set(DEFAULT_INT_PARAMS)
     param_order = list(sweeps.keys())
     if len(param_order) < 2:
         raise SystemExit("Need at least 2 swept parameters to build a surface.")
 
-    scenario_label, loaded_params = load_simulation_parameters(config_path, simulate_func=simulate)
+    scenario_label_from_yaml, loaded_params = load_simulation_parameters(config_path, simulate_func=simulate)
     base_params = dict(loaded_params)
+    scenario_label = str(scenario_label_from_yaml)
+    if sweep_config is not None and sweep_config.fee_mode is not None:
+        base_params["fee_mode"] = str(sweep_config.fee_mode)
+        scenario_label = str(sweep_config.fee_mode)
+
+    unknown_sweeps = [name for name in param_order if name not in base_params]
+    if unknown_sweeps:
+        raise SystemExit(
+            "Sweep-config contains parameters that are not accepted by simulate(): "
+            f"{unknown_sweeps}. Check spelling or update the base scenario YAML."
+        )
+    unknown_int_params = sorted([name for name in int_params if name not in base_params])
+    if unknown_int_params:
+        raise SystemExit(
+            "Sweep-config int_params contains unknown simulate() parameters: "
+            f"{unknown_int_params}. Check spelling."
+        )
     config_content_hash = _effective_config_content_hash(scenario_label=scenario_label, base_params=base_params)
 
     f_min = float(base_params.get("f_min", 0.0))
@@ -617,6 +900,7 @@ def main() -> None:
 
     fingerprint, fingerprint_payload = _canon_fingerprint_payload(
         sweeps=sweeps,
+        int_params=sorted(int_params),
         runs_per_point=runs_per_point,
         seed_base=int(args.seed_base),
         common_seeds=bool(args.common_seeds),
@@ -648,7 +932,16 @@ def main() -> None:
     if args.dry_run:
         print("Resolved ND grid:")
         print(f"  config: {config_path}")
-        print(f"  scenario_label (from YAML): {scenario_label}")
+        if sweep_config is not None:
+            print(f"  sweep_config: {sweep_config.source_path}")
+        else:
+            print("  sweep_config: (in-script DEFAULT_SWEEPS)")
+        if str(scenario_label_from_yaml) != str(scenario_label):
+            print(f"  fee_mode: base={scenario_label_from_yaml} -> effective={scenario_label}")
+        else:
+            print(f"  fee_mode: {scenario_label}")
+        if int_params:
+            print(f"  int_params: {sorted(int_params)}")
         print(f"  runs_per_point: {runs_per_point}")
         print(f"  seed_mode: {'common' if args.common_seeds else 'per_point'} (seed_base={args.seed_base})")
         print(f"  fee histogram bins: {fee_hist_bins} (edges from f_min={f_min} to f_max={f_max})")
@@ -682,14 +975,45 @@ def main() -> None:
         if not args.retry_failed:
             existing |= set(failed_cached)
 
-    print(
-        f"[dashboard_nd] config={config_path} | grid={total_points} points | "
-        f"slice=[{index_start},{index_stop}) ({slice_total} points) | workers={args.max_workers}"
+    _print_resolved_run_header(
+        config_path=config_path,
+        sweep_config=sweep_config,
+        tag=tag,
+        fingerprint=fingerprint,
+        scenario_label_from_yaml=str(scenario_label_from_yaml),
+        scenario_label_effective=str(scenario_label),
+        config_content_hash=str(config_content_hash),
+        runs_per_point=int(runs_per_point),
+        seed_base=int(args.seed_base),
+        common_seeds=bool(args.common_seeds),
+        max_workers=int(args.max_workers),
+        fee_hist_bins=int(fee_hist_bins),
+        f_min=float(f_min),
+        f_max=float(f_max),
+        index_start=int(index_start),
+        index_stop=int(index_stop),
+        slice_total=int(slice_total),
+        total_points=int(total_points),
+        param_order=param_order,
+        sweeps=sweeps,
+        int_params=int_params,
+        recompute=bool(args.recompute),
+        retry_failed=bool(args.retry_failed),
+        ok_cached=ok_cached,
+        failed_cached=failed_cached,
+        existing_total=len(existing),
+        csv_global=csv_global,
+        meta_global=meta_global,
+        errors_global=errors_global,
+        worker_tmp_root=worker_tmp_root,
     )
-    print(f"[dashboard_nd] cache (global): {csv_global}")
     meta_global.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path = meta_global.parent / f"config_snapshot_{tag}.yml"
     snapshot_file(config_path, snapshot_path)
+    sweep_snapshot_path: Optional[Path] = None
+    if sweep_config is not None:
+        sweep_snapshot_path = meta_global.parent / f"sweep_config_snapshot_{tag}.yml"
+        snapshot_file(sweep_config.source_path, sweep_snapshot_path)
     manifest = build_run_manifest(script="run_parameter_surface_nd_pnl_fee_dashboard", run_id=tag, config_path=config_path)
     meta_payload = {
         "tag": tag,
@@ -698,9 +1022,15 @@ def main() -> None:
         "cache_schema_version": int(CACHE_SCHEMA_VERSION),
         "script_version": str(SCRIPT_VERSION),
         "config_content_hash": str(config_content_hash),
+        "fee_mode_base_config": str(scenario_label_from_yaml),
+        "fee_mode_effective": str(scenario_label),
         "scenario_label": scenario_label,
         "config_path": str(config_path),
         "config_snapshot": str(snapshot_path),
+        "sweep_config_path": None if sweep_config is None else str(sweep_config.source_path),
+        "sweep_config_snapshot": None if sweep_snapshot_path is None else str(sweep_snapshot_path),
+        "sweep_config_version": None if sweep_config is None else int(sweep_config.version),
+        "sweep_config_name": None if sweep_config is None else sweep_config.name,
         "worker_temp_root": str(worker_tmp_root),
         "created_at_utc": manifest.created_at_utc,
         "git_commit": manifest.git_commit,
@@ -708,7 +1038,7 @@ def main() -> None:
         "platform": manifest.platform,
         "param_order": list(param_order),
         "sweeps": {k: list(v) for k, v in sweeps.items()},
-        "int_params": sorted(INT_PARAMS),
+        "int_params": sorted(int_params),
         "metrics": [{"key": k, "label": label} for k, label in PNL_METRICS],
         "pnl_summary": {
             "kind": PNL_SUMMARY_KIND,
@@ -779,6 +1109,7 @@ def main() -> None:
                     base_params=base_params,
                     param_order=param_order,
                     sweep_values=sweeps,
+                    int_params=int_params,
                     fee_bins=fee_bin_edges,
                     smart_router_dex_share_bins=smart_router_dex_share_bin_edges,
                     runs_per_point=runs_per_point,
@@ -812,7 +1143,7 @@ def main() -> None:
                                     idx_int = int(idx_val)
                                     error_row[f"i__{name}"] = idx_int
                                     value = sweeps[name][idx_int]
-                                    if name in INT_PARAMS:
+                                    if name in int_params:
                                         error_row[f"v__{name}"] = int(round(float(value)))
                                     else:
                                         error_row[f"v__{name}"] = float(value)
@@ -821,6 +1152,7 @@ def main() -> None:
                             result,
                             param_order=param_order,
                             sweep_values=sweeps,
+                            int_params=int_params,
                             runs_per_point=runs_per_point,
                             fee_hist_bins=fee_hist_bins,
                         )
@@ -859,7 +1191,7 @@ def main() -> None:
                                 idx_int = int(idx_val)
                                 error_row[f"i__{name}"] = idx_int
                                 value = sweeps[name][idx_int]
-                                if name in INT_PARAMS:
+                                if name in int_params:
                                     error_row[f"v__{name}"] = int(round(float(value)))
                                 else:
                                     error_row[f"v__{name}"] = float(value)
@@ -868,6 +1200,7 @@ def main() -> None:
                         result,
                         param_order=param_order,
                         sweep_values=sweeps,
+                        int_params=int_params,
                         runs_per_point=runs_per_point,
                         fee_hist_bins=fee_hist_bins,
                     )

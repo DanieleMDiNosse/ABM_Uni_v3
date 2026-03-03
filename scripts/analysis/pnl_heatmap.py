@@ -100,15 +100,15 @@ def pnl_summary_table(
         zmax=abs_max,
         text=annotations,
         texttemplate="%{text}",
-        textfont=dict(size=13),
+        textfont=dict(size=16),
         hovertemplate="Scenario: %{x}<br>Cohort: %{y}<br>Mean PnL: %{z:.2f}<extra></extra>",
         colorbar=dict(title="Mean hedged PnL<br>(token-1)"),
     ))
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
         title="Hedged PnL summary (mean ± σ across seeds)",
-        xaxis=dict(title="Scenario", tickangle=-35, tickfont=dict(size=14)),
-        yaxis=dict(title="LP Cohort", tickfont=dict(size=16)),
+        xaxis=dict(title="Scenario", tickangle=-35, tickfont=dict(size=18)),
+        yaxis=dict(title="LP Cohort", tickfont=dict(size=18)),
         font=FONT,
         height=350 + 60 * len(cohorts),
     )
