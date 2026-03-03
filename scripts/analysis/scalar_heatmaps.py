@@ -62,7 +62,7 @@ def dex_share_barplot(
     ))
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
-        title="DEX routing share (mean ± σ across seeds)",
+        # title="DEX routing share (mean ± σ across seeds)",
         xaxis=dict(title="Scenario", tickangle=-35, tickfont=dict(size=14)),
         yaxis=dict(title="DEX share", tickformat=".0%"),
         font=FONT,
@@ -179,7 +179,7 @@ def mean_fee_barplot(
     ))
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
-        title="Mean liquidity-taker fee (mean ± σ across seeds, static excluded)",
+        # title="Mean liquidity-taker fee (mean ± σ across seeds, static excluded)",
         xaxis=dict(title="Scenario", tickangle=-35, tickfont=dict(size=14)),
         yaxis=dict(title="Fee rate"),
         font=FONT,
