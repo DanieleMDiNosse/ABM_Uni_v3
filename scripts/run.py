@@ -1991,6 +1991,9 @@ def simulate(
     cex_heston_sigma_v: Optional[float] = None,
     cex_heston_rho: Optional[float] = None,
     cex_heston_v0: Optional[float] = None,
+    # List of theta values for time-varying heston_theta. Each regime lasts T/N blocks.
+    # The order is shuffled per seed for regime-order diversity across runs.
+    cex_heston_theta_schedule: Optional[List] = None,
     
     # === Output and visualization ===
     visualize: bool = True,
@@ -2278,6 +2281,21 @@ def simulate(
             f"kappa={cex_heston_kappa}, theta={cex_heston_theta}, "
             f"sigma_v={cex_heston_sigma_v}, rho={cex_heston_rho}, v0={cex_heston_v0}"
         )
+        # Validate and sort theta schedule if provided.
+        if cex_heston_theta_schedule is not None:
+            if not isinstance(cex_heston_theta_schedule, list) or len(cex_heston_theta_schedule) == 0:
+                raise ValueError("cex_heston_theta_schedule must be a non-empty list of theta values.")
+            theta_vals = [float(v) for v in cex_heston_theta_schedule]
+            for v in theta_vals:
+                if v < 0:
+                    raise ValueError(f"Theta values in schedule must be non-negative, got {v}")
+            # Shuffle theta values so each seed explores a different regime ordering.
+            random.shuffle(theta_vals)
+            # Assign equal-duration segments: each regime lasts T // N blocks.
+            n_regimes = len(theta_vals)
+            segment_len = T // n_regimes
+            cex_heston_theta_schedule = [(i * segment_len, theta_vals[i]) for i in range(n_regimes)]
+            _vprint(f"[CONFIG] Heston theta schedule ({n_regimes} regimes, {segment_len} blocks each, shuffled): {cex_heston_theta_schedule}")
     if regime_mode:
         if cex_sigma_low is None or cex_sigma_high is None:
             raise ValueError("cex_sigma_low and cex_sigma_high must be set when cex_sigma_mode='regime'.")
@@ -3460,6 +3478,16 @@ def simulate(
         agent_S_ref = validated_S
         agent_tick_ref = validated_tick
         cex_ref_for_agents = validated_cex
+
+        # --- Update Heston theta if schedule is provided ---
+        if cex_heston_theta_schedule and heston_mode:
+            for _sched_step, _sched_theta in reversed(cex_heston_theta_schedule):
+                if t >= _sched_step:
+                    if ref.heston_theta != _sched_theta:
+                        _vprint(f"[t={t}] Heston theta schedule: θ → {_sched_theta:.2e}")
+                        ref.heston_theta = _sched_theta
+                    break
+
         # --- Apply any committed fee update (commit→reveal) ---
         if fee_cooldown_left > 0:
             fee_cooldown_left -= 1

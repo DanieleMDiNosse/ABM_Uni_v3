@@ -1048,7 +1048,7 @@ clamped between a minimum and maximum fee value to prevent extreme situations.
 
 
 (iv) Cooldown \newline 
-After a fee change is scheduled, further changes are ignored for $\texttt{fee\_cooldown}$ steps, preventing rapid oscillations.
+After a fee change is scheduled, further changes are ignored for $\tau_{\text{cool}}$ steps, preventing rapid oscillations.
 Overall, this controller keeps fees bounded, smooth, and responsive only to meaningful shifts in the underlying signal.
 
 This controller ensures that the fee path is bounded, piecewise smooth, and only reacts to material changes in the underlying signals.
@@ -1059,43 +1059,38 @@ The model is initialized by setting an initial pool price $P^{\mathrm{DEX}}_0$ a
 \section{Results}
 \label{sec:results}
 
-In this section we illustrate the result obtained with the ABM framework introduced in the previous sections.
+In this section we illustrate the results obtained with the ABM framework introduced in the previous sections. The goal is to assess whether dynamic fees can mitigate adverse selection (LVR) under block-time execution, and to quantify the trade-offs with competitiveness (DEX share) and with strategic liquidity provision (active LPs and JIT liquidity).
+
 We consider three models with increased complexity:
 \begin{enumerate}
-    \item Model 0: Here we have just the arbitrageur, the noise trader, the passive LP cohort and the smart-router. The goal
-        of this model is to develop an initial intuition about the market dynamics, how the adverse selection
-        affects passive LPs and the base attractiveness of the DEX without any other influences.
-    \item Model 1: We introduce active liquidity providers and analyze the dynamics of their hedged PnL. Our objective is to assess how the profitability of active LPs compares to that of passive LPs. Due to their narrower liquidity ranges, we expect active LPs to exhibit lower hedged PnL. At this stage, our focus is on undersanding how the dynamic fee schedule affects this situation.
-    \item Model 2: Finally, we allow the Jiter to operate. Even in this case, we aim to understand if the presence
-        of a MEV searcher of this kind affects positively or negatively the other LP cohorts.
+    \item \textbf{Model 0:} arbitrageur, noise trader, smart router, and a passive LP cohort only. This baseline isolates block-time stale-quote risk without strategic liquidity provision.
+    \item \textbf{Model 1:} we introduce an active (more concentrated) LP cohort alongside passive LPs (equal split of the LP population) and compare hedged PnL across cohorts under different fee policies.
+    \item \textbf{Model 2:} we additionally allow a JIT liquidity provider (the ``Jiter'') to operate, to study how MEV-style liquidity affects the incidence of fees and LVR across LP cohorts.
 \end{enumerate}
 
-All simulations share a common set of parameters, reported in Table \ref{tab:common_params}. As stated in the introduction, 
-our objective is not to construct a data-generating process that accurately reproduces empirical market properties, but rather
-to develop a framework that allows us to study how different types of agents interact and how the introduction of dynamic fee 
-mechanisms affects the economics of liquidity provision. Accordingly, parameter values are chosen to generate plausible and 
-interpretable dynamics, providing a meaningful setting in which qualitative reasoning and comparative analysis can be carried out. Several parameters, like the mean number of swaps an LP events per block, have been chosen according to \cite{dinosse_gatta}.
+All simulations share a common set of parameters (Table \ref{tab:common_params}). As stated in the introduction, our objective is not to construct a data-generating process that accurately reproduces empirical market properties, but rather to develop a framework that allows us to study how different types of agents interact and how the introduction of dynamic fee mechanisms affects the economics of liquidity provision. Accordingly, parameter values are chosen to generate plausible and interpretable dynamics, providing a meaningful setting in which qualitative reasoning and comparative analysis can be carried out. Several parameters (e.g., the order-flow intensity per block) are chosen to be consistent with the empirical calibration in \cite{dinosse_gatta}.
+
+Unless otherwise stated, summary figures report mean \(\pm\) standard deviation across \textbf{100 independent seeds} per \((\text{model},\text{fee schedule})\) configuration.
 
 The main metrics of interest are:
 \begin{itemize}
-    \item the hedged LP PnL, as introduced in Section~\ref{paragraph:PnL_decomposition}, which quantifies the profitability of liquidity provision in the AMM net of market risk
-    \begin{align}
-        \Pi_t^{\mathrm{hedged}}
-          = F_t - \mathrm{LVR}_t - \mathbb{1}_{JIT}C_{flash}\\
-    \end{align}
-    where $\mathbb{1}_{JIT}=1$ if we are considering the Jiter hedged PnL, otherwise it is zero.
-    \item the fraction of trades routed to the DEX relative to total trades (DEX share), which serves as a measure of the AMM’s attractiveness compared to the CEX
+    \item the \textbf{hedged LP PnL} (Section~\ref{paragraph:PnL_decomposition}), which quantifies the profitability of liquidity provision in the AMM net of market risk:
+    \begin{equation}
+        \Pi_T^{\mathrm{hedged}} = F_T - \mathrm{LVR}_T - \mathbb{1}_{JIT}C_{\mathrm{flash}},
+    \end{equation}
+    where $\mathbb{1}_{JIT}=1$ for the Jiter cohort and $0$ otherwise;
+    \item the \textbf{fraction of trades routed to the DEX} relative to total trades (DEX share), which serves as a measure of the AMM’s attractiveness compared to the CEX:
     \begin{equation}
         \text{DEX}_{share} = \frac{\text{\#DEX trades }}{\text{\# CEX+DEX trades}}
     \end{equation}
-    \item the liquidity taker fee level $f_t$. Holding all other parameters fixed, higher fees increase LP revenues but reduce the competitiveness of the AMM, thereby discouraging order routing by the smart router in favor of the CEX.
+    \item the \textbf{liquidity-taker fee level} $f_t$. Holding all other parameters fixed, higher fees increase LP revenues but reduce the competitiveness of the AMM, thereby discouraging order routing by the smart router in favor of the CEX.
 \end{itemize}
 
 
 \begin{table*}[t]
 \centering
-\small
-\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\renewcommand{\arraystretch}{1.05}
 \begin{tabularx}{\textwidth}{|l|X|r|}
 \hline
 \textbf{Symbol} & \textbf{Description} & \textbf{Value} \\
@@ -1105,9 +1100,9 @@ The main metrics of interest are:
 \hline
 \(\tau\) & Block duration (mempool length), in seconds / micro-steps per block & \(5\) \\
 \hline
-\(T\) & Total number of simulation blocks & \(12 000\) \\
+\(T\) & Total number of simulation blocks & \(13 000\) \\
 \hline
-\(T_{\text{skip}}\) & Blocks skipped to reach equilibrium & \(2 000\) \\
+\(T_{\text{skip}}\) & Blocks skipped to reach equilibrium & \(3 000\) \\
 \hline\hline
 
 \rowcolor{groupgray}\multicolumn{3}{|l|}{\textbf{Reference market (CEX): Heston}}\\
@@ -1138,14 +1133,14 @@ The main metrics of interest are:
 
 \rowcolor{groupgray}\multicolumn{3}{|l|}{\textbf{Arbitrageurs}}\\
 \hline
-\(\phi_{\text{flash}}\) & Flash-loan funding cost fraction & \(5.0\times10^{-4}\) \\
+\(\phi_{\text{flash}}\) & Flash-loan funding cost fraction & \(1.0\times10^{-4}\) \\
 \hline\hline
 
 \rowcolor{groupgray}\multicolumn{3}{|l|}{\textbf{Liquidity providers (LPs)}}\\
 \hline
 \(N_{\text{LP}}\) & Number of LP agents & \(10\) \\
 \hline
-\(w^{\text{pass}}_{\%}\) & Passive LP total width (\(\pm w^{\text{pass}}_{\%}/2\) around reference price) & \(10\%\) \\
+\(w^{\text{pass}}_{\%}\) & Passive LP total width (\(\pm w^{\text{pass}}_{\%}/2\) around reference price) & \(5\%\) \\
 \hline
 \(\tau_{\text{review}}\) & Mean LP review cadence (blocks) & \(5\) \\
 \hline
@@ -1170,7 +1165,7 @@ The main metrics of interest are:
 
 \rowcolor{groupgray}\multicolumn{3}{|l|}{\textbf{JIT liquidity provider (MEV searcher)}}\\
 \hline
-\(N_{\text{JIT}}\) & Target up to top-\(N\) swaps per block (by input size) & \(1\) \\
+\(N_{\text{JIT}}\) & Target up to top-\(N\) swaps per block (by input size) & \(3\) \\
 \hline
 \(\alpha_{\text{JIT}}\) & Target fraction of active liquidity temporarily added & \(0.90\) \\
 \hline\hline
@@ -1184,58 +1179,107 @@ The main metrics of interest are:
 
 \rowcolor{groupgray}\multicolumn{3}{|l|}{\textbf{Fee controller}}\\
 \hline
-\(f_0\) & Baseline taker fee (static mode / floor for dynamics) & \(5.0\times10^{-4}\) \\
+\(f_0\) & Baseline taker fee (static mode / floor for dynamics) & \(1.0\times10^{-4}\) \\
 \hline
-\(f_{\min},\,f_{\max}\) & Fee bounds enforced by controller & \((1.0\times10^{-4},\,5.0\times10^{-2})\) \\
+\(f_{\min},\,f_{\max}\) & Fee bounds enforced by controller & \((1.0\times10^{-5},\,5.0\times10^{-2})\) \\
 \hline
 \(h_{\text{fee}}\) & EWMA half-life (blocks) for controller signals & \(2\) \\
 \hline
-\(k_{\text{basis}}\) & Toxicity-to-fee multiplier & \(1.0\times10^{-2}\) \\
+\(k_{\text{basis}}\) & Toxicity-to-fee multiplier & \(5.0\times10^{-4}\) \\
 \hline
-\(\Delta f_{\min}\) & Min absolute fee change to commit & \(0.000005\) \\
+\(\Delta f_{\min}\) & Min absolute fee change to commit & \(5.0\times10^{-8}\) \\
 \hline
 \(\Delta f_{\max}\) & Max fee change per update step & \(0.01\) \\
 \hline
 \(\tau_{\text{cool}}\) & Fee update cooldown (blocks) & \(0\) \\
 \hline
 \end{tabularx}
-\caption{Baseline simulation parameters shared across all models. }
+\caption{Baseline simulation parameters shared across all models.}
 \label{tab:common_params}
 \end{table*}
 
-\subsection{Microstructure properties}
-In this section we will show several microstructure properties generated by the ABM.
-Figure \ref{fig:cex_dex_prices} compares the reference (CEX) price with the AMM (DEX) price, together with the shaded no-arbitrage region implied by trading frictions and the CEX and DEX log returns distributions. The DEX price dynamics exhibit several pronounced upward and downward spikes. These originate from intrablock price updates that occasionally align in the same direction, temporarily driving the DEX price far from the CEX reference level. Such deviations are promptly corrected by arbitrage activity at the beginning of the subsequent block. This behavior of the price path is consistent with the empirical evidence reported in \cite{dinosse_gatta}.
-A zoomed version of the prices paths is provided in Figure \ref{fig:cex_dex_band}. The key mechanism is that the CEX price evolves at higher frequency inside each block, while the DEX price only changes when on-chain swaps are executed. In the model, all intents are executed at the end of the block (mempool execution), with the arbitrage intent processed first and the remaining orders executed in random order. Consequently, the recorded end-of-block series $(m_t,P^{DEX}_t)$ reflect the state after all within-block diffusion and all on-chain executions.
-Finally, the apparent lag between the dashed CEX series and the shaded band is structural: the band is computed from the lagged snapshot $m_{t-1}$, while the plotted $m_t$ is the contemporaneous end of the block reference price after intra-block diffusion (and any CEX impact generated by arbitrage hedging). This discretization captures latency/stale information in on-chain execution and explains the transient CEX--DEX basis visible in the zoomed-in panel.
+\subsection{Microstructure diagnostics (illustrative)}
+Before comparing fee policies, we validate that the ABM reproduces the expected microstructure channel: block-time latency generates transient CEX--DEX deviations that are harvested by priority arbitrage, implying adverse selection (LVR) for LPs.
 
-\begin{figure}
+Figure~\ref{fig:microstructure_prices} compares the reference (CEX) price with the AMM (DEX) price and the implied no-arbitrage band. The DEX series exhibits pronounced spikes because the CEX price evolves within each block while on-chain swaps are executed at the block boundary. Mispricings are then corrected by arbitrage at the beginning of the next block, generating the spike-and-reversion dynamics documented empirically in \cite{dinosse_gatta}. The apparent lag between the CEX series and the shaded band is structural: the band is computed from the lagged snapshot \(m_{t-1}\), whereas the plotted \(m_t\) is the contemporaneous end-of-block reference price after intra-block diffusion.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}{0.95\linewidth}
     \centering
-    \includegraphics[width=0.7\linewidth]{images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png}
-    \caption{Evolution of DEX and CEX prices, together with the no arbitrage bands and the CEX and DEX log returns distributions. The CEX log returns distribution shows a negative skewness due to the negative correlation between price and volatility in the Heston dynamics. The remaining parameters are summarized in \ref{tab:common_params}.}
-    \label{fig:cex_dex_prices}
+    \includegraphics[width=\linewidth]{images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png}
+    \caption{End-of-block CEX and DEX prices with the no-arbitrage band (representative static-fee run).}
+  \end{subfigure}
+
+  \vspace{0.4em}
+
+  \begin{subfigure}{0.95\linewidth}
+    \centering
+    \includegraphics[width=0.75\linewidth]{images/cex_dex_band.pdf}
+    \caption{Zoomed-in view highlighting the lag induced by block-time execution.}
+  \end{subfigure}
+  \caption{Microstructure illustration under static fees (Model~0). Block-time latency and priority arbitrage induce transient deviations between the AMM price and the reference market, which are then corrected at the next block.}
+  \label{fig:microstructure_prices}
 \end{figure}
 
-\begin{figure}
-    \centering
-    \includegraphics[width=0.6\linewidth]{images/cex_dex_band.pdf}
-    \caption{Evolution of DEX and CEX prices, together with the no arbitrage bands zoomed in a small block intervals. The remaining parameters are summarized in \ref{tab:common_params}.}
-    \label{fig:cex_dex_prices}
+Another informative diagnostic is the autocorrelation function (ACF) of end-of-block DEX returns. Figure~\ref{fig:microstructure_acf} shows a pronounced negative spike at lag 1, indicating short-horizon mean reversion across consecutive blocks. A qualitatively similar lag-1 anticorrelation has been documented in \cite{dinosse_gatta} and is often linked to arbitrage dynamics; our simulations show that block-time non-atomic CEX--DEX arbitrage alone can generate this signature.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.55\linewidth]{images/274418_static_LPpassiveshare0.5_pjit0.0_1c_dex_return_acf_steps10000.png}
+  \caption{Autocorrelation function of end-of-block DEX returns (representative static-fee run), exhibiting a pronounced lag-1 negative spike.}
+  \label{fig:microstructure_acf}
 \end{figure}
 
-Another interesting feature emerging from the ABM simulations under static fees (model 2) is the distinctive shape of the autocorrelation function (ACF) of end-of-block DEX prices. Figure \ref{fig:acf_dex} shows a pronounced negative spike at lag 1, indicating short-horizon mean reversion across consecutive blocks.
+\subsection{Cross-scenario outcome summary}
+\label{subsec:results_summary}
+We now summarize outcomes across all \((\text{model},\text{fee schedule})\) combinations using aggregated cross-scenario figures. This presentation avoids repeating near-identical time-series plots and focuses instead on comparisons that are directly aligned with the paper's scope: how fee policies reshape the balance between fee income and adverse selection (LVR), how they move the smart router's flow allocation, and how they affect the distribution of revenues across LP types.
 
-A qualitatively similar lag-1 anticorrelation has been documented in the empirical analysis of DEX prices by \cite{dinosse_gatta}, where it is associated with “reverse-trade” arbitrage dynamics as formalized in \cite{capponi2021liquidity}. In our setting, however, the mechanism is not driven by alternating trades within the DEX due to atomic arbitrage sequences. Rather, the effect arises from non-atomic CEX--DEX arbitrage executed at block granularity.
+\paragraph{Hedged PnL across models and fee modes.}
+Figure~\ref{fig:pnl_heatmap} reports the final hedged PnL by cohort (token-1 numéraire). Under \textbf{static fees}, passive LP hedged PnL is negative in all three models (Model~0: \(-108.8\pm 10.5\); Model~1: \(-63.7\pm 3.2\); Model~2: \(-71.6\pm 6.9\)), consistent with a structural wedge between fixed fee revenue and stale-quote losses under block-time execution. Active LPs (more concentrated liquidity) are substantially more negative under static fees (\(-928.8\pm 12.2\) in Model~1; \(-954.7\pm 39.3\) in Model~2), highlighting that concentration amplifies exposure to adverse selection.
 
-Our results suggest that block-time non-atomic arbitrage alone can produce the same qualitative lag-1 anticorrelation pattern observed empirically, providing an additional, and probably complementary, microstructural explanation for the lag-1 negative ACF documented in \cite{dinosse_gatta}.
+Dynamic fees can restore positive hedged profitability, but performance depends critically on the \emph{signal} driving fee updates. A \textbf{toxicity-driven controller} delivers the strongest improvement in the no-JIT setting: passive LP hedged PnL becomes strongly positive in Model~0 (\(+361.9\pm 30.2\)) and both passive and active LPs become positive in Model~1 (\(+77.1\pm 5.5\) and \(+108.3\pm 0.0\), respectively). Volatility-based controllers are less targeted: while they can improve passive LP outcomes in Model~0, they fail to restore positive hedged PnL for active LPs in Model~1.
 
-\begin{figure}
-    \centering
-    \includegraphics[width=0.5\linewidth]{images/274418_static_LPpassiveshare0.5_pjit0.0_1c_dex_return_acf_steps10000.png}
-    \caption{Caption}
-    \label{fig:acf_dex}
+Model~2 highlights a protocol-design tension. When JIT liquidity is allowed, fee policies that increase the fee stream in ``toxic'' states can create a larger opportunity set for short-horizon liquidity provision. Under toxicity-driven fees, passive LPs remain modestly positive (\(+18.3\pm 2.8\)) while active LPs remain slightly negative (\(-13.6\pm 8.0\)); at the same time, the Jiter becomes profitable (\(+94.1\pm 13.7\)). In this parameterization, dynamic fees partially internalize adverse selection for the AMM as a whole, but they also reallocate surplus toward latency/priority strategies.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{images/analysis/png/pnl_heatmap.png}
+  \caption{Final hedged PnL (token-1) across models and fee modes. Cells report mean \(\pm\) sd across 100 seeds. Inactive cohorts (e.g., JIT in Models 0--1) are left blank.}
+  \label{fig:pnl_heatmap}
 \end{figure}
 
+\paragraph{Competitiveness: DEX share.}
+The smart router trades off execution quality against fees, so higher endogenous fees can reduce AMM competitiveness. Figure~\ref{fig:dex_share_barplot} shows that the AMM remains used under all regimes, but dynamic fees reduce routed DEX share relative to static fees (e.g., from \(\approx 35\%\)--\(39\%\) under static to \(\approx 23\%\)--\(28\%\) under dynamic controllers in this parameterization). This emphasizes that fee design must be evaluated jointly on (i) LP protection and (ii) induced order-flow allocation.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{images/analysis/png/dex_share_barplot.png}
+  \caption{Mean smart-router DEX share across scenarios (mean \(\pm\) sd across 100 seeds).}
+  \label{fig:dex_share_barplot}
+\end{figure}
+
+\paragraph{Fee levels and fee incidence across cohorts.}
+Figure~\ref{fig:mean_fee_barplot} reports the time-averaged fee level for dynamic modes. Toxicity-driven fees imply the highest average fee in all three models (about 11--15 bps on average), whereas volatility-driven modes remain closer to the baseline floor (about 4--7 bps on average). Figure~\ref{fig:fee_value_barplot} decomposes the cumulative fee value accrued to passive LPs, active LPs, and the total. Dynamic fees substantially increase total fee value relative to static fees; however, the hedged PnL results in Figure~\ref{fig:pnl_heatmap} show that higher fee value does not mechanically translate into positive hedged profitability for concentrated LPs, because LVR can increase even faster. In Model~2, this tension is amplified by JIT liquidity, which can appropriate fee income precisely in the most lucrative blocks.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{images/analysis/png/fee_value_barplot.png}
+  \caption{Final cumulative fee value (token-1) by LP cohort across scenarios (mean \(\pm\) sd across 100 seeds).}
+  \label{fig:fee_value_barplot}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{images/analysis/png/mean_fee_barplot.png}
+  \caption{Time-averaged taker fee under dynamic fee modes (static excluded), mean \(\pm\) sd across 100 seeds.}
+  \label{fig:mean_fee_barplot}
+\end{figure}
+
+% -------------------------------------------------------------------------
+% Legacy per-scenario plots (kept for reference, not shown in the paper)
+% -------------------------------------------------------------------------
+\iffalse
 \subsection{Baseline case}
 We start from a fixed-fee environment, setting the liquidity-taker fee to its baseline value $f_t \equiv f_0 = 1\times 10^{-4}$ 
 and keeping all remaining parameters as in Table \ref{tab:common_params}. :contentReference[oaicite:0]{index=0} Within each block, the reference (CEX) 
@@ -1471,9 +1515,11 @@ LVR-to-fee ratio over the JIT holding window and a higher fee level in the very 
     \label{fig:pnl_model2_volcex}
 \end{figure}
 
+\fi
+
 \begin{table}[htbp]
     \centering
-    \caption{Arbitrage-related metrics are reported as (mean,standard deviation) across model specifications. “Arb Exec” denotes the number of executed arbitrage trades, “No Arb” the number of instances in which arbitrage was infeasible because prices lay within the no-arbitrage band, and “Arb Rej” the number of arbitrage attempts rejected by the profitability filter. These quantities remain broadly stable across models and parameterizations. All remaining simulation parameters are reported in Table~\ref{tab:common_params}.}
+    \caption{Arbitrage-related metrics reported as (mean, standard deviation) across simulation runs for the baseline parameterization in Table~\ref{tab:common_params}. “Arb Exec” denotes the number of executed arbitrage trades, “No Arb” the number of instances in which arbitrage was infeasible because prices lay within the no-arbitrage band, and “Arb Rej” the number of arbitrage attempts rejected by the profitability filter.}
     \label{tab:arb_detailed}
     % Resizebox is crucial here because 13 columns is too wide for standard text width
     \resizebox{\textwidth}{!}{%

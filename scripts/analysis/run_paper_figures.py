@@ -170,7 +170,7 @@ def main() -> None:
                 tag = f"vol_cond_{model}_{fee_mode}_{cohort}"
                 print(f"  → {tag}")
                 fig = volatility_binned_analysis(
-                    results, n_bins=3, skip=skip, cohort=cohort,
+                    results, n_bins=5, skip=skip, cohort=cohort,
                 )
                 save_figure(fig, out_dir, tag)
 

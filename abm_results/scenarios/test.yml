@@ -44,6 +44,14 @@ simulate:
   cex_heston_sigma_v: 0.001     # volatility of variance
   cex_heston_rho: -0.5        # correlation between price and variance shocks
   cex_heston_v0: 2.25e-8      # optional initial variance; defaults to cex_sigma^2 when omitted
+  # Optional: time-varying θ schedule (list of theta values, equal-duration regimes).
+  # Order is shuffled per seed. Uncomment for wider volatility coverage.
+  # cex_heston_theta_schedule:
+  #   - 1.0e-9
+  #   - 5.0e-9
+  #   - 2.5e-8
+  #   - 1.0e-7
+  #   - 5.0e-7
 
   ##### TRADERS #####
   # Poisson intensity per second (micro-step = 1 second) of smart-router trade intents.

@@ -15,11 +15,13 @@ from scripts.analysis.common import (
     COLORS, FONT, PLOTLY_TEMPLATE, final_values, save_figure,
 )
 
-# LP cohort keys in the simulate() output dict.
+# Cohort/agent keys in the simulate() output dict.
 _COHORT_KEYS = {
     "Passive LP": "lp_pnl_passive",
     "Active LP": "lp_pnl_active",
     "JIT": "jiter_pnl_series",
+    "Noise Trader": "noise_trader_pnl_cum",
+    "Smart Router": "smart_router_pnl_cum",
 }
 
 # Cohorts that are inactive for each model variant.
@@ -51,7 +53,8 @@ def pnl_summary_table(
         Maps a scenario label (e.g. ``"Model0 — static"``) to the list of
         per-seed output dicts returned by ``common.run_multi_seed``.
     cohorts : list[str] or None
-        Subset of ``{"Passive LP", "Active LP", "JIT"}``.  ``None`` → all.
+        Subset of ``{"Passive LP", "Active LP", "JIT", "Noise Trader",
+        "Smart Router"}``.  ``None`` → all.
 
     Returns
     -------
