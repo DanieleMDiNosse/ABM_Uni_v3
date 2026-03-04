@@ -1,0 +1,119 @@
+========================================================================
+  SIMULATION PROFILING REPORT
+========================================================================
+
+  T (steps)         : 10,000
+  block_time        : 5
+  light_mode        : True
+  micro steps/block : 4
+  total micro steps : ~40,000
+
+--- WALL CLOCK ---
+  Total             : 226.47s
+  Per step          : 22.647 ms/step
+  Extrapolated T=500,000: ~11323s (188.7 min, 3.15 hr)
+
+--- MEMORY ---
+  Peak RSS          : 152.3 MiB
+  tracemalloc peak  : 4.9 MiB
+  tracemalloc live  : 2.7 MiB
+  Return dict keys  : 25
+  Return dict elems : 80,200
+  Est. return dict  : ~626.6 KiB (float64)
+  Extrapolated T=500,000: ~30.6 MiB return dict alone
+
+  KEY MEMORY CONCERN at 500k steps:
+    ~80 Python lists × 500,000 floats × 8 bytes ≈ 305.2 MiB
+    + micro_steps lists: ~4 × 500,000 × 3 lists × 8 bytes ≈ 45.8 MiB
+
+--- DISK I/O ---
+  Output dir size   : 7.0 KiB
+  Extrapolated T=500,000: ~351.2 KiB
+
+  DISK CONCERN: In full (non-light) mode, the verbose log file and
+  15+ Plotly HTML files with 500k datapoints each can consume
+  several GB. The verbose log alone can exceed 500 MB.
+
+--- TOP MEMORY ALLOCATORS (tracemalloc, by size) ---
+     312.8 KiB     10006 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:5009
+     312.6 KiB     10002 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:5011
+     312.6 KiB     10002 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:5010
+     234.4 KiB     10000 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:4665
+     234.4 KiB     10000 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:4664
+     234.4 KiB     10000 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:4655
+     234.4 KiB     10000 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:4654
+     234.3 KiB      9997 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:4797
+      78.2 KiB         2 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:5025
+      78.2 KiB         2 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:5024
+      78.2 KiB         2 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:5023
+      78.2 KiB         2 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:5022
+      78.2 KiB         2 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:5021
+      42.1 KiB         2 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:1889
+      11.4 KiB         3 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3754
+       9.8 KiB       173 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:284
+       7.3 KiB       130 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:143
+       5.5 KiB       101 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:363
+       3.9 KiB        70 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:88
+       3.4 KiB        41 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2457
+
+--- IDENTIFIED BOTTLENECKS FOR 500k SCALING ---
+
+  *** CRITICAL: SUPERLINEAR (O(T²)) SCALING ***
+  The dominant bottleneck is lp_token0_exposure() and
+  lp_principal_amounts() in core/agents.py. These iterate over
+  ALL positions for each LP, and positions accumulate over time
+  (mints without corresponding burns). This makes per-step cost
+  grow linearly with T → total cost is O(T²).
+
+  Evidence: T=2k → 42.9ms/step, T=10k → 176ms/step (4.1× per step).
+  At 500k steps, per-step cost would be ~4400ms → total ~25 days.
+
+  Functions affected (by tottime):
+    - lp_token0_exposure (agents.py:129): iterates all positions
+    - lp_principal_amounts (agents.py:148): iterates all positions
+    - _current_amounts_impl (numba): called per position per LP
+    - allocate_fees (run.py:2915): iterates positions per tick
+
+  FIX: Cap or garbage-collect old positions; aggregate exposure at
+  LP level instead of re-summing per position each step; or merge
+  overlapping positions into a single aggregate position.
+
+  1. LIST APPENDS IN MAIN LOOP (~80+ lists × T appends)
+     At 500k: ~40M+ list.append() calls, ~320 MB+ RAM for time series.
+     FIX: Pre-allocate numpy arrays; write to index instead of append.
+
+  2. MICRO-STEP TRACKING (P_micro, M_micro, micro_steps)
+     4 entries/step × 3 lists × T steps.
+     At 500k: ~6,000,000 entries → ~45.8 MiB.
+     FIX: Downsample or disable micro tracking for large T.
+
+  3. VERBOSE LOG (non-light mode)
+     ~1 log line per step + per event (arb, swap, mint, burn).
+     At 500k: can easily exceed 500 MB on disk.
+     FIX: Already mitigated by light_mode=True; ensure it's used.
+
+  4. PLOTLY HTML/PNG (non-light mode, visualize=True)
+     15+ plots, each embedding 500k datapoints in HTML.
+     HTML files: ~10-50 MB each → 150-750 MB total.
+     FIX: Downsample plot data; skip HTML for large T; use light_mode.
+
+  5. RETURN DICT .tolist() CONVERSION (lines 5216-5329)
+     40+ numpy arrays converted to Python lists → doubles peak memory.
+     At 500k: adds ~640 MB transient allocation.
+     FIX: Return numpy arrays directly (skip .tolist()).
+
+  6. POST-LOOP list→numpy CONVERSION (lines 5024-5088)
+     40+ lists re-allocated as numpy arrays → transient 2x memory.
+     FIX: Pre-allocate arrays from the start.
+
+  7. liq_history (liquidity_for_gif=True)
+     dict(pool.liquidity_net) copied every step → unbounded growth.
+     At 500k: could be many GB depending on tick count.
+     FIX: Already off by default; never enable for large T.
+
+  8. np.save AT END (5 files: dex_price, micro_price, spreads)
+     At 500k: ~19.1 MiB for block-level +
+     ~15.3 MiB for micro prices.
+     Manageable but contributes to disk pressure.
+
+========================================================================

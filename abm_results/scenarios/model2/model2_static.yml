@@ -1,5 +1,5 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: toxicity
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
@@ -7,7 +7,7 @@ simulate:
   liquidity_for_gif: false
   verbose: true
   light_mode: false
-  # Number of micro-time steps aggregated per block (1 switches to non-block mode)
+  # Seconds per block (micro-step = 1 second). Expected arrivals per block scale with this.
   block_time: 5
   # Total number of simulation blocks to execute
   T: 13000
@@ -31,12 +31,21 @@ simulate:
   cex_heston_sigma_v: 0.001     # volatility of variance
   cex_heston_rho: -0.5        # correlation between price and variance shocks
   cex_heston_v0: 2.25e-8      # optional initial variance; defaults to cex_sigma^2 when omitted
+  # Optional: time-varying θ schedule (list of theta values, equal-duration regimes).
+  # Order is shuffled per seed. Uncomment for wider volatility coverage.
+  # cex_heston_theta_schedule:
+  #   - 1.0e-9
+  #   - 5.0e-9
+  #   - 2.5e-8
+  #   - 1.0e-7
+  #   - 5.0e-7
 
   ##### TRADERS #####
-  # Expected number of smart-router trade intents per block
-  smart_trades_per_block: 0.8
-  # Expected number of noise trader intents per block
-  noise_trades_per_block: 0.8
+  # Poisson intensity per second (micro-step = 1 second) of smart-router trade intents.
+  # Expected intents per block scale with block_time: E[block] = block_time * lambda_per_second.
+  smart_trades_per_second: 0.16  # ~= 0.8 per 5-second block
+  # Poisson intensity per second (micro-step = 1 second) of noise trader intents.
+  noise_trades_per_second: 0.16  # ~= 0.8 per 5-second block
   # Mean of log-normal order size distribution for traders
   trader_mean: 2.5
   # Standard deviation of log-normal order size distribution for traders
@@ -53,21 +62,20 @@ simulate:
 
   ##### LIQUIDITY PROVIDERS #####
   # Total number of LP agents instantiated in the simulation
-  N_LP: 10
+  N_LP: 100
   # Fraction of LP agents designated as passive baseline providers
-  passive_lp_share: 1
-  # Expected number of narrow LP mints per block (total across narrow LPs)
-  narrow_mints_per_block: 0.5
-  # Expected number of passive LP mints per block (total across passive LPs)
-  passive_mints_per_block: 0.5
-  # Expected number of passive LP burns per block (total across passive LPs)
-  passive_burns_per_block: 0.5
+  passive_lp_share: 0.5
+  # Poisson intensities per second for LP actions (micro-step = 1 second).
+  narrow_mints_per_second: 0.10   # ~= 0.5 per 5-second block
+  passive_mints_per_second: 0.10  # ~= 0.5 per 5-second block
+  passive_burns_per_second: 0.10  # ~= 0.5 per 5-second block
   # Passive LP width as a total percentage (± width/2 around the reference price)
   passive_width_pct: 5.0
   # Legacy tick-based width fallback (set a value here only when omitting passive_width_pct)
   passive_width_ticks: null
-  # Average cadence (in steps) between LP reviews of their positions. On average, 1/tau LPs are active per block
-  tau: 5
+  # Average cadence (in seconds) between LP reviews of their positions.
+  # (Legacy 'tau' in blocks is omitted; use tau_seconds for real-time semantics.)
+  tau_seconds: 25.0  # ~= tau=5 blocks * 5 seconds/block
   # Minimum and maximum width in ticks for programmatic LP mints
   w_min_ticks: 10 # 10 corresponds to ~0.1% width
   w_max_ticks: 1774540 
@@ -93,7 +101,7 @@ simulate:
 
   ##### JIT LP (Jiter) #####
   # Bernoulli arrival probability per block (Jiter runs only when block_time > 1)
-  p_jit: 0
+  p_jit: 1
   # Target up to top-N swaps by input size per arriving block
   N_jit: 3
   # Target share of active liquidity to temporarily add in a narrow band (0-1)

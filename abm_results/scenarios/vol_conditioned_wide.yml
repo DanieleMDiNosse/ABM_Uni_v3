@@ -8,7 +8,7 @@ simulate:
   verbose: true
   light_mode: false
   block_time: 5
-  T: 103000
+  T: 13000
   skip_step: 3000
   n_block_SR_ratio: 100
   seed: 10
@@ -23,27 +23,14 @@ simulate:
   cex_heston_rho: -0.5
   cex_heston_v0: 1.0e-9          # start in very-low variance regime
 
-  # Time-varying θ: five regimes of equal duration (T/5 blocks each).
-  # Order is shuffled per seed for regime-order diversity.
+  # Time-varying θ: five segments of equal duration (T/5 blocks each).
+  # Order is shuffled per seed for schedule-order diversity.
   # σ_t ≈ sqrt(θ) once the process has mean-reverted.
   cex_heston_theta_schedule:
     - 1.0e-9     # very-low  (σ ≈ 3e-5)
     - 5.0e-9     # low       (σ ≈ 7e-5)
     - 2.5e-8     # medium    (σ ≈ 1.6e-4)
     - 1.0e-7     # high      (σ ≈ 3.2e-4)
-    - 5.0e-7     # very-high (σ ≈ 7e-4)
-
-  # Regime/sine params (unused in Heston mode, kept for compatibility)
-  cex_sigma_low: 0.0001
-  cex_sigma_high: 0.002
-  cex_sigma_p_LL: 0.999
-  cex_sigma_p_HH: 0.999
-  cex_sigma_regime_init: L
-  cex_sigma_sine_noise: 5e-5
-  cex_sigma_sine_period: 10000
-  cex_sigma_sine_amp: 0.0001
-  cex_sigma_sine_phase: 0.0
-  cex_sigma_floor: 0.0
 
   # Traders
   smart_trades_per_second: 0.16
@@ -57,7 +44,7 @@ simulate:
   flash_loan_fee: 0.0001
 
   # LPs
-  N_LP: 10
+  N_LP: 100
   passive_lp_share: 0.5
   narrow_mints_per_second: 0.10
   passive_mints_per_second: 0.10

@@ -1,0 +1,58 @@
+         102103350 function calls (102103342 primitive calls) in 1760.414 seconds
+
+   Ordered by: cumulative time
+   List reduced from 259 to 50 due to restriction <50>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1   61.208   61.208 1760.627 1760.627 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:1889(simulate)
+    10000    3.112    0.000 1121.556    0.112 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3727(execute_mempool_orders)
+    90641   45.733    0.001 1115.806    0.012 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3737(_exec_one)
+   613963   11.141    0.000 1009.638    0.002 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2852(_rebalance_lp_to_target)
+   613994  725.682    0.001  994.958    0.002 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:129(lp_token0_exposure)
+ 41484996  337.608    0.000  337.608    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/numba_accel.py:25(_current_amounts_impl)
+    53379    9.564    0.000  329.828    0.006 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3077(_execute_cash_budgeted_mint)
+    49918    9.852    0.000  321.138    0.006 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2986(burn_any)
+    14262    0.244    0.000  282.253    0.020 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2906(_flush_pending_rebalance)
+    14262    2.443    0.000  282.009    0.020 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2862(_rebalance_by_ids)
+   110031    1.515    0.000  241.303    0.002 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:205(lp_wealth_y)
+   120031    1.523    0.000  239.809    0.002 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:182(lp_total_position_value_y)
+   120031    1.342    0.000  201.964    0.002 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:162(lp_principal_value_y)
+   120031  142.457    0.001  200.622    0.002 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:148(lp_principal_amounts)
+    20001    1.166    0.000  176.216    0.009 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2870(_rebalance_all)
+     4114    0.157    0.000  112.008    0.027 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3254(arbitrage_to_target)
+    15642   79.355    0.005   93.555    0.006 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2915(allocate_fees)
+  1206442   14.430    0.000   83.137    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:103(PnL_y)
+   147363   19.244    0.000   71.782    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2895(_broadcast_price_move)
+  1206442   13.144    0.000   61.012    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:100(IL_y)
+  4568253   40.031    0.000   52.538    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2885(_accrue_price_move)
+  1206442   12.511    0.000   42.718    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:93(position_value_y_now)
+   120031   36.322    0.000   36.322    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:170(lp_fee_value_y)
+     4114    0.212    0.000   32.379    0.008 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3201(swap_exact_to_target)
+     5135    0.398    0.000   31.841    0.006 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:256(swap_y_to_x)
+  1257915   21.376    0.000   31.591    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:86(current_amounts)
+     5013    0.421    0.000   31.376    0.006 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:205(swap_x_to_y)
+  9845798   29.135    0.000   29.135    0.000 {built-in method builtins.abs}
+ 12986745   20.030    0.000   20.030    0.000 {method 'get' of 'dict' objects}
+    45318    0.422    0.000   19.157    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:65(active_liquidity_at_tick)
+    45318    4.118    0.000   18.624    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:45(_ensure)
+    10729    7.664    0.001   13.204    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:47(<listcomp>)
+    10000    0.571    0.000   10.936    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2499(_assert_active_liquidity_state_full)
+  6056801    9.598    0.000    9.619    0.000 {built-in method builtins.getattr}
+   119432    3.690    0.000    9.394    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2475(_assert_active_liquidity_state_fast)
+    10000    0.314    0.000    8.249    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3355(preview_arbitrage_to_target)
+  1206442    7.696    0.000    7.696    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:97(fees_value_y)
+    50000    0.327    0.000    7.656    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:261(diffuse_only)
+    10000    0.204    0.000    7.332    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3279(_clone_pool_for_preview)
+    50000    4.152    0.000    7.330    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:196(_diffuse_heston)
+    10001    0.079    0.000    7.129    0.001 <string>:2(__init__)
+    10001    0.261    0.000    7.050    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:141(__post_init__)
+    10002    0.265    0.000    6.660    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:165(recompute_active_L)
+  4330662    6.540    0.000    6.540    0.000 {method 'add' of 'set' objects}
+    10002    0.982    0.000    6.278    0.001 {built-in method math.fsum}
+   104469    3.519    0.000    5.866    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:171(add_liquidity_range)
+  1165181    5.838    0.000    5.838    0.000 {built-in method builtins.max}
+    10000    0.160    0.000    5.501    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3527(_apply_cex_impact_now)
+     8025    0.762    0.000    5.484    0.001 /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3548(maybe_enqueue_smart_router_intent)
+   552773    5.296    0.000    5.296    0.000 /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/uniswapv3_pool.py:167(<genexpr>)
+
+

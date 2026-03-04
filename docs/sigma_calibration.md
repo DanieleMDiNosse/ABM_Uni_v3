@@ -459,32 +459,25 @@ full 2‑year ETH/USDC dataset.
 
 Once you have `sigma_1s_low` and `sigma_1s_high`:
 
-- **Static sigma:** use `sigma_1s_low` or `sigma_1s_high` as `cex_sigma` in the corresponding scenario.
-- **Regime-switching sigma:** set `cex_sigma_mode: regime` and plug the calibrated values into `cex_sigma_low`/`cex_sigma_high` (e.g. low-vol template starts in regime `L` with `p_LL`/`p_HH` defining persistence).
-- **Noisy-sine sigma:** set `cex_sigma_mode: noisy_sine` to oscillate around `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` if supplied) with optional controls for amplitude (`cex_sigma_sine_amp`), period (`cex_sigma_sine_period`), noise (`cex_sigma_sine_noise`), and floor (`cex_sigma_floor`).
+- **Static sigma:** use `sigma_1s_low` or `sigma_1s_high` directly as `cex_sigma`.
+- **Heston sigma:** use `cex_sigma_mode: heston`, keep `cex_sigma` as the fallback `sqrt(v0)`, and map calibrated levels to variance targets (for example `theta_low = sigma_1s_low^2`, `theta_high = sigma_1s_high^2`).
 
-For example (static vs. regime):
+For example (static vs. Heston):
 
 ```yaml
 # scenarios/low_volatility.yml
 simulate:
   cex_sigma_mode: static
   cex_sigma: <sigma_1s_low from calibration>   # per-second volatility
-  cex_sigma_low: <sigma_1s_low>                # used if cex_sigma_mode: regime
-  cex_sigma_high: <sigma_1s_high>              # used if cex_sigma_mode: regime
-  cex_sigma_p_LL: 0.98
-  cex_sigma_p_HH: 0.95
-  cex_sigma_regime_init: L
 
 # scenarios/high_volatility.yml
 simulate:
-  cex_sigma_mode: regime
+  cex_sigma_mode: heston
   cex_sigma: <sigma_1s_high from calibration>  # still required; use high as baseline
-  cex_sigma_low: <sigma_1s_low>
-  cex_sigma_high: <sigma_1s_high>
-  cex_sigma_p_LL: 0.98
-  cex_sigma_p_HH: 0.95
-  cex_sigma_regime_init: H
+  cex_heston_theta: <sigma_1s_high^2>
+  cex_heston_kappa: <choose mean-reversion speed>
+  cex_heston_sigma_v: <choose vol-of-vol>
+  cex_heston_rho: -0.5
 ```
 
 Because one micro step equals one second in the simulation, **no further

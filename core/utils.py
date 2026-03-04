@@ -133,75 +133,28 @@ class ReferenceMarket:
     sigma: float        # vol (per step) of log-returns
     kappa: float        # impact scale (price units per A^(1+xi))
     xi: float = 0.5     # impact exponent (xi = 1 => linear in |Δa|)
-    sigma_mode: str = "static"   # "static" | "regime" | "noisy_sine" | "heston"
-    sigma_low: Optional[float] = None
-    sigma_high: Optional[float] = None
-    p_LL: float = 1.0
-    p_HH: float = 1.0
-    regime_state: str = "L"
-    sigma_sine_amp: Optional[float] = None
-    sigma_sine_period: int = 10_000
-    sigma_sine_noise: float = 0.0
-    sigma_sine_phase: float = 0.0
-    sigma_floor: float = 0.0
+    sigma_mode: str = "static"   # "static" | "heston"
     # Heston-style stochastic volatility parameters (variance process)
     heston_kappa: Optional[float] = None     # mean reversion speed of variance
     heston_theta: Optional[float] = None     # long-run variance level
     heston_sigma_v: Optional[float] = None   # vol of variance
     heston_rho: Optional[float] = None       # corr between price and variance shocks
     heston_v0: Optional[float] = None        # initial variance; if None fall back to sigma^2
-    _sigma_step: int = field(init=False, default=0, repr=False)
-    _sigma_sine_center: float = field(init=False, default=0.0, repr=False)
-    _sigma_sine_amp_eff: float = field(init=False, default=0.0, repr=False)
     _heston_v: float = field(init=False, default=0.0, repr=False)
 
     def __post_init__(self):
         """
-        Normalize and validate volatility regime settings.
+        Normalize and validate CEX volatility settings.
         """
         mode = (self.sigma_mode or "static").lower()
-        valid_modes = {"static", "regime", "regime_switch", "regime_switching", "noisy_sine", "heston"}
+        valid_modes = {"static", "heston"}
         if mode not in valid_modes:
             raise ValueError(
-                f"Invalid sigma_mode '{self.sigma_mode}'. Use 'static', 'regime', 'noisy_sine', or 'heston'."
+                f"Invalid sigma_mode '{self.sigma_mode}'. Use 'static' or 'heston'."
             )
-        if mode in {"regime", "regime_switch", "regime_switching"}:
-            self.sigma_mode = "regime"
-        else:
-            self.sigma_mode = mode
+        self.sigma_mode = mode
 
-        if self.sigma_mode == "regime":
-            if self.sigma_low is None or self.sigma_high is None:
-                raise ValueError("sigma_low and sigma_high must be provided for regime-switching sigma.")
-            if self.sigma_high <= self.sigma_low:
-                raise ValueError(f"sigma_high must exceed sigma_low (got {self.sigma_low} >= {self.sigma_high}).")
-            if not (0.0 <= self.p_LL <= 1.0) or not (0.0 <= self.p_HH <= 1.0):
-                raise ValueError("p_LL and p_HH must be probabilities in [0, 1].")
-            self.regime_state = "H" if str(self.regime_state).upper().startswith("H") else "L"
-            self.sigma = self._sigma_for_state(self.regime_state)
-        elif self.sigma_mode == "noisy_sine":
-            self.sigma_floor = max(0.0, float(self.sigma_floor))
-            self._sigma_sine_center = max(self.sigma_floor, float(self.sigma))
-            self.sigma_sine_period = max(1, int(self.sigma_sine_period))
-            self.sigma_sine_noise = max(0.0, float(self.sigma_sine_noise))
-            self.sigma_sine_phase = float(self.sigma_sine_phase)
-            self.regime_state = "S"
-            if self.sigma_sine_amp is None:
-                if self.sigma_low is not None and self.sigma_high is not None:
-                    self._sigma_sine_center = max(
-                        self.sigma_floor,
-                        0.5 * (float(self.sigma_low) + float(self.sigma_high)),
-                    )
-                    self._sigma_sine_amp_eff = 0.5 * abs(float(self.sigma_high) - float(self.sigma_low))
-                else:
-                    self._sigma_sine_amp_eff = 0.5 * self._sigma_sine_center
-            else:
-                if self.sigma_sine_amp < 0:
-                    raise ValueError("sigma_sine_amp must be non-negative.")
-                self._sigma_sine_amp_eff = float(self.sigma_sine_amp)
-            self._sigma_step = 0
-            self.sigma = self._sigma_from_sine(advance=False)
-        elif self.sigma_mode == "heston":
+        if self.sigma_mode == "heston":
             # Validate required Heston parameters.
             missing = []
             if self.heston_kappa is None:
@@ -239,58 +192,6 @@ class ReferenceMarket:
             self._heston_v = max(1e-18, v0)
             # Keep sigma in sync with sqrt(variance) for downstream consumers (plots, etc.).
             self.sigma = math.sqrt(self._heston_v)
-            # Regime-related attributes are unused in Heston mode.
-            self.regime_state = "H"
-            self.sigma_low = None
-            self.sigma_high = None
-        else:
-            # Static mode: keep provided sigma and ignore regime params
-            self.regime_state = "L"
-            self.sigma_low = None
-            self.sigma_high = None
-
-    @property
-    def regime_enabled(self) -> bool:
-        return self.sigma_mode == "regime"
-
-    def _sigma_for_state(self, state: str) -> float:
-        if self.regime_enabled:
-            return self.sigma_low if state == "L" else self.sigma_high  # type: ignore[arg-type]
-        return self.sigma
-
-    def _transition_regime(self) -> None:
-        """Advance the Markov chain and update the active sigma."""
-        if not self.regime_enabled:
-            return
-        current = self.regime_state
-        draw = random.random()
-        if current == "L":
-            self.regime_state = "L" if draw < self.p_LL else "H"
-        else:
-            self.regime_state = "H" if draw < self.p_HH else "L"
-        self.sigma = self._sigma_for_state(self.regime_state)
-
-    def _sigma_from_sine(self, advance: bool = True) -> float:
-        """
-        Generate sigma from a noisy sine wave, optionally advancing the counter.
-        """
-        if self.sigma_mode != "noisy_sine":
-            return self.sigma
-        step = self._sigma_step + (1 if advance else 0)
-        phase = self.sigma_sine_phase + 2.0 * math.pi * step / self.sigma_sine_period
-        noise = np.random.normal(scale=self.sigma_sine_noise) if self.sigma_sine_noise > 0 else 0.0
-        sigma_raw = self._sigma_sine_center + self._sigma_sine_amp_eff * math.sin(phase) + noise
-        sigma_new = max(self.sigma_floor, sigma_raw)
-        if advance:
-            self._sigma_step += 1
-        return sigma_new
-
-    def _update_sigma(self) -> None:
-        if self.sigma_mode == "regime":
-            self._transition_regime()
-        elif self.sigma_mode == "noisy_sine":
-            self.sigma = self._sigma_from_sine()
-        # Heston mode updates sigma together with the variance process in diffuse_only.
 
     def _diffuse_heston(self) -> None:
         """
@@ -362,7 +263,6 @@ class ReferenceMarket:
         if self.sigma_mode == "heston":
             self._diffuse_heston()
         else:
-            self._update_sigma()
             z = np.random.normal()
             self.m *= math.exp(self.mu - 0.5 * self.sigma**2 + self.sigma * z)
             self.m = max(1e-12, self.m)

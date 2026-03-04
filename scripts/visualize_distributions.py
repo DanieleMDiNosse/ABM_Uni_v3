@@ -78,15 +78,7 @@ class DistributionParams:
     cex_sigma : float
         Base per-step log-return volatility.
     cex_sigma_mode : str
-        One of {"static", "regime", "noisy_sine", "heston"}.
-    cex_sigma_low, cex_sigma_high : float | None
-        Low/high sigma levels for regime switching and as fallback for noisy-sine.
-    cex_sigma_p_LL, cex_sigma_p_HH : float
-        Markov transition probabilities for regime switching.
-    cex_sigma_regime_init : str
-        Initial regime state, "L" or "H".
-    cex_sigma_sine_amp, cex_sigma_sine_period, cex_sigma_sine_noise, cex_sigma_sine_phase, cex_sigma_floor : float | int
-        Noisy-sine volatility parameters.
+        One of {"static", "heston"}.
     cex_heston_kappa, cex_heston_theta, cex_heston_sigma_v, cex_heston_rho, cex_heston_v0 : float | None
         Heston stochastic volatility parameters (variance process).
     initial_binom_N : int
@@ -147,16 +139,6 @@ class DistributionParams:
     cex_mu: float = 0.0
     cex_sigma: float = 0.00015
     cex_sigma_mode: str = "heston"
-    cex_sigma_low: Optional[float] = 0.0001
-    cex_sigma_high: Optional[float] = 0.002
-    cex_sigma_p_LL: float = 0.999
-    cex_sigma_p_HH: float = 0.999
-    cex_sigma_regime_init: str = "L"
-    cex_sigma_sine_amp: Optional[float] = 0.0001
-    cex_sigma_sine_period: int = 10_000
-    cex_sigma_sine_noise: float = 5e-5
-    cex_sigma_sine_phase: float = 0.0
-    cex_sigma_floor: float = 0.0
     cex_heston_kappa: Optional[float] = 1.0
     cex_heston_theta: Optional[float] = 1.0e-8
     cex_heston_sigma_v: Optional[float] = 0.001
@@ -250,8 +232,10 @@ def save_plotly_figure(
 
 def _normalize_sigma_mode(mode: str) -> str:
     mode_norm = (mode or "static").lower()
-    if mode_norm in {"regime", "regime_switch", "regime_switching"}:
-        return "regime"
+    if mode_norm not in {"static", "heston"}:
+        raise ValueError(
+            f"Invalid cex_sigma_mode '{mode}'. Expected one of ['heston', 'static']."
+        )
     return mode_norm
 
 
@@ -358,16 +342,6 @@ def build_distribution_params(
         cex_mu=cex_mu,
         cex_sigma=cex_sigma,
         cex_sigma_mode=_normalize_sigma_mode(cex_sigma_mode),
-        cex_sigma_low=_coerce_optional_float(simulate_params.get("cex_sigma_low", DistributionParams.cex_sigma_low)),
-        cex_sigma_high=_coerce_optional_float(simulate_params.get("cex_sigma_high", DistributionParams.cex_sigma_high)),
-        cex_sigma_p_LL=float(simulate_params.get("cex_sigma_p_LL", DistributionParams.cex_sigma_p_LL)),
-        cex_sigma_p_HH=float(simulate_params.get("cex_sigma_p_HH", DistributionParams.cex_sigma_p_HH)),
-        cex_sigma_regime_init=str(simulate_params.get("cex_sigma_regime_init", DistributionParams.cex_sigma_regime_init)),
-        cex_sigma_sine_amp=_coerce_optional_float(simulate_params.get("cex_sigma_sine_amp", DistributionParams.cex_sigma_sine_amp)),
-        cex_sigma_sine_period=int(simulate_params.get("cex_sigma_sine_period", DistributionParams.cex_sigma_sine_period)),
-        cex_sigma_sine_noise=float(simulate_params.get("cex_sigma_sine_noise", DistributionParams.cex_sigma_sine_noise)),
-        cex_sigma_sine_phase=float(simulate_params.get("cex_sigma_sine_phase", DistributionParams.cex_sigma_sine_phase)),
-        cex_sigma_floor=float(simulate_params.get("cex_sigma_floor", DistributionParams.cex_sigma_floor)),
         cex_heston_kappa=_coerce_optional_float(simulate_params.get("cex_heston_kappa", DistributionParams.cex_heston_kappa)),
         cex_heston_theta=_coerce_optional_float(simulate_params.get("cex_heston_theta", DistributionParams.cex_heston_theta)),
         cex_heston_sigma_v=_coerce_optional_float(simulate_params.get("cex_heston_sigma_v", DistributionParams.cex_heston_sigma_v)),
@@ -458,13 +432,7 @@ def simulate_reference_market_path(params: DistributionParams) -> Tuple[List[flo
     random.seed(int(params.seed))
 
     sigma_mode = _normalize_sigma_mode(params.cex_sigma_mode)
-    regime_state = "H" if str(params.cex_sigma_regime_init).upper().startswith("H") else "L"
-
     sigma_for_ref = float(params.cex_sigma)
-    if sigma_mode == "regime":
-        if params.cex_sigma_low is None or params.cex_sigma_high is None:
-            raise ValueError("regime mode requires cex_sigma_low and cex_sigma_high.")
-        sigma_for_ref = float(params.cex_sigma_low if regime_state == "L" else params.cex_sigma_high)
 
     ref = ReferenceMarket(
         m=float(params.initial_price),
@@ -472,16 +440,6 @@ def simulate_reference_market_path(params: DistributionParams) -> Tuple[List[flo
         sigma=float(sigma_for_ref),
         kappa=1e-3,
         sigma_mode=sigma_mode,
-        sigma_low=params.cex_sigma_low,
-        sigma_high=params.cex_sigma_high,
-        p_LL=float(params.cex_sigma_p_LL),
-        p_HH=float(params.cex_sigma_p_HH),
-        regime_state=regime_state,
-        sigma_sine_amp=params.cex_sigma_sine_amp,
-        sigma_sine_period=int(params.cex_sigma_sine_period),
-        sigma_sine_noise=float(params.cex_sigma_sine_noise),
-        sigma_sine_phase=float(params.cex_sigma_sine_phase),
-        sigma_floor=float(params.cex_sigma_floor),
         heston_kappa=params.cex_heston_kappa,
         heston_theta=params.cex_heston_theta,
         heston_sigma_v=params.cex_heston_sigma_v,
@@ -900,7 +858,7 @@ def plot_reference_market_paths(prices: List[float], vols: List[float], *, sigma
     vols : list[float]
         Volatility series sigma_t (sqrt variance).
     sigma_mode : str
-        Volatility mode label (e.g., "static", "regime", "noisy_sine", "heston").
+        Volatility mode label (either "static" or "heston").
 
     Returns
     -------

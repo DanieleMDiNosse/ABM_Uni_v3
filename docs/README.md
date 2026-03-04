@@ -42,11 +42,9 @@ For the *detailed* and math-accurate description of each agent’s decision rule
   `impact = kappa * sign(Δa) * |Δa|^{1+xi}` applied to the CEX price in token1 units per token0.
 - Volatility can be:
   - **static** (`cex_sigma_mode: static`, using `cex_sigma`);
-  - **regime-switching** (`cex_sigma_mode: regime`, two-state Markov chain over `σ_L`/`σ_H` with transition probabilities `p_LL`/`p_HH`);
-  - a **noisy sine wave** (`cex_sigma_mode: noisy_sine`) following `σ_t = max(cex_sigma_floor, σ_center + A·sin(2πt/period) + ε_t)` with `ε_t ~ N(0, cex_sigma_sine_noise)`;
   - or **Heston-like stochastic volatility** (`cex_sigma_mode: heston`), where the variance `v_t = σ_t^2` follows a mean-reverting square-root process with parameters `cex_heston_kappa`, `cex_heston_theta`, `cex_heston_sigma_v`, correlation `cex_heston_rho`, and optional initial variance `cex_heston_v0` (falling back to `cex_sigma^2` when omitted).
-  The center for the noisy-sine mode defaults to `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` when provided); in scenarios using `noisy_sine` the amplitude is typically specified explicitly via `cex_sigma_sine_amp`. The active path is returned as `cex_sigma_series` and `cex_regime_series`.
-- In non-Heston modes the diffusion step uses `m ← m · exp(cex_mu - 0.5 · σ_t^2 + σ_t · z)` with `z ~ N(0,1)`, so `σ_t` is interpreted directly as the per-microstep volatility (no squaring). In Heston mode, the variance `v_t` and price `m_t` are updated jointly with correlated Gaussian shocks while keeping `σ_t = sqrt(v_t)` in the returned series.
+  The active volatility path is returned as `cex_sigma_series`.
+- In static mode, diffusion uses `m ← m · exp(cex_mu - 0.5 · σ_t^2 + σ_t · z)` with `z ~ N(0,1)`, so `σ_t` is interpreted directly as the per-microstep volatility. In Heston mode, the variance `v_t` and price `m_t` are updated jointly with correlated Gaussian shocks while keeping `σ_t = sqrt(v_t)` in the returned series.
 - The CEX diffuses during intra-block micro-steps (`ref.diffuse_only()`). Permanent impact is applied **immediately** every time an action “touches the CEX” (smart-router CEX legs, arb hedge legs, LP mint/burn conversions, JIT burn conversion) via `ref.apply_impact_only(Δa)`.
 
 #### Heston Volatility Mode (details)
@@ -94,7 +92,6 @@ For the *detailed* and math-accurate description of each agent’s decision rule
 - **Outputs and plotting**:
   - `cex_sigma_series` continues to contain the *per-step* volatility used in the GBM/Heston update; in Heston mode this is `sqrt(v_t)` at each step.
   - The existing PnL figure (`6_pnl`) uses a volatility subplot whenever the sigma path is dynamic. Heston mode enables this subplot (`sigma_panel = True`) so you can inspect `cex_sigma_series` under the agent PnL panel.
-  - The `cex_regime_series` remains available for consistency; in Heston mode it is a simple label (`"H"`) and not used for logic.
 
 ## Simulation Flow
 1. **Initialization**:
@@ -125,18 +122,8 @@ simulate:
   T: 750                    # number of blocks
   seed: 7
   cex_mu: 0.0
-  cex_sigma_mode: static    # "static", "regime", "noisy_sine", or "heston"
+  cex_sigma_mode: static    # "static" or "heston"
   cex_sigma: 0.0015         # used when mode=static
-  cex_sigma_low: 0.0001     # regime-switching: σ_L
-  cex_sigma_high: 0.002     # regime-switching: σ_H (> σ_L)
-  cex_sigma_p_LL: 0.98      # P(Z_{t+1}=L | Z_t=L)
-  cex_sigma_p_HH: 0.95      # P(Z_{t+1}=H | Z_t=H)
-  cex_sigma_regime_init: L  # starting regime ("L" or "H")
-  cex_sigma_sine_period: 10000   # noisy_sine: steps per full cycle
-  cex_sigma_sine_amp: 0.0005     # noisy_sine: amplitude (must be set explicitly)
-  cex_sigma_sine_noise: 0.0      # noisy_sine: white-noise std added to σ_t (must be set explicitly)
-  cex_sigma_sine_phase: 0.0      # noisy_sine: phase offset (radians)
-  cex_sigma_floor: 0.0           # noisy_sine: lower bound for σ_t
   # Heston: stochastic variance over σ_t^2 (only used when cex_sigma_mode: heston)
   # cex_heston_kappa: 1.0        # mean reversion speed of variance
   # cex_heston_theta: 1.0e-6     # long-run variance level

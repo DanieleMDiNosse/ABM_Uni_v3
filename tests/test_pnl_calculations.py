@@ -745,6 +745,14 @@ class TestSimulationValidation:
         with pytest.raises(ValueError, match="Invalid fee_mode"):
             simulate(**_base_simulate_kwargs(tmp_path, T=1, fee_mode="nonsense"))
 
+    @pytest.mark.parametrize("sigma_mode", ["regime", "regime_switch", "noisy_sine"])
+    def test_simulate_rejects_removed_sigma_modes(self, tmp_path, sigma_mode):
+        """
+        simulate() should reject removed CEX sigma modes.
+        """
+        with pytest.raises(ValueError, match="Invalid cex_sigma_mode"):
+            simulate(**_base_simulate_kwargs(tmp_path, T=1, cex_sigma_mode=sigma_mode))
+
     @pytest.mark.parametrize(
         "kwargs",
         [

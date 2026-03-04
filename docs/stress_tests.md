@@ -51,9 +51,9 @@ These are especially informative under stress:
 
 ## Stress tests (YAML-only)
 
-### 1) Volatility spike / regime switch (CEX)
+### 1) Volatility jump via Heston schedule (CEX)
 
-**Goal.** Force an abrupt transition from a calm regime to a high-volatility regime and measure how quickly:
+**Goal.** Force an abrupt transition from a calm period to a high-volatility period and measure how quickly:
 (i) arbitrage restores price efficiency, (ii) DEX volume migrates to CEX, and (iii) LP wealth decomposes into fees vs LVR.
 
 **Why this is a meaningful stress in *this* ABM.**
@@ -61,28 +61,28 @@ Because intents are formed off a validated snapshot and executed at the block bo
 the CEX can move far during micro-steps while the DEX is frozen, so the eventual mempool replay has to absorb a larger correction.
 
 **Knobs (scenario YAML).**
-- `cex_sigma_mode: regime`
-- `cex_sigma_low`, `cex_sigma_high` (per-second; annualized is roughly `sigma * sqrt(365*24*60*60)`)
-- `cex_sigma_p_LL`, `cex_sigma_p_HH` (persistence; values near 1 produce long regimes)
-- `cex_sigma_regime_init: L` (start calm, then wait for the first switch to H)
+- `cex_sigma_mode: heston`
+- `cex_heston_theta_schedule` (piecewise variance levels)
+- `cex_heston_kappa` (controls how quickly `v_t` tracks schedule changes)
+- `cex_heston_sigma_v` (adds stochasticity around the scheduled baseline)
 
 **Suggested “spike” design.**
-- Keep `cex_sigma_low` realistic for a baseline day; set `cex_sigma_high` to a multiple (e.g., ×10–×30).
-- Use very persistent regimes (e.g., `p_LL = 0.9999`, `p_HH = 0.999`) so switches are rare but impactful.
-- Run long enough to see at least one switch (increase `T` if needed).
+- Keep the first scheduled `theta` at a baseline level (`theta_low = sigma_low^2`).
+- Add a later scheduled `theta_high` that is a multiple (e.g., ×10–×30 in variance).
+- Use smaller `kappa` for gradual transitions, larger `kappa` for sharper jumps.
 
 **Expected signatures (to verify).**
-- Dislocation widens rapidly after the first `L→H` switch:
+- Dislocation widens rapidly after the first jump to high `theta`:
   - `|log(DEX/CEX)|` increases; `fee_basis_ticks_series` jumps.
 - Trade quality deteriorates:
   - higher slippage rejects; higher share of smart-router flow routed to CEX.
 - Arbitrage intensity increases *if* arb remains profitable:
   - `total_arb_swaps` rises and dislocation mean-reverts faster.
 - LP outcomes:
-  - `lp_lvr_*` steepens sharply during H regime (volatility-driven), and whether `fee_series` compensates depends on `fee_mode`.
+  - `lp_lvr_*` steepens sharply during high-volatility windows, and whether `fee_series` compensates depends on `fee_mode`.
 
 **Controller robustness variant.**
-Repeat the same regime-spike design under different fee controllers:
+Repeat the same volatility-jump design under different fee controllers:
 `fee_mode ∈ {static, volatility_cex, volatility_dex, toxicity}` and compare:
 mean dislocation, LP hedged PnL (`fees − LVR`), and slippage rejects.
 
@@ -90,12 +90,15 @@ Minimal YAML sketch (overrides):
 ```yaml
 fee_mode: volatility_cex
 simulate:
-  cex_sigma_mode: regime
-  cex_sigma_low: 1.0e-4
-  cex_sigma_high: 2.0e-3
-  cex_sigma_p_LL: 0.9999
-  cex_sigma_p_HH: 0.999
-  cex_sigma_regime_init: L
+  cex_sigma_mode: heston
+  cex_sigma: 1.0e-4
+  cex_heston_kappa: 1.5
+  cex_heston_theta: 1.0e-8
+  cex_heston_sigma_v: 0.01
+  cex_heston_rho: -0.5
+  cex_heston_theta_schedule:
+    - 1.0e-8
+    - 4.0e-6
 ```
 
 ---
@@ -105,8 +108,8 @@ simulate:
 **Goal.** Generate clustered volatility (endogenous “spikes”) and test whether the ABM produces:
 fat-tailed dislocation, clustered slippage failures, and drawdown clustering in LP wealth.
 
-**Why this is distinct from (1).**
-Regime switching gives discrete jumps between two levels. Heston gives **continuous** volatility dynamics with stochastic variance, which tends to create:
+**Why this differs from (1).**
+Section (1) uses a scheduled variance baseline to induce a macro jump. This section uses Heston’s endogenous variance noise to create clustering, which tends to create:
 - clusters of high `cex_sigma_series`,
 - more variable “length” and “severity” of stress episodes,
 - and (with `cex_heston_rho < 0`) leverage-style co-movement between returns and volatility.
@@ -295,4 +298,3 @@ python -m scripts.run_multiple --config abm_results/scenarios/<your_scenario>.ym
 ```
 This writes mean ± std bands under:
 `abm_results/scenarios/<scenario_name>/multi_runs/...`.
-

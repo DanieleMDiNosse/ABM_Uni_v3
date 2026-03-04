@@ -1,5 +1,5 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: toxicity
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
@@ -20,24 +20,11 @@ simulate:
   seed: 10
   # Drift of the reference CEX price process (per step)
   cex_mu: 0.00
-  # Choose between static, regime (regime switching), noisy-sine, or Heston volatility modes
+  # Choose between static or Heston volatility modes
   cex_sigma_mode: heston
   # Volatility of the reference CEX price process (per step/second)
   # 1e-4 ~= 56% annualized; 1e-5 ~= 5.6% annualized; 2e-4 ~= 112% annualized
   cex_sigma: 0.00015
-  # high and low volatility levels for regime switching and noisy sine modes
-  cex_sigma_low: 0.0001
-  cex_sigma_high: 0.002
-  # regime switching transition matrix parameters
-  cex_sigma_p_LL: 0.999
-  cex_sigma_p_HH: 0.999
-  cex_sigma_regime_init: L # initial regime: L (low) or H (high)
-  # noisy sine parameters
-  cex_sigma_sine_noise: 5e-5
-  cex_sigma_sine_period: 10000
-  cex_sigma_sine_amp: 0.0001
-  cex_sigma_sine_phase: 0.0
-  cex_sigma_floor: 0.0
   # Heston volatility parameters (used when cex_sigma_mode: heston)
   cex_heston_kappa: 1.0       # mean reversion speed of variance
   cex_heston_theta: 1.0e-8    # long-run variance level
@@ -67,7 +54,7 @@ simulate:
 
   ##### LIQUIDITY PROVIDERS #####
   # Total number of LP agents instantiated in the simulation
-  N_LP: 10
+  N_LP: 100
   # Fraction of LP agents designated as passive baseline providers
   passive_lp_share: 1
   # Poisson intensities per second for LP actions (micro-step = 1 second).

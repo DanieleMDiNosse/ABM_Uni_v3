@@ -5,11 +5,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-import importlib.util
 import json
 import math
-import shutil
-import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +22,11 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from core.artifacts import build_run_manifest, make_unique_dir, write_json
+
+_DEFAULT_GRID_STYLE = dict(showgrid=True, gridcolor="#e1e1e1", gridwidth=1)
+_DEFAULT_TICK_FONT_SIZE = 14
+_DEFAULT_AXIS_TITLE_FONT_SIZE = 16
+_DEFAULT_LEGEND_FONT_SIZE = 14
 
 
 @dataclass(frozen=True)
@@ -529,14 +531,32 @@ def _save_plotly_figure(
     fig: go.Figure,
     *,
     name: str,
-    figures_dir: Path,
+    html_dir: Path,
+    png_dir: Path,
     allow_png: bool = True,
     png_disabled_reason: str = "",
 ) -> FigureSaveResult:
     """Persist a Plotly figure to HTML and best-effort PNG."""
-    figures_dir.mkdir(parents=True, exist_ok=True)
-    html_path = figures_dir / f"{name}.html"
-    png_path = figures_dir / f"{name}.png"
+    html_dir.mkdir(parents=True, exist_ok=True)
+    png_dir.mkdir(parents=True, exist_ok=True)
+    html_path = html_dir / f"{name}.html"
+    png_path = png_dir / f"{name}.png"
+    # Keep visual defaults aligned with scripts/run.py.
+    fig.update_layout(
+        template="plotly_white",
+        font=dict(size=_DEFAULT_TICK_FONT_SIZE),
+        legend=dict(font=dict(size=_DEFAULT_LEGEND_FONT_SIZE)),
+    )
+    fig.update_xaxes(**_DEFAULT_GRID_STYLE)
+    fig.update_yaxes(**_DEFAULT_GRID_STYLE)
+    fig.update_xaxes(
+        title_font=dict(size=_DEFAULT_AXIS_TITLE_FONT_SIZE),
+        tickfont=dict(size=_DEFAULT_TICK_FONT_SIZE),
+    )
+    fig.update_yaxes(
+        title_font=dict(size=_DEFAULT_AXIS_TITLE_FONT_SIZE),
+        tickfont=dict(size=_DEFAULT_TICK_FONT_SIZE),
+    )
     fig.write_html(str(html_path), include_plotlyjs="cdn")
 
     if not allow_png:
@@ -549,43 +569,11 @@ def _save_plotly_figure(
             png_error=reason,
         )
 
-    has_kaleido = importlib.util.find_spec("kaleido") is not None
-    if not has_kaleido:
-        return FigureSaveResult(
-            name=name,
-            html_path=html_path,
-            png_path=png_path,
-            png_ok=False,
-            png_error="kaleido not installed (install kaleido for PNG export).",
-        )
-
-    chrome_candidates = [
-        "google-chrome",
-        "google-chrome-stable",
-        "chromium",
-        "chromium-browser",
-        "chrome",
-    ]
-    if not any(shutil.which(cmd) for cmd in chrome_candidates):
-        return FigureSaveResult(
-            name=name,
-            html_path=html_path,
-            png_path=png_path,
-            png_ok=False,
-            png_error="No local Chrome/Chromium executable found; PNG export skipped.",
-        )
-
-    def _timeout_handler(signum: int, frame: Any) -> None:
-        raise TimeoutError("Timed out during Plotly PNG export")
-
     try:
-        prev_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(10)
-        try:
-            fig.write_image(str(png_path), width=1400, height=900, scale=1.0)
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, prev_handler)
+        # Strip titles from PNG exports so captions can be handled externally.
+        fig_png = go.Figure(fig.to_dict())
+        fig_png.update_layout(title=None)
+        fig_png.write_image(str(png_path), width=1400, height=900, scale=1.0)
         return FigureSaveResult(name=name, html_path=html_path, png_path=png_path, png_ok=True, png_error="")
     except Exception as exc:  # pragma: no cover
         return FigureSaveResult(
@@ -593,7 +581,7 @@ def _save_plotly_figure(
             html_path=html_path,
             png_path=png_path,
             png_ok=False,
-            png_error=f"{exc} (install kaleido and a local Chrome/Chromium).",
+            png_error=f"{exc}",
         )
 
 
@@ -617,8 +605,55 @@ def _subplot_shape(n_panels: int) -> Tuple[int, int]:
 
 def _color_for_horizon(index: int) -> str:
     """Color palette helper."""
-    palette = ["#60A5FA", "#F59E0B", "#22C55E", "#E879F9", "#F43F5E", "#2DD4BF", "#A78BFA"]
+    # Match the default palette commonly used in scripts/run.py figures.
+    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
     return palette[index % len(palette)]
+
+
+def _build_price_and_logret_figure(prices: np.ndarray) -> go.Figure:
+    """Plot the price path and the corresponding log-return distribution."""
+    p = np.asarray(prices, dtype=float).reshape(-1)
+    p = p[np.isfinite(p) & (p > 0.0)]
+    logrets = np.diff(np.log(p)) if p.size >= 2 else np.array([], dtype=float)
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        column_widths=[0.72, 0.28],
+        horizontal_spacing=0.08,
+        subplot_titles=("Price path", "Log-return distribution"),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=np.arange(p.size),
+            y=p,
+            mode="lines",
+            line=dict(width=2.0, color="#1f77b4"),
+            name="Price",
+            showlegend=False,
+        ),
+        row=1,
+        col=1,
+    )
+    if logrets.size > 0:
+        fig.add_trace(
+            go.Histogram(
+                x=logrets,
+                nbinsx=120,
+                marker_color="#1f77b4",
+                opacity=0.75,
+                name="Log-returns",
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+    fig.update_layout(template="plotly_white", height=520, title="Price path and log-return distribution")
+    fig.update_xaxes(title_text="t", row=1, col=1)
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_xaxes(title_text="Log-return", row=1, col=2)
+    fig.update_yaxes(title_text="Count", type="log", row=1, col=2)
+    return fig
 
 
 def _build_qq_figure(returns_by_h: Mapping[int, np.ndarray]) -> go.Figure:
@@ -641,7 +676,7 @@ def _build_qq_figure(returns_by_h: Mapping[int, np.ndarray]) -> go.Figure:
                 x=theo,
                 y=samp,
                 mode="markers",
-                marker=dict(size=4, color="#60A5FA", opacity=0.75),
+                marker=dict(size=4, color="#1f77b4", opacity=0.75),
                 name=f"h={h} QQ",
                 showlegend=False,
             ),
@@ -655,7 +690,7 @@ def _build_qq_figure(returns_by_h: Mapping[int, np.ndarray]) -> go.Figure:
                 x=[lo, hi],
                 y=[lo, hi],
                 mode="lines",
-                line=dict(color="#E2E8F0", width=1.8, dash="dash"),
+                line=dict(color="#444444", width=1.8, dash="dash"),
                 name="45-degree",
                 showlegend=False,
             ),
@@ -671,9 +706,9 @@ def _build_qq_figure(returns_by_h: Mapping[int, np.ndarray]) -> go.Figure:
             showarrow=False,
             xanchor="right",
             yanchor="bottom",
-            font=dict(size=10, color="#A1A1AA"),
+            font=dict(size=10, color="#4b5563"),
         )
-    fig.update_layout(template="plotly_dark", title="Fat tails: QQ plots vs Normal", height=max(450, 360 * rows))
+    fig.update_layout(template="plotly_white", title="Fat tails: QQ plots vs Normal", height=max(450, 360 * rows))
     fig.update_xaxes(title_text="Normal quantiles")
     fig.update_yaxes(title_text="Empirical quantiles")
     return fig
@@ -719,7 +754,7 @@ def _build_vol_clustering_figure(returns_by_h: Mapping[int, np.ndarray], *, max_
                 col=col,
             )
     fig.update_layout(
-        template="plotly_dark",
+        template="plotly_white",
         title=f"Volatility clustering by horizon (ACF lags 1..{max_lag})",
         height=max(450, 360 * rows),
     )
@@ -773,67 +808,135 @@ def _build_leverage_figure(
                 col=2,
             )
 
-    fig.add_hline(y=0.0, line=dict(color="#94A3B8", width=1, dash="dot"), row=1, col=1)
-    fig.add_hline(y=0.0, line=dict(color="#94A3B8", width=1, dash="dot"), row=1, col=2)
-    fig.update_layout(template="plotly_dark", title="Leverage/asymmetry diagnostics by horizon", height=520)
+    fig.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=1, col=1)
+    fig.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=1, col=2)
+    fig.update_layout(template="plotly_white", title="Leverage/asymmetry diagnostics by horizon", height=520)
     fig.update_xaxes(title_text="Lag")
     fig.update_yaxes(title_text="Correlation")
     return fig
 
 
-def _build_scaling_kde_figure(returns_by_h: Mapping[int, np.ndarray]) -> go.Figure:
-    """Build standardized return density comparison across horizons with Gaussian reference."""
+def _build_scaling_binned_density_figure(returns_by_h: Mapping[int, np.ndarray]) -> go.Figure:
+    """Build binned standardized return densities (log-y) with Gaussian reference.
+
+    Notes
+    -----
+    KDE curves can oscillate in the tails when sample counts are low. For a more
+    stable visualization, we use linear-width bins and plot a line connecting the
+    per-bin median standardized return (x) against the bin density estimate (y).
+    """
+
+    def binned_median_density(
+        z: np.ndarray,
+        *,
+        n_bins: int = 100,
+        x_min: float = -8.0,
+        x_max: float = 8.0,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Return (x_median, density) for non-empty linear bins."""
+        zv = np.asarray(z, dtype=float).reshape(-1)
+        zv = zv[np.isfinite(zv)]
+        if zv.size < 5:
+            return np.array([], dtype=float), np.array([], dtype=float)
+
+        edges = np.linspace(float(x_min), float(x_max), int(n_bins) + 1)
+        width = float(edges[1] - edges[0])
+        if not np.isfinite(width) or width <= 0.0:
+            return np.array([], dtype=float), np.array([], dtype=float)
+
+        # Keep only points within the plotting range for a comparable x-axis.
+        in_range = (zv >= edges[0]) & (zv <= edges[-1])
+        zv = zv[in_range]
+        if zv.size < 5:
+            return np.array([], dtype=float), np.array([], dtype=float)
+
+        # Digitize to bins 0..n_bins-1 (right edge inclusive only on last bin).
+        bin_idx = np.digitize(zv, edges, right=False) - 1
+        bin_idx = np.clip(bin_idx, 0, int(n_bins) - 1)
+
+        n_total = int(zv.size)
+        x_meds: List[float] = []
+        dens: List[float] = []
+        for i in range(int(n_bins)):
+            pts = zv[bin_idx == i]
+            if pts.size == 0:
+                continue
+            x_meds.append(float(np.median(pts)))
+            dens.append(float(pts.size) / (n_total * width))
+        return np.asarray(x_meds, dtype=float), np.asarray(dens, dtype=float)
+
     fig = go.Figure()
-    x_grid = np.linspace(-8.0, 8.0, 1200)
+    min_density_seen = float("inf")
+    max_density_seen = 0.0
     horizons = sorted(returns_by_h.keys())
 
     for idx, h in enumerate(horizons):
         color = _color_for_horizon(idx)
         z = _zscore(returns_by_h[h])
-        if z.size < 30:
+        x_m, d = binned_median_density(z, n_bins=100, x_min=-8.0, x_max=8.0)
+        keep = np.isfinite(x_m) & np.isfinite(d) & (d > 0.0)
+        x_m = x_m[keep]
+        d = d[keep]
+        if x_m.size == 0:
             continue
-        try:
-            kde = stats.gaussian_kde(z)
-            density = np.asarray(kde.evaluate(x_grid), dtype=float)
-        except Exception:
-            hist, edges = np.histogram(z, bins=80, density=True)
-            centers = 0.5 * (edges[1:] + edges[:-1])
-            density = np.interp(x_grid, centers, hist, left=np.nan, right=np.nan)
-
-        density[~np.isfinite(density)] = np.nan
-        density[density <= 0] = np.nan
+        min_density_seen = min(min_density_seen, float(np.min(d)))
+        max_density_seen = max(max_density_seen, float(np.max(d)))
         fig.add_trace(
             go.Scatter(
-                x=x_grid,
-                y=density,
-                mode="lines",
+                x=x_m,
+                y=d,
+                mode="lines+markers",
                 line=dict(width=2.0, color=color),
+                marker=dict(size=4, opacity=0.7),
                 name=f"h={h}",
             )
         )
 
-    gauss = stats.norm.pdf(x_grid)
+    x_ref = np.linspace(-8.0, 8.0, 600)
+    gauss = stats.norm.pdf(x_ref)
+    gauss = gauss[np.isfinite(gauss) & (gauss > 0.0)]
+    if gauss.size > 0:
+        max_density_seen = max(max_density_seen, float(np.max(gauss)))
     fig.add_trace(
         go.Scatter(
-            x=x_grid,
-            y=gauss,
+            x=x_ref,
+            y=stats.norm.pdf(x_ref),
             mode="lines",
-            line=dict(width=2, color="#E2E8F0", dash="dash"),
+            line=dict(width=2, color="#444444", dash="dash"),
             name="N(0,1)",
         )
     )
 
-    fig.update_layout(template="plotly_dark", title="Scaling: standardized return densities (log-y)", height=540)
+    # Y-axis range: lower bound is set by the smallest density point across
+    # horizons, with a small log-space buffer for visual clarity.
+    if not np.isfinite(min_density_seen):
+        min_density_seen = 1e-12
+    if not np.isfinite(max_density_seen) or max_density_seen <= 0.0:
+        max_density_seen = 1.0
+    y_buffer_decades = 0.2
+    y_min_range = math.log10(max(min_density_seen, 1e-300)) - y_buffer_decades
+    y_max_range = math.log10(max_density_seen * 1.05)
+    if y_min_range >= y_max_range:
+        y_min_range = y_max_range - 1.0
+
+    fig.update_layout(template="plotly_white", title="Scaling: standardized return densities (binned, log-y)", height=540)
     fig.update_xaxes(title_text="Standardized return")
-    fig.update_yaxes(title_text="Density", type="log")
+    fig.update_yaxes(
+        title_text="Density",
+        type="log",
+        range=[y_min_range, y_max_range],
+    )
     return fig
 
 
 def _build_return_acf_figure(returns_by_h: Mapping[int, np.ndarray], *, max_lag: int) -> go.Figure:
-    """Build return ACF comparison by horizon (lag 1 onward)."""
-    fig = go.Figure()
+    """Build return ACF diagnostics in a 2x2 (or compact) subplot grid."""
     horizons = sorted(returns_by_h.keys())
+    rows, cols = _subplot_shape(len(horizons))
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=[f"h={h}" for h in horizons])
     for idx, h in enumerate(horizons):
+        row = idx // cols + 1
+        col = idx % cols + 1
         color = _color_for_horizon(idx)
         acf_r = _acf_series(np.asarray(returns_by_h[h], dtype=float), nlags=max_lag)
         if acf_r.size <= 1:
@@ -846,10 +949,14 @@ def _build_return_acf_figure(returns_by_h: Mapping[int, np.ndarray], *, max_lag:
                 mode="lines",
                 line=dict(width=1.8, color=color),
                 name=f"h={h}",
-            )
+                showlegend=False,
+            ),
+            row=row,
+            col=col,
         )
-    fig.add_hline(y=0.0, line=dict(color="#94A3B8", width=1, dash="dot"))
-    fig.update_layout(template="plotly_dark", title=f"Return ACF by horizon (lags 1..{max_lag})", height=520)
+        fig.add_hline(y=0.0, line=dict(color="gray", width=1, dash="dot"), row=row, col=col)
+
+    fig.update_layout(template="plotly_white", title=f"Return ACF by horizon (lags 1..{max_lag})", height=max(450, 360 * rows))
     fig.update_xaxes(title_text="Lag")
     fig.update_yaxes(title_text="ACF")
     return fig
@@ -872,8 +979,8 @@ def _build_hill_plot(hill_diag: Mapping[str, Any], *, horizon: int, side: str) -
                 x=fill_x,
                 y=fill_y,
                 fill="toself",
-                fillcolor="rgba(96,165,250,0.18)",
-                line=dict(color="rgba(96,165,250,0)"),
+                fillcolor="rgba(31,119,180,0.18)",
+                line=dict(color="rgba(31,119,180,0)"),
                 hoverinfo="skip",
                 name="95% CI alpha",
             )
@@ -883,7 +990,7 @@ def _build_hill_plot(hill_diag: Mapping[str, Any], *, horizon: int, side: str) -
                 x=k,
                 y=alpha,
                 mode="lines",
-                line=dict(color="#60A5FA", width=2),
+                line=dict(color="#1f77b4", width=2),
                 name="alpha(k)",
             )
         )
@@ -892,7 +999,7 @@ def _build_hill_plot(hill_diag: Mapping[str, Any], *, horizon: int, side: str) -
                 x=k,
                 y=gamma,
                 mode="lines",
-                line=dict(color="#F59E0B", width=1.6, dash="dash"),
+                line=dict(color="#ff7f0e", width=1.6, dash="dash"),
                 name="gamma(k)",
                 yaxis="y2",
                 visible="legendonly",
@@ -902,7 +1009,7 @@ def _build_hill_plot(hill_diag: Mapping[str, Any], *, horizon: int, side: str) -
     k_star = hill_diag.get("k_star")
     alpha_star = hill_diag.get("alpha_star")
     if isinstance(k_star, int) and np.isfinite(float(alpha_star)):
-        fig.add_vline(x=float(k_star), line=dict(color="#E2E8F0", width=1.2, dash="dot"))
+        fig.add_vline(x=float(k_star), line=dict(color="#444444", width=1.2, dash="dot"))
         fig.add_annotation(
             x=float(k_star),
             y=float(alpha_star),
@@ -911,12 +1018,12 @@ def _build_hill_plot(hill_diag: Mapping[str, Any], *, horizon: int, side: str) -
             arrowhead=1,
             ax=20,
             ay=-25,
-            font=dict(size=10, color="#E2E8F0"),
+            font=dict(size=10, color="#111827"),
         )
 
     side_title = {"upper": "Upper tail", "lower": "Lower tail", "abs": "Absolute tail"}[side]
     fig.update_layout(
-        template="plotly_dark",
+        template="plotly_white",
         title=f"Hill plot ({side_title}) - horizon h={horizon}",
         height=520,
         yaxis=dict(title="alpha(k)"),
@@ -934,8 +1041,8 @@ def _build_hill_plot(hill_diag: Mapping[str, Any], *, horizon: int, side: str) -
             showarrow=False,
             xanchor="left",
             yanchor="top",
-            font=dict(size=10, color="#FCA5A5"),
-            bgcolor="rgba(127,29,29,0.2)",
+            font=dict(size=10, color="#b91c1c"),
+            bgcolor="rgba(254,226,226,0.8)",
         )
     return fig
 
@@ -1191,8 +1298,9 @@ def _build_report_text(
 
     lines.append("## 4) Scaling / aggregation")
     lines.append("- Distributions are compared across horizons using non-overlapping construction only.")
-    lines.append("- KDEs are shown on standardized returns with log-y scale and Gaussian reference.")
-    lines.append("- Caveat: KDE bandwidth and tail sparsity affect large-horizon interpretation.")
+    lines.append("- Binned densities are shown on standardized returns with log-y scale and Gaussian reference.")
+    lines.append("- Construction: 100 linear-width bins over z in [-8, 8], using per-bin median z for x.")
+    lines.append("- Caveat: tail bins can still be noisy when counts are low; binning choices matter.")
     lines.append("")
 
     lines.append("## 5) Return autocorrelation")
@@ -1249,7 +1357,9 @@ def _build_report_text(
     lines.append("| --- | --- | --- | --- |")
     for fr in figure_results:
         png_status = "ok" if fr.png_ok else f"failed ({fr.png_error})"
-        lines.append(f"| `{fr.name}` | `{fr.html_path.name}` | `{fr.png_path.name}` | {png_status} |")
+        html_rel = f"{fr.html_path.parent.name}/{fr.html_path.name}"
+        png_rel = f"{fr.png_path.parent.name}/{fr.png_path.name}"
+        lines.append(f"| `{fr.name}` | `{html_rel}` | `{png_rel}` | {png_status} |")
 
     return "\n".join(lines)
 
@@ -1328,7 +1438,8 @@ def run_stylized_facts(
             has_any = True
         if has_any:
             out_dir = make_unique_dir(out_dir)
-    figures_dir = out_dir / "figures"
+    html_dir = out_dir / "html"
+    png_dir = out_dir / "png"
     tables_dir = out_dir / "tables"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1383,23 +1494,18 @@ def run_stylized_facts(
         }
 
     figure_results: List[FigureSaveResult] = []
-    png_enabled = True
-    png_disabled_reason = ""
 
     def save_figure(fig: go.Figure, *, name: str) -> FigureSaveResult:
-        nonlocal png_enabled, png_disabled_reason
-        res = _save_plotly_figure(
+        return _save_plotly_figure(
             fig,
             name=name,
-            figures_dir=figures_dir,
-            allow_png=png_enabled,
-            png_disabled_reason=png_disabled_reason,
+            html_dir=html_dir,
+            png_dir=png_dir,
+            allow_png=True,
         )
-        if png_enabled and not res.png_ok:
-            png_enabled = False
-            png_disabled_reason = f"PNG export disabled after first failure: {res.png_error}"
-        return res
 
+    if input_kind == "prices":
+        figure_results.append(save_figure(_build_price_and_logret_figure(clean_series), name="price_path_and_logret_dist"))
     figure_results.append(save_figure(_build_qq_figure(returns_by_h), name="fat_tails_qq_by_horizon"))
     figure_results.append(
         save_figure(
@@ -1415,8 +1521,8 @@ def run_stylized_facts(
     )
     figure_results.append(
         save_figure(
-            _build_scaling_kde_figure(returns_by_h),
-            name="scaling_kde_logy_by_horizon",
+            _build_scaling_binned_density_figure(returns_by_h),
+            name="scaling_binned_density_logy_by_horizon",
         )
     )
     figure_results.append(
@@ -1461,7 +1567,8 @@ def run_stylized_facts(
         "input_kind": input_kind,
         "return_type": return_type,
         "output_dir": str(out_dir),
-        "figures_dir": str(figures_dir),
+        "html_dir": str(html_dir),
+        "png_dir": str(png_dir),
         "tables_dir": str(tables_dir),
         "report_path": str(report_path),
         "raw_size": preprocess_info["raw_size"],
@@ -1556,7 +1663,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     print(f"[stylized-facts] report: {summary['report_path']}")
     print(f"[stylized-facts] summary: {summary['summary_path']}")
-    print(f"[stylized-facts] figures: {summary['figures_dir']}")
+    print(f"[stylized-facts] html: {summary['html_dir']}")
+    print(f"[stylized-facts] png: {summary['png_dir']}")
     print(f"[stylized-facts] tables: {summary['tables_dir']}")
     return 0
 
