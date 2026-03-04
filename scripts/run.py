@@ -1816,12 +1816,14 @@ from core.agents import (
     Position,
     lp_token0_exposure,
     lp_wealth_y,
+    lp_wealth_and_fee_earned_y,
     lp_total_fee_earned_value_y,
     lp_total_position_value_y,
 )
 from collections import defaultdict
 
 from core.uniswapv3_pool import V3Pool
+from core.numba_accel import _broadcast_accrue_numba
 
 
 # =============================================================================
@@ -2404,9 +2406,9 @@ def simulate(
     seed_total_x = 0.0
     seed_total_y = 0.0
     for lp in LPs:
-        if not bool(getattr(lp, "is_seed", False)):
+        if not bool(lp.is_seed):
             continue
-        for pos in getattr(lp, "positions", []):
+        for pos in lp.positions:
             seed_total_x += float(pos.amt0_init)
             seed_total_y += float(pos.amt1_init)
 
@@ -2414,7 +2416,7 @@ def simulate(
     initial_seed_value_y = seed_total_x * float(m0) + seed_total_y
     per_lp_wallet_y = initial_seed_value_y / denom_strategic
     for lp in LPs:
-        if bool(getattr(lp, "is_seed", False)) or bool(getattr(lp, "is_jiter", False)):
+        if bool(lp.is_seed) or bool(getattr(lp, "is_jiter", False)):
             continue
         lp.wallet_x = 0.0
         lp.wallet_y = float(per_lp_wallet_y)
@@ -2445,6 +2447,18 @@ def simulate(
         LPs.append(jiter_agent)
 
     lp_lookup: Dict[int, LPAgent] = {lp.id: lp for lp in LPs}
+    # Map LP id → index in LPs list for shadow-array access.
+    _lp_idx: Dict[int, int] = {lp.id: i for i, lp in enumerate(LPs)}
+    _N_LPs = len(LPs)
+
+    # Shadow numpy arrays for rebalancer hot-path fields.
+    # These mirror RebalancerState.{x_prev, cumulative_R, last_M, initialized}
+    # and are kept in sync at every write point so that _broadcast_price_move
+    # can run as a single Numba call instead of 31× Python function calls.
+    _rb_x_prev = np.zeros(_N_LPs)
+    _rb_cum_R = np.zeros(_N_LPs)
+    _rb_last_M = np.zeros(_N_LPs)
+    _rb_init = np.zeros(_N_LPs, dtype=np.bool_)
     # NOTE on determinism:
     # We keep per-tick position buckets as *lists* (in insertion order) rather than sets.
     # Python randomizes hash seeds per process by default, so iterating a set can yield a
@@ -2848,6 +2862,12 @@ def simulate(
         rb.last_cumulative_R = 0.0
         rb.hedged_pnl_cum = 0.0
         rb.initialized = True
+        # Sync shadow arrays
+        i = _lp_idx[lp.id]
+        _rb_x_prev[i] = rb.x_prev
+        _rb_cum_R[i] = 0.0
+        _rb_last_M[i] = M_now
+        _rb_init[i] = True
 
     def _rebalance_lp_to_target(lp: LPAgent, M_now: float, S_now: float) -> None:
         _ensure_rebalancer_initialized(lp, M_now, S_now)
@@ -2858,6 +2878,10 @@ def simulate(
             rb.cash_y -= dx * M_now
             rb.x_prev = x_target
         rb.last_M = M_now
+        # Sync shadow arrays
+        i = _lp_idx[lp.id]
+        _rb_x_prev[i] = rb.x_prev
+        _rb_last_M[i] = M_now
 
     def _rebalance_by_ids(lp_ids: Set[int], M_now: float, S_now: float) -> None:
         if not lp_ids:
@@ -2873,10 +2897,11 @@ def simulate(
         # This is safe because position changes trigger explicit rebalance via _rebalance_lp_to_target
         if S_now == _last_rebalance_S:
             # Still need to update last_M for CEX price tracking
-            for lp in LPs:
+            for j, lp in enumerate(LPs):
                 rb = lp.rebalancer
                 if rb.initialized:
                     rb.last_M = M_now
+                    _rb_last_M[j] = M_now
             return
         _last_rebalance_S = S_now
         for lp in LPs:
@@ -2884,17 +2909,20 @@ def simulate(
 
     def _accrue_price_move(lp: LPAgent, M_new: float) -> None:
         rb = lp.rebalancer
+        i = _lp_idx[lp.id]
         if not rb.initialized:
             rb.last_M = M_new
+            _rb_last_M[i] = M_new
             return
         delta = M_new - rb.last_M
-        if abs(delta) > 0.0:
+        if delta != 0.0:
             rb.cumulative_R += rb.x_prev * delta
             rb.last_M = M_new
+            _rb_cum_R[i] = rb.cumulative_R
+            _rb_last_M[i] = M_new
 
     def _broadcast_price_move(M_new: float) -> None:
-        for lp in LPs:
-            _accrue_price_move(lp, M_new)
+        _broadcast_accrue_numba(M_new, _rb_x_prev, _rb_cum_R, _rb_last_M, _rb_init)
 
     # Initialize rebalancers to match current exposures before the simulation loop
     _rebalance_all(ref.m, pool.S)
@@ -2961,7 +2989,7 @@ def simulate(
                     continue
                 lp = lp_lookup.get(owner_id)
                 if lp is not None:
-                    lp.fees0_earned = getattr(lp, "fees0_earned", 0.0) + fee
+                    lp.fees0_earned = lp.fees0_earned + fee
                 # Note: LP is already marked for rebalancing at the start of allocate_fees
         else:
             for pos in bucket:
@@ -2980,7 +3008,7 @@ def simulate(
                     continue
                 lp = lp_lookup.get(owner_id)
                 if lp is not None:
-                    lp.fees1_earned = getattr(lp, "fees1_earned", 0.0) + fee
+                    lp.fees1_earned = lp.fees1_earned + fee
                 # Note: LP is already marked for rebalancing at the start of allocate_fees
 
     def burn_any(lp: LPAgent, idx: int, *, m_ref: float) -> None:
@@ -2992,7 +3020,7 @@ def simulate(
         amt0_total = float(amt0) + float(pos.fees0)
         amt1_total = float(amt1) + float(pos.fees1)
         lp.wallet_x = 0.0
-        lp.wallet_y = float(getattr(lp, "wallet_y", 0.0)) + amt1_total + amt0_total * float(m_ref)
+        lp.wallet_y = float(lp.wallet_y) + amt1_total + amt0_total * float(m_ref)
         # Selling token0 on the CEX contributes negative Δa (immediate impact)
         if abs(amt0_total) > 1e-18:
             delta_a_cex_this += -amt0_total
@@ -3105,7 +3133,7 @@ def simulate(
 
         sa, sb = pool.s_lower(lower), pool.s_lower(upper)
 
-        cash_y = float(getattr(lp, "wallet_y", 0.0))
+        cash_y = float(lp.wallet_y)
         if not is_jiter:
             cash_y = max(0.0, cash_y)
 
@@ -3137,7 +3165,7 @@ def simulate(
             if cost_y > cash_y + eps:
                 return None
         lp.wallet_x = 0.0
-        lp.wallet_y = float(getattr(lp, "wallet_y", 0.0)) - cost_y
+        lp.wallet_y = float(lp.wallet_y) - cost_y
         # Buying token0 on the CEX contributes positive Δa (immediate impact)
         if abs(amt0) > 1e-18:
             delta_a_cex_this += +amt0
@@ -3180,7 +3208,7 @@ def simulate(
         mint_steps.append(t)
         mint_sizes.append(L_new)
         mint_widths.append(upper - lower)
-        mint_is_passive.append(bool(getattr(lp, "is_passive", False)))
+        mint_is_passive.append(bool(lp.is_passive))
         mint_is_jiter.append(bool(is_jiter))
 
         buffer_log(
@@ -4385,9 +4413,9 @@ def simulate(
                 lp = LPs[lp_idx]
                 if getattr(lp, "is_jiter", False):
                     continue
-                if not lp.can_act or not bool(getattr(lp, "is_passive", False)):
+                if not lp.can_act or not bool(lp.is_passive):
                     continue
-                for pos in getattr(lp, "positions", []):
+                for pos in lp.positions:
                     burnable_positions.append((lp.id, pos.lower, pos.upper, float(pos.L)))
             if burnable_positions:
                 n_burn_intents = int(np.random.poisson(passive_burns_lambda_block))
@@ -4448,7 +4476,7 @@ def simulate(
                                        'new_lower': lower,'new_upper': upper,'eta': eta})
 
         def _enqueue_lp_mint(lp: LPAgent, is_passive_mint: bool) -> None:
-            if getattr(lp, "cooldown", 0) > 0:
+            if lp.cooldown > 0:
                 return
             eta = _draw_wallet_utilization_factor()
 
@@ -4485,9 +4513,9 @@ def simulate(
                 lp = LPs[lp_idx]
                 if getattr(lp, "is_jiter", False):
                     continue
-                if not lp.can_act or bool(getattr(lp, "is_passive", False)):
+                if not lp.can_act or bool(lp.is_passive):
                     continue
-                if getattr(lp, "cooldown", 0) > 0:
+                if lp.cooldown > 0:
                     continue
                 narrow_candidates.append(lp)
             if narrow_candidates:
@@ -4501,9 +4529,9 @@ def simulate(
                 lp = LPs[lp_idx]
                 if getattr(lp, "is_jiter", False):
                     continue
-                if not lp.can_act or not bool(getattr(lp, "is_passive", False)):
+                if not lp.can_act or not bool(lp.is_passive):
                     continue
-                if getattr(lp, "cooldown", 0) > 0:
+                if lp.cooldown > 0:
                     continue
                 passive_candidates.append(lp)
             if passive_candidates:
@@ -4599,38 +4627,37 @@ def simulate(
         jiter_wealth_now = 0.0
         jiter_pnl_now = 0.0
         jiter_flash_fee_paid_now = 0.0
+        # Bulk sync shadow arrays → RebalancerState objects before PnL reads.
+        for _si in range(_N_LPs):
+            _rb = LPs[_si].rebalancer
+            _rb.cumulative_R = _rb_cum_R[_si]
+            _rb.last_M = _rb_last_M[_si]
         for lp in LPs:
             # Seed/background LPs provide liquidity but are excluded from
             # cohort-level PnL and wealth statistics.
             if getattr(lp, "is_jiter", False):
                 _ensure_rebalancer_initialized(lp, ref.m, pool.S)
                 jiter_wallet_now = (
-                    float(getattr(lp, "wallet_x", 0.0)) * float(ref.m)
-                    + float(getattr(lp, "wallet_y", 0.0))
+                    lp.wallet_x * ref.m + lp.wallet_y
                 )
-                jiter_fee_value_now = lp_total_fee_earned_value_y(lp, ref.m)
-                jiter_fees0_earned_now = float(getattr(lp, "fees0_earned", 0.0))
-                jiter_fees1_earned_now = float(getattr(lp, "fees1_earned", 0.0))
-                jiter_position_value_now = lp_total_position_value_y(lp, pool.S, ref.m)
-                jiter_wealth_now = lp_wealth_y(lp, pool.S, ref.m)
+                jiter_wealth_now, jiter_fee_value_now = lp_wealth_and_fee_earned_y(lp, pool.S, ref.m)
+                jiter_fees0_earned_now = lp.fees0_earned
+                jiter_fees1_earned_now = lp.fees1_earned
+                jiter_position_value_now = jiter_wealth_now - jiter_wallet_now
                 jiter_flash_fee_paid_now = float(getattr(lp, "flash_fees_paid_y", 0.0))
                 rb = lp.rebalancer
                 jiter_rebal_value_now = rb.initial_rebal_value_y + rb.cumulative_R
                 # Hedged PnL = V^LP - V^reb (matches LP cohort sign convention)
                 jiter_pnl_now = jiter_wealth_now - jiter_rebal_value_now
                 continue
-            if getattr(lp, "is_seed", False):
+            if lp.is_seed:
                 continue
 
-            wallet_value_y = (
-                float(getattr(lp, "wallet_x", 0.0)) * float(ref.m)
-                + float(getattr(lp, "wallet_y", 0.0))
-            )
+            wallet_value_y = lp.wallet_x * ref.m + lp.wallet_y
             lp_wallet_total += wallet_value_y
             rb = lp.rebalancer
             _ensure_rebalancer_initialized(lp, ref.m, pool.S)
-            wealth_now = lp_wealth_y(lp, pool.S, ref.m)
-            fee_value_now = lp_total_fee_earned_value_y(lp, ref.m)
+            wealth_now, fee_value_now = lp_wealth_and_fee_earned_y(lp, pool.S, ref.m)
             rebal_value_now = rb.initial_rebal_value_y + rb.cumulative_R
             hedged_pnl = wealth_now - rebal_value_now
             unhedged_pnl = wealth_now - rb.initial_lp_value_y
@@ -4645,8 +4672,8 @@ def simulate(
             lp_rebal_value_total += rebal_value_now
             lp_fee_value_total += fee_value_now
             lp_wealth_total += wealth_now
-            fees0_earned = float(getattr(lp, "fees0_earned", 0.0))
-            fees1_earned = float(getattr(lp, "fees1_earned", 0.0))
+            fees0_earned = lp.fees0_earned
+            fees1_earned = lp.fees1_earned
             lp_fees0_earned_total += fees0_earned
             lp_fees1_earned_total += fees1_earned
 

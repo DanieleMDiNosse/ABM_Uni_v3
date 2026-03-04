@@ -137,7 +137,7 @@ def lp_token0_exposure(lp: LPAgent, S: float) -> float:
     - Fees are included because the LP is economically exposed to token0 price movements
       on accumulated fees until they are collected/burned and converted to token1.
     """
-    total = float(getattr(lp, "wallet_x", 0.0))
+    total = lp.wallet_x
     for pos in lp.positions:
         # Inline call to Numba function to avoid method dispatch overhead
         amt0, _ = _current_amounts_impl(pos.L, pos.sa, pos.sb, S)
@@ -190,8 +190,8 @@ def lp_total_fee_earned_value_y(lp: LPAgent, m: float) -> float:
     """
     Mark-to-market value (token1) of cumulative fees earned (realized + uncollected).
     """
-    fees0 = getattr(lp, "fees0_earned", 0.0)
-    fees1 = getattr(lp, "fees1_earned", 0.0)
+    fees0 = lp.fees0_earned
+    fees1 = lp.fees1_earned
     return fees0 * m + fees1
 
 
@@ -206,9 +206,26 @@ def lp_wealth_y(lp: LPAgent, S: float, m: float) -> float:
     """
     Total LP wealth (token1) = wallet holdings + mark-to-market open value.
     """
-    wallet_x = float(getattr(lp, "wallet_x", 0.0))
-    wallet_y = float(getattr(lp, "wallet_y", 0.0))
+    wallet_x = lp.wallet_x
+    wallet_y = lp.wallet_y
     return wallet_x * m + wallet_y + lp_total_position_value_y(lp, S, m)
+
+
+def lp_wealth_and_fee_earned_y(lp: LPAgent, S: float, m: float) -> Tuple[float, float]:
+    """
+    Single-pass computation of (wealth_y, fee_earned_value_y).
+
+    Combines lp_wealth_y and lp_total_fee_earned_value_y into one loop over
+    positions to avoid redundant iteration in the end-of-step PnL bookkeeping.
+    """
+    # Principal + uncollected fees in one pass
+    total_principal_and_fee_y = 0.0
+    for pos in lp.positions:
+        amt0, amt1 = _current_amounts_impl(pos.L, pos.sa, pos.sb, S)
+        total_principal_and_fee_y += (amt0 + pos.fees0) * m + amt1 + pos.fees1
+    wealth_y = lp.wallet_x * m + lp.wallet_y + total_principal_and_fee_y
+    fee_earned_y = lp.fees0_earned * m + lp.fees1_earned
+    return wealth_y, fee_earned_y
 
 
 # =============================================================================

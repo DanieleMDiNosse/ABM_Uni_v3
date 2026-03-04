@@ -47,10 +47,41 @@ def current_amounts_fast(L: float, sa: float, sb: float, S: float) -> Tuple[floa
     return _current_amounts_impl(L, sa, sb, S)
 
 
+import numpy as np
+
+
+@njit(cache=True)
+def _broadcast_accrue_numba(
+    M_new: float,
+    x_prev: np.ndarray,
+    cum_R: np.ndarray,
+    last_M: np.ndarray,
+    initialized: np.ndarray,
+) -> None:
+    """
+    Vectorized rebalancer accrual across all LPs.
+
+    Replaces the Python loop ``for lp in LPs: _accrue_price_move(lp, M_new)``
+    with a single Numba-compiled pass over parallel arrays, eliminating ~2.3M
+    Python function calls + abs() overhead at T=10k.
+    """
+    n = len(x_prev)
+    for i in range(n):
+        if not initialized[i]:
+            last_M[i] = M_new
+            continue
+        delta = M_new - last_M[i]
+        if delta != 0.0:
+            cum_R[i] += x_prev[i] * delta
+            last_M[i] = M_new
+
+
 # Warm up Numba JIT on import (compile the function)
 if NUMBA_AVAILABLE:
     try:
         # Trigger compilation with dummy values
         _ = _current_amounts_impl(1.0, 1.0, 2.0, 1.5)
+        _tmp = np.zeros(1)
+        _broadcast_accrue_numba(1.0, _tmp, _tmp.copy(), _tmp.copy(), np.zeros(1, dtype=np.bool_))
     except Exception:
         pass  # Compilation will happen on first real call
