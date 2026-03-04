@@ -151,7 +151,7 @@ def plotting_results(
     skip_step
         Number of initial blocks to skip in visualizations.
     sigma_panel
-        Whether to include a CEX sigma panel (regime/noisy-sine/Heston modes).
+        Whether to include a CEX sigma panel (dynamic Heston volatility path).
     block_time
         Number of micro steps per block (used for micro/block ACF labeling).
     steps, P_series, M_series, cex_dex_spread_token1, arb_residual_gap_steps, arb_residual_gap_token1, X_active_end, Y_active_end, band_lo_target, band_hi_target, L_end, L_pre_step, L_pre_trader, L_pre_arb_eff
@@ -1973,17 +1973,7 @@ def simulate(
     liquidity_perc_jit: float = 0.0,  # target share of active liquidity (0-1)
     
     # === CEX volatility modes ===
-    cex_sigma_mode: str = "static",    # "static" | "regime" | "noisy_sine" | "heston"
-    cex_sigma_low: Optional[float] = None,
-    cex_sigma_high: Optional[float] = None,
-    cex_sigma_p_LL: float = 1.0,
-    cex_sigma_p_HH: float = 1.0,
-    cex_sigma_regime_init: str = "L",
-    cex_sigma_sine_period: int = 10_000,
-    cex_sigma_sine_amp: Optional[float] = None,
-    cex_sigma_sine_noise: float = 0.0,
-    cex_sigma_floor: float = 0.0,
-    cex_sigma_sine_phase: float = 0.0,
+    cex_sigma_mode: str = "static",    # "static" | "heston"
     
     # === CEX Heston-like volatility parameters ===
     cex_heston_kappa: Optional[float] = None,
@@ -1991,8 +1981,8 @@ def simulate(
     cex_heston_sigma_v: Optional[float] = None,
     cex_heston_rho: Optional[float] = None,
     cex_heston_v0: Optional[float] = None,
-    # List of theta values for time-varying heston_theta. Each regime lasts T/N blocks.
-    # The order is shuffled per seed for regime-order diversity across runs.
+    # List of theta values for time-varying heston_theta. Each segment lasts T/N blocks.
+    # The order is shuffled per seed for schedule-order diversity across runs.
     cex_heston_theta_schedule: Optional[List] = None,
     
     # === Output and visualization ===
@@ -2231,15 +2221,12 @@ def simulate(
     # Annualized Volatility = cex_sigma * sqrt(seconds_in_year)
     seconds_per_year = 365 * 24 * 60 * 60
     sigma_mode_norm = (cex_sigma_mode or "static").lower()
-    regime_mode = sigma_mode_norm in {"regime", "regime_switch", "regime_switching"}
-    noisy_sine_mode = sigma_mode_norm == "noisy_sine"
+    if sigma_mode_norm not in {"static", "heston"}:
+        raise ValueError(
+            f"Invalid cex_sigma_mode '{cex_sigma_mode}'. Expected one of ['heston', 'static']."
+        )
     heston_mode = sigma_mode_norm == "heston"
-    regime_state = "H" if str(cex_sigma_regime_init).upper().startswith("H") else "L"
-    sigma_mode_for_ref = (
-        "regime"
-        if regime_mode
-        else ("noisy_sine" if noisy_sine_mode else ("heston" if heston_mode else "static"))
-    )
+    sigma_mode_for_ref = sigma_mode_norm
 
     if heston_mode:
         # Fail fast on missing Heston parameters.
@@ -2289,30 +2276,14 @@ def simulate(
             for v in theta_vals:
                 if v < 0:
                     raise ValueError(f"Theta values in schedule must be non-negative, got {v}")
-            # Shuffle theta values so each seed explores a different regime ordering.
+            # Shuffle theta values so each seed explores a different schedule ordering.
             random.shuffle(theta_vals)
-            # Assign equal-duration segments: each regime lasts T // N blocks.
+            # Assign equal-duration segments: each segment lasts T // N blocks.
             n_regimes = len(theta_vals)
             segment_len = T // n_regimes
             cex_heston_theta_schedule = [(i * segment_len, theta_vals[i]) for i in range(n_regimes)]
             _vprint(f"[CONFIG] Heston theta schedule ({n_regimes} regimes, {segment_len} blocks each, shuffled): {cex_heston_theta_schedule}")
-    if regime_mode:
-        if cex_sigma_low is None or cex_sigma_high is None:
-            raise ValueError("cex_sigma_low and cex_sigma_high must be set when cex_sigma_mode='regime'.")
-        if cex_sigma_high <= cex_sigma_low:
-            raise ValueError(f"Require cex_sigma_high > cex_sigma_low (got {cex_sigma_low} >= {cex_sigma_high}).")
-        if not (0.0 <= cex_sigma_p_LL <= 1.0) or not (0.0 <= cex_sigma_p_HH <= 1.0):
-            raise ValueError("cex_sigma_p_LL and cex_sigma_p_HH must be probabilities in [0, 1].")
-        sigma_annualized_low = cex_sigma_low * math.sqrt(seconds_per_year)
-        sigma_annualized_high = cex_sigma_high * math.sqrt(seconds_per_year)
-        _vprint(
-            f"\n[CONFIG] Regime-switching cex_sigma: "
-            f"low={cex_sigma_low} ({sigma_annualized_low:.2%} annualized), "
-            f"high={cex_sigma_high} ({sigma_annualized_high:.2%} annualized), "
-            f"start={regime_state}, p_LL={cex_sigma_p_LL}, p_HH={cex_sigma_p_HH}"
-        )
-        sigma_for_ref = cex_sigma_low if regime_state == "L" else cex_sigma_high
-    else:
+    if not heston_mode:
         sigma_annualized = cex_sigma * math.sqrt(seconds_per_year)
         _vprint(f"[CONFIG] cex_sigma={cex_sigma} (per 1s step) => Annualized Volatility: {sigma_annualized:.2%}")
         sigma_for_ref = cex_sigma
@@ -2361,16 +2332,6 @@ def simulate(
         sigma=sigma_for_ref,
         kappa=1e-3,
         sigma_mode=sigma_mode_for_ref,
-        sigma_low=cex_sigma_low,
-        sigma_high=cex_sigma_high,
-        p_LL=cex_sigma_p_LL,
-        p_HH=cex_sigma_p_HH,
-        regime_state=regime_state,
-        sigma_sine_amp=cex_sigma_sine_amp,
-        sigma_sine_period=cex_sigma_sine_period,
-        sigma_sine_noise=cex_sigma_sine_noise,
-        sigma_floor=cex_sigma_floor,
-        sigma_sine_phase=cex_sigma_sine_phase,
         heston_kappa=cex_heston_kappa,
         heston_theta=cex_heston_theta,
         heston_sigma_v=cex_heston_sigma_v,
@@ -2621,7 +2582,6 @@ def simulate(
     tick_history: List[int] = []
     delta_a_cex_series = []
     cex_sigma_series: List[float] = []
-    cex_regime_series: List[str] = []
     # --- Block-start no-arb band (validated snapshot CEX price) ---
     # (Stored as band_lo_target / band_hi_target for backward naming in internals.)
     # --- Micro-time traces (mempool micro-steps) ---
@@ -2786,7 +2746,6 @@ def simulate(
         tick_history = _NullList()
         delta_a_cex_series = _NullList()
         cex_sigma_series = _NullList()
-        cex_regime_series = _NullList()
         band_lo_target = _NullList()
         band_hi_target = _NullList()
         micro_steps = _NullList()
@@ -3185,20 +3144,37 @@ def simulate(
             ref.apply_impact_only(+amt0)
             _broadcast_price_move(ref.m)
 
-        pos = Position(
-            owner=lp.id,
-            lower=lower,
-            upper=upper,
-            L=L_new,
-            sa=sa,
-            sb=sb,
-            amt0_init=amt0,
-            amt1_init=amt1,
-            hodl0_value_y=amt0 * float(m_ref) + amt1,
-        )
+        # Merge into existing position at the same range if one exists.
+        # This mirrors Uniswap V3's same-range merge and keeps position count
+        # bounded, avoiding O(T²) scaling in per-position iteration.
+        existing_pos = None
+        for p in lp.positions:
+            if p.lower == lower and p.upper == upper:
+                existing_pos = p
+                break
+
         pool.add_liquidity_range(lower, upper, L_new)
-        lp.positions.append(pos)
-        _register_position(pos)
+
+        if existing_pos is not None:
+            existing_pos.L += L_new
+            existing_pos.amt0_init += amt0
+            existing_pos.amt1_init += amt1
+            existing_pos.hodl0_value_y += amt0 * float(m_ref) + amt1
+            pos = existing_pos
+        else:
+            pos = Position(
+                owner=lp.id,
+                lower=lower,
+                upper=upper,
+                L=L_new,
+                sa=sa,
+                sb=sb,
+                amt0_init=amt0,
+                amt1_init=amt1,
+                hodl0_value_y=amt0 * float(m_ref) + amt1,
+            )
+            lp.positions.append(pos)
+            _register_position(pos)
         _assert_active_liquidity_state_fast(f"{log_prefix}_mempool")
 
         mint_steps.append(t)
@@ -3484,7 +3460,16 @@ def simulate(
             for _sched_step, _sched_theta in reversed(cex_heston_theta_schedule):
                 if t >= _sched_step:
                     if ref.heston_theta != _sched_theta:
-                        _vprint(f"[t={t}] Heston theta schedule: θ → {_sched_theta:.2e}")
+                        # theta is variance (sigma^2) per micro-step; expose the
+                        # implied sigma in both per-step and annualized units.
+                        _theta_sigma = math.sqrt(max(float(_sched_theta), 0.0))
+                        _theta_sigma_annualized = _theta_sigma * math.sqrt(seconds_per_year)
+                        _vprint(
+                            f"[t={t}] Heston theta schedule: "
+                            f"θ → {_sched_theta:.2e} "
+                            f"(implied σ={_theta_sigma:.3e}, "
+                            f"{_theta_sigma_annualized:.2%} annualized)"
+                        )
                         ref.heston_theta = _sched_theta
                     break
 
@@ -4054,7 +4039,7 @@ def simulate(
                     if typ == 'lp_burn':
                         idx = None
                         for i, pos in enumerate(lp.positions):
-                            if pos.lower == o.get('lower') and pos.upper == o.get('upper') and abs(pos.L - float(o.get('L', 0.0))) < 1e-12:
+                            if pos.lower == o.get('lower') and pos.upper == o.get('upper'):
                                 idx = i; break
                         if idx is None:
                             return
@@ -4082,7 +4067,7 @@ def simulate(
                     if typ == 'lp_recenter':
                         idx = None
                         for i, pos in enumerate(lp.positions):
-                            if pos.lower == o.get('old_lower') and pos.upper == o.get('old_upper') and abs(pos.L - float(o.get('old_L', 0.0))) < 1e-12:
+                            if pos.lower == o.get('old_lower') and pos.upper == o.get('old_upper'):
                                 idx = i; break
                         if idx is None:
                             return
@@ -4563,7 +4548,6 @@ def simulate(
         P_series.append(P_after)
         M_series.append(ref.m)
         cex_sigma_series.append(ref.sigma)
-        cex_regime_series.append(getattr(ref, "regime_state", "L"))
         delta_a_cex_series.append(delta_a_cex_this)
 
         x_e, y_e = reserves_in_active_tick()
@@ -5119,8 +5103,7 @@ def simulate(
     fee_imb_series = np.array(fee_imb_series)
     fee_signal_series = np.array(fee_signal_series)
     cex_sigma_series = np.array(cex_sigma_series)
-    cex_regime_series = np.array(cex_regime_series)
-    sigma_panel = regime_mode or noisy_sine_mode or heston_mode
+    sigma_panel = heston_mode
 
     # --- Agent activity series (per step, then cumulative) ---
     n_steps = len(P_series)
@@ -5254,7 +5237,6 @@ def simulate(
         "arb_residual_gap_steps": arb_residual_gap_steps,
         "arb_residual_gap_token1": arb_residual_gap_token1,
         "cex_sigma_series": cex_sigma_series.tolist(),
-        "cex_regime_series": cex_regime_series.tolist(),
         "band_lo": band_lo_target,
         "band_hi": band_hi_target,
         "L_active_end": L_end,
