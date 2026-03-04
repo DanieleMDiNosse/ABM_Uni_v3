@@ -29,6 +29,40 @@ from plotly.subplots import make_subplots
 PLOTLY_STATIC_WARNING_EMITTED = False
 _DEFAULT_GRID_STYLE = dict(showgrid=True, gridcolor="#e1e1e1", gridwidth=1)
 
+# Maximum number of data points per Plotly trace in saved HTML files.
+# Keeps HTML size manageable (~0.5 MB instead of ~25 MB per plot at T=500k).
+MAX_PLOT_POINTS: int = 10_000
+
+
+def _downsample_figure_traces(fig: go.Figure, max_points: int = MAX_PLOT_POINTS) -> None:
+    """Thin every trace in *fig* to at most *max_points* via uniform stride.
+
+    Operates **in-place** on the figure's data.  For paired (x, y) traces the
+    same stride is applied to both arrays so alignment is preserved.
+    """
+    for trace in fig.data:
+        x_data = getattr(trace, "x", None)
+        y_data = getattr(trace, "y", None)
+        # Find the longest dimension to decide stride.
+        n = 0
+        for d in (x_data, y_data):
+            if d is not None:
+                try:
+                    n = max(n, len(d))
+                except TypeError:
+                    pass
+        if n <= max_points:
+            continue
+        stride = max(1, n // max_points)
+        for attr in ("x", "y"):
+            d = getattr(trace, attr, None)
+            if d is None:
+                continue
+            try:
+                setattr(trace, attr, d[::stride])
+            except (TypeError, IndexError):
+                pass
+
 
 def save_plotly_figure(
     fig: go.Figure,
@@ -46,6 +80,8 @@ def save_plotly_figure(
     fig.update_yaxes(**_DEFAULT_GRID_STYLE)
     html_path.parent.mkdir(parents=True, exist_ok=True)
     png_path.parent.mkdir(parents=True, exist_ok=True)
+    # Downsample heavy traces before writing HTML to limit file size.
+    _downsample_figure_traces(fig, MAX_PLOT_POINTS)
     fig.write_html(str(html_path), include_plotlyjs="cdn")
     try:
         fig.write_image(str(png_path), width=width, height=height, scale=scale)
@@ -2065,6 +2101,19 @@ def simulate(
         results_root_path = Path("abm_results")
     else:
         results_root_path = Path(results_root)
+
+    # --- Disk-space estimate for large runs ---
+    if T >= 100_000 and not light_mode:
+        _est_log_mb = T * 3 / 1024  # ~3 KB per step verbose log
+        _est_html_mb = 16 * 0.5     # 16 plots × ~0.5 MB (downsampled)
+        _est_npy_mb = 5 * T * 8 / (1024 ** 2)  # 5 arrays × T × 8 bytes
+        _est_total_mb = _est_log_mb + _est_html_mb + _est_npy_mb
+        print(
+            f"[disk] T={T:,} with light_mode=False: estimated disk ≈ {_est_total_mb:.0f} MB "
+            f"(verbose log ≈ {_est_log_mb:.0f} MB, plots ≈ {_est_html_mb:.0f} MB, "
+            f"npy ≈ {_est_npy_mb:.0f} MB). "
+            f"Consider light_mode=True to skip verbose logging and save ~{_est_log_mb:.0f} MB."
+        )
 
     np.random.seed(seed) # for numpy
     random.seed(seed) # for built-in python random functions
