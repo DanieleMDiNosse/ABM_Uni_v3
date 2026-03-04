@@ -86,7 +86,7 @@ def volatility_binned_analysis(
 
     # Compute quantile edges.
     edges = np.quantile(sigma_cat, np.linspace(0, 1, n_bins + 1))
-    bin_idx = np.digitize(sigma_cat, edges[1:-1])  # 0 .. n_bins-1
+    bin_idx = np.digitize(sigma_cat, edges[1:-1], right=True)  # 0 .. n_bins-1
 
     if bin_labels is None:
         bin_labels = [f"Q{i+1}" for i in range(n_bins)]

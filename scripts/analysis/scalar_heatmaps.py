@@ -1,6 +1,6 @@
 """scripts/analysis/scalar_heatmaps.py — DEX-share and fee-value bar plots.
 
-Bar charts with error bars (mean ± σ) for DEX routing share and
+Bar charts with error bars (mean ± SEM) for DEX routing share and
 cumulative fee values across scenarios.
 """
 
@@ -39,7 +39,7 @@ def _scalar_values(
 def dex_share_barplot(
     scenario_results: Dict[str, List[Dict[str, Any]]],
 ) -> go.Figure:
-    """Bar plot of mean DEX share (± σ) across scenarios."""
+    """Bar plot of mean DEX share (± SEM) across scenarios."""
     labels = list(scenario_results.keys())
     means: List[float] = []
     sds: List[float] = []
@@ -52,7 +52,7 @@ def dex_share_barplot(
             sds.append(0.0)
         else:
             means.append(float(np.mean(vals)))
-            sds.append(float(np.std(vals)))
+            sds.append(float(np.std(vals, ddof=1) / np.sqrt(len(vals))))
 
     fig = go.Figure(data=go.Bar(
         x=labels,
@@ -102,7 +102,7 @@ def _is_inactive(cohort: str, scenario_label: str) -> bool:
 def fee_value_barplot(
     scenario_results: Dict[str, List[Dict[str, Any]]],
 ) -> go.Figure:
-    """Grouped bar plot of final cumulative fee value (mean ± σ) per cohort."""
+    """Grouped bar plot of final cumulative fee value (mean ± SEM) per cohort."""
     cohorts = list(_FEE_COHORT_KEYS.keys())
     labels = list(scenario_results.keys())
 
@@ -123,7 +123,7 @@ def fee_value_barplot(
                 sds.append(0.0)
             else:
                 means.append(float(np.mean(vals)))
-                sds.append(float(np.std(vals)))
+                sds.append(float(np.std(vals, ddof=1) / np.sqrt(len(vals))))
         fig.add_trace(go.Bar(
             name=cohort,
             x=labels,
@@ -149,7 +149,7 @@ def fee_value_barplot(
 def mean_fee_barplot(
     scenario_results: Dict[str, List[Dict[str, Any]]],
 ) -> go.Figure:
-    """Bar plot of time-averaged fee level (mean ± σ across seeds).
+    """Bar plot of time-averaged fee level (mean ± SEM across seeds).
 
     Scenarios whose label contains ``"static"`` are excluded automatically.
     """
@@ -169,7 +169,7 @@ def mean_fee_barplot(
                 per_run_means.append(float(np.mean(arr)))
         vals = np.array(per_run_means, dtype=float)
         means.append(float(np.mean(vals)) if vals.size else 0.0)
-        sds.append(float(np.std(vals)) if vals.size else 0.0)
+        sds.append(float(np.std(vals, ddof=1) / np.sqrt(len(vals))) if vals.size > 1 else 0.0)
 
     fig = go.Figure(data=go.Bar(
         x=labels,

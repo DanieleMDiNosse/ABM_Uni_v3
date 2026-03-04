@@ -1,7 +1,7 @@
 """scripts/analysis/pnl_heatmap.py — Cross-scenario PnL comparison table.
 
 Produces a single heatmap / annotated table showing final hedged PnL
-(mean ± std across seeds) for every (model, fee_mode, LP cohort) combination.
+(mean ± SEM across seeds) for every (model, fee_mode, LP cohort) combination.
 """
 
 from __future__ import annotations
@@ -83,9 +83,9 @@ def pnl_summary_table(
                 row_ann.append("")
             else:
                 mu = float(np.mean(vals))
-                sigma = float(np.std(vals))
+                sem = float(np.std(vals, ddof=1) / np.sqrt(len(vals))) if len(vals) > 1 else 0.0
                 row_z.append(mu)
-                row_ann.append(f"{mu:+.1f} ± {sigma:.1f}")
+                row_ann.append(f"{mu:+.1f} ± {sem:.1f}")
         z_vals.append(row_z)
         annotations.append(row_ann)
 
