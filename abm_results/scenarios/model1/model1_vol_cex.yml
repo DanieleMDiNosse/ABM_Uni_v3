@@ -10,7 +10,7 @@ simulate:
   # Seconds per block (micro-step = 1 second). Expected arrivals per block scale with this.
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 13000
+  T: 521400
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 3000
   # Compute smart-router DEX share (DEX/(CEX+DEX)) every n blocks

@@ -1,5 +1,5 @@
 # Scenario label defaults to cex_sigma_mode; fee_mode configures the controller
-fee_mode: toxicity
+fee_mode: static
 # Parameter overrides passed to the simulate() runner
 simulate:
   ####  GENERAL SIMULATION PARAMETERS #####
@@ -10,7 +10,7 @@ simulate:
   # Seconds per block (micro-step = 1 second). Expected arrivals per block scale with this.
   block_time: 5
   # Total number of simulation blocks to execute
-  T: 13000
+  T: 521400
   # Number of initial steps to omit from visualizations and analytics
   skip_step: 3000
   # Compute smart-router DEX share (DEX/(CEX+DEX)) every n blocks
@@ -62,7 +62,7 @@ simulate:
 
   ##### LIQUIDITY PROVIDERS #####
   # Total number of LP agents instantiated in the simulation
-  N_LP: 10
+  N_LP: 100
   # Fraction of LP agents designated as passive baseline providers
   passive_lp_share: 0.5
   # Poisson intensities per second for LP actions (micro-step = 1 second).

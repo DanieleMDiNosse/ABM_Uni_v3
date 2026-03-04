@@ -8,7 +8,7 @@ simulate:
   verbose: true
   light_mode: false
   block_time: 5
-  T: 13000
+  T: 521400
   skip_step: 3000
   n_block_SR_ratio: 100
   seed: 10
