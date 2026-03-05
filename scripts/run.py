@@ -30,6 +30,55 @@ PLOTLY_STATIC_WARNING_EMITTED = False
 _DEFAULT_GRID_STYLE = dict(showgrid=True, gridcolor="#e1e1e1", gridwidth=1)
 
 
+def _downsample_xy(
+    x: np.ndarray, y: np.ndarray, max_points: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Min-max bucket downsampling preserving the visual envelope.
+
+    Splits *n* points into ``max_points // 2`` equal buckets and keeps only the
+    indices of the minimum and maximum *y* value in each bucket.  The result is
+    at most *max_points* points whose (x, y) coordinates faithfully represent
+    peaks, troughs, and trends of the original series.
+    """
+    n = len(x)
+    if n <= max_points:
+        return x, y
+    n_buckets = max(1, max_points // 2)
+    bucket_size = n / n_buckets
+    indices: List[int] = []
+    for i in range(n_buckets):
+        lo = int(i * bucket_size)
+        hi = min(int((i + 1) * bucket_size), n)
+        if hi <= lo:
+            continue
+        seg = y[lo:hi]
+        idx_min = lo + int(np.argmin(seg))
+        idx_max = lo + int(np.argmax(seg))
+        indices += sorted({idx_min, idx_max})
+    idx = sorted(set(indices))
+    return x[idx], y[idx]
+
+
+def _downsample_figure(fig: go.Figure, max_points: int) -> None:
+    """In-place downsample every Scatter / Bar / Histogram trace in *fig*."""
+    for trace in fig.data:
+        if isinstance(trace, (go.Scatter, go.Scattergl, go.Bar)):
+            x = np.asarray(trace.x) if trace.x is not None else None
+            y = np.asarray(trace.y) if trace.y is not None else None
+            if x is None or y is None or len(x) <= max_points:
+                continue
+            xd, yd = _downsample_xy(x, y, max_points)
+            trace.x = xd
+            trace.y = yd
+        elif isinstance(trace, go.Histogram):
+            # Histograms embed the full raw array in HTML; subsample to preserve shape.
+            arr = np.asarray(trace.x) if trace.x is not None else None
+            if arr is None or len(arr) <= max_points:
+                continue
+            idx = np.linspace(0, len(arr) - 1, max_points, dtype=int)
+            trace.x = arr[idx]
+
+
 def save_plotly_figure(
     fig: go.Figure,
     png_path: Path,
@@ -132,6 +181,7 @@ def plotting_results(
     jiter_enabled: bool,
     max_lag_blocks: int = 15,
     max_lag_micro: int = 15,
+    plot_max_points: Optional[int] = None,
 ) -> None:
     """
     Save Plotly figures summarizing a simulation run (including ACF diagnostics).
@@ -353,6 +403,8 @@ def plotting_results(
     total_steps = max(1, len(steps) - s0)
 
     def _save_plotly(name: str, fig: go.Figure, *, width: int = 1400, height: int = 900) -> None:
+        if plot_max_points is not None and plot_max_points > 0:
+            _downsample_figure(fig, plot_max_points)
         suffix = f"{name}_steps{total_steps}"
         save_plotly_figure(
             fig,
@@ -1993,6 +2045,8 @@ def simulate(
     n_block_SR_ratio: int = 100,
     results_root: Optional[str | Path] = None,
     verbose: bool = True,
+    # Max points per Plotly trace (min-max bucket downsampling). None = no downsampling.
+    plot_max_points: Optional[int] = None,
     # === Live streaming hooks (webapp) ===
     live_sink: Optional[Any] = None,
     live_every: int = 25,
@@ -5268,6 +5322,7 @@ def simulate(
             lp_active_enabled=lp_active_enabled,
             lp_passive_enabled=lp_passive_enabled,
             jiter_enabled=jiter_enabled,
+            plot_max_points=plot_max_points,
         )
 
     return {

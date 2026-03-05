@@ -109,6 +109,8 @@ simulate:
   initial_total_L: 500000.0
   # Whether to generate plots and GIFs at the end of the run
   visualize: true
+  # Max points per Plotly trace (min-max downsampling). Omit or set null to disable.
+  plot_max_points: 15000
 
 
 
