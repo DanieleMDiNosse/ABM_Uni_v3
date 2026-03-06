@@ -19,7 +19,7 @@ import os
 import random
 from datetime import datetime
 from tqdm import tqdm
-from typing import Any, Dict, Tuple, List, Optional, Callable, Set
+from typing import Any, Collection, Dict, Tuple, List, Optional, Callable, Set
 from dataclasses import dataclass
 
 import numpy as np
@@ -1940,6 +1940,47 @@ class _NullList(list):
     def __iadd__(self, other):  # type: ignore[override]
         return self
 
+
+SUPPORTED_RECORD_KEYS: Set[str] = {
+    "arb_no_op_in_band",
+    "arb_pnl_cum",
+    "arb_pnl_cum_final",
+    "arb_swaps_rejected_profitability",
+    "cex_sigma_series",
+    "fee_mean",
+    "fee_series",
+    "jiter_pnl_final",
+    "jiter_pnl_series",
+    "lp_fee_value_active_final",
+    "lp_fee_value_active_series",
+    "lp_fee_value_passive_final",
+    "lp_fee_value_passive_series",
+    "lp_fee_value_total_final",
+    "lp_fee_value_total_series",
+    "lp_lvr_active_series",
+    "lp_lvr_passive_series",
+    "lp_lvr_total_series",
+    "lp_pnl_active",
+    "lp_pnl_active_final",
+    "lp_pnl_passive",
+    "lp_pnl_passive_final",
+    "lp_pnl_total",
+    "noise_trader_pnl_cum",
+    "noise_trader_pnl_cum_final",
+    "smart_router_cex_exec_count",
+    "smart_router_dex_exec_count",
+    "smart_router_dex_share_mean",
+    "smart_router_dex_share_overall",
+    "smart_router_dex_share_series",
+    "smart_router_dex_share_steps",
+    "smart_router_pnl_cum",
+    "smart_router_pnl_cum_final",
+    "total_arb_swaps",
+    "total_jit_trades_executed",
+    "total_noise_trader_swaps",
+    "total_smart_router_swaps",
+}
+
 def simulate(
     # === Core simulation parameters ===
     config_name: str,
@@ -2047,6 +2088,8 @@ def simulate(
     verbose: bool = True,
     # Max points per Plotly trace (min-max bucket downsampling). None = no downsampling.
     plot_max_points: Optional[int] = None,
+    # Optional subset of outputs to record when running memory-sensitive analyses.
+    record_keys: Optional[Collection[str]] = None,
     # === Live streaming hooks (webapp) ===
     live_sink: Optional[Any] = None,
     live_every: int = 25,
@@ -2057,6 +2100,21 @@ def simulate(
     valid_fee_modes = {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
+    requested_record_keys: Optional[Set[str]] = None
+    if record_keys is not None:
+        requested_record_keys = {str(key) for key in record_keys}
+        unknown_record_keys = sorted(requested_record_keys - SUPPORTED_RECORD_KEYS)
+        if unknown_record_keys:
+            raise ValueError(
+                "Unsupported record_keys requested: "
+                f"{unknown_record_keys}. Supported keys: {sorted(SUPPORTED_RECORD_KEYS)}."
+            )
+        if light_mode:
+            raise ValueError("record_keys cannot be combined with light_mode=True.")
+        if visualize:
+            raise ValueError("record_keys requires visualize=False.")
+        if liquidity_for_gif:
+            raise ValueError("record_keys requires liquidity_for_gif=False.")
     if k_out_min <= 0 or k_out_max <= 0:
         raise ValueError("k_out_min and k_out_max must be positive integers.")
     if k_out_min > k_out_max:
@@ -2113,6 +2171,12 @@ def simulate(
     if light_mode:
         visualize = False
         verbose = False
+
+    def _record_requested(*keys: str) -> bool:
+        """Return True when any requested analysis key needs the recorder."""
+        if requested_record_keys is None:
+            return True
+        return any(key in requested_record_keys for key in keys)
 
     # Normalize output root for this simulation (logs + plots).
     if results_root is None:
@@ -2729,7 +2793,7 @@ def simulate(
     verbose_log_path_str = ""
     verbose_log = None
 
-    if light_mode:
+    if light_mode or requested_record_keys is not None:
         def buffer_log(msg: str) -> None:
             return None
 
@@ -2883,6 +2947,112 @@ def simulate(
         fee_basis_ticks_series = _NullList()
         fee_imb_series = _NullList()
         fee_signal_series = _NullList()
+    elif requested_record_keys is not None:
+        def _select_recorder(buffer: List[Any], *keys: str) -> List[Any]:
+            """Keep a recorder only when a requested output depends on it."""
+            return buffer if _record_requested(*keys) else _NullList()
+
+        P_series = _select_recorder(P_series)
+        M_series = _select_recorder(M_series)
+        X_active_end = _NullList()
+        Y_active_end = _NullList()
+        L_end = _NullList()
+        L_pre_step = _NullList()
+        L_pre_trader = _NullList()
+        L_pre_arb_eff = _NullList()
+        trader_y_series = _NullList()
+        arb_y_series = _NullList()
+        trader_steps = _NullList()
+        trader_dirs = _NullList()
+        arb_steps = _NullList()
+        arb_dirs = _NullList()
+        arb_residual_gap_steps = _NullList()
+        arb_residual_gap_token1 = _NullList()
+        mint_steps = _NullList()
+        mint_sizes = _NullList()
+        burn_steps = _NullList()
+        burn_sizes = _NullList()
+        mint_is_passive = _NullList()
+        burn_is_passive = _NullList()
+        mint_is_jiter = _NullList()
+        burn_is_jiter = _NullList()
+        jiter_activity_steps = _NullList()
+        jiter_activity_signs = _NullList()
+        smart_activity_steps = _NullList()
+        smart_activity_signs = _NullList()
+        noise_activity_steps = _NullList()
+        noise_activity_signs = _NullList()
+        arb_skip_steps = _NullList()
+        mint_widths = _NullList()
+        w_ticks_series = _NullList()
+        w_unclipped_series = _NullList()
+        w_noise_series = _NullList()
+        liq_history = _NullList()
+        tick_history = _NullList()
+        delta_a_cex_series = _NullList()
+        cex_sigma_series = _select_recorder(cex_sigma_series, "cex_sigma_series")
+        band_lo_target = _NullList()
+        band_hi_target = _NullList()
+        micro_steps = _NullList()
+        M_micro = _NullList()
+        P_micro = _NullList()
+        micro_valid_steps = _NullList()
+        micro_valid_prices = _NullList()
+        trader_pnl_steps = _NullList()
+        arb_pnl_steps = _select_recorder(arb_pnl_steps, "arb_pnl_cum")
+        lp_pnl_total_series = _select_recorder(lp_pnl_total_series, "lp_pnl_total")
+        lp_pnl_active_series = _select_recorder(lp_pnl_active_series, "lp_pnl_active")
+        lp_pnl_passive_series = _select_recorder(lp_pnl_passive_series, "lp_pnl_passive")
+        lp_unhedged_total_series = _NullList()
+        lp_unhedged_active_series = _NullList()
+        lp_unhedged_passive_series = _NullList()
+        lp_rebal_total_series = _NullList()
+        lp_rebal_active_series = _NullList()
+        lp_rebal_passive_series = _NullList()
+        lp_rebal_value_total_series = _NullList()
+        lp_rebal_value_active_series = _NullList()
+        lp_rebal_value_passive_series = _NullList()
+        lp_fee_value_total_series = _select_recorder(lp_fee_value_total_series, "lp_fee_value_total_series")
+        lp_fee_value_active_series = _select_recorder(lp_fee_value_active_series, "lp_fee_value_active_series")
+        lp_fee_value_passive_series = _select_recorder(lp_fee_value_passive_series, "lp_fee_value_passive_series")
+        lp_fees0_earned_total_series = _NullList()
+        lp_fees1_earned_total_series = _NullList()
+        lp_fees0_earned_active_series = _NullList()
+        lp_fees1_earned_active_series = _NullList()
+        lp_fees0_earned_passive_series = _NullList()
+        lp_fees1_earned_passive_series = _NullList()
+        lp_lvr_total_series = _select_recorder(lp_lvr_total_series, "lp_lvr_total_series")
+        lp_lvr_active_series = _select_recorder(lp_lvr_active_series, "lp_lvr_active_series")
+        lp_lvr_passive_series = _select_recorder(lp_lvr_passive_series, "lp_lvr_passive_series")
+        jiter_wallet_series = _NullList()
+        jiter_wealth_series = _NullList()
+        jiter_fee_value_series = _NullList()
+        jiter_fees0_earned_series = _NullList()
+        jiter_fees1_earned_series = _NullList()
+        jiter_position_value_series = _NullList()
+        jiter_pnl_series = _select_recorder(jiter_pnl_series, "jiter_pnl_series")
+        jiter_flash_fee_paid_series = _NullList()
+        trader_exec_count = _NullList()
+        arb_exec_count = _NullList()
+        sr_pnl_steps = _select_recorder(sr_pnl_steps, "smart_router_pnl_cum")
+        noise_pnl_steps = _select_recorder(noise_pnl_steps, "noise_trader_pnl_cum")
+        sr_exec_count = _NullList()
+        noise_exec_count = _NullList()
+        sr_y_series = _NullList()
+        noise_y_series = _NullList()
+        dex_notional_y_series = _NullList()
+        sr_cex_exec_count = _select_recorder(sr_cex_exec_count, "smart_router_cex_exec_count")
+        sr_dex_exec_count = _select_recorder(sr_dex_exec_count, "smart_router_dex_exec_count")
+        lp_wallet_series = _NullList()
+        lp_wallet_active_series = _NullList()
+        lp_wallet_passive_series = _NullList()
+        lp_wealth_series = _NullList()
+        lp_wealth_active_series = _NullList()
+        lp_wealth_passive_series = _NullList()
+        fee_sigma_series = _NullList()
+        fee_basis_ticks_series = _NullList()
+        fee_imb_series = _NullList()
+        fee_signal_series = _NullList()
     # --- EWMA volatility signal for active LP width rule ---
     # Paper spec: width depends on an EWMA of a volatility-related signal. We use
     # EWMA(|log-return of the CEX mid|) with half-life `basis_half_life` (config name kept
@@ -2895,6 +3065,52 @@ def simulate(
     fee_next: Optional[float] = None
     fee_cooldown_left: int = 0
     fee_series: List[float] = []
+    if requested_record_keys is not None and not _record_requested("fee_series"):
+        fee_series = _NullList()
+
+    # Keep exact analysis scalars online so memory-sensitive modes do not need
+    # to retain full block-level series when only final values are consumed.
+    smart_router_pnl_cum_final = 0.0
+    noise_trader_pnl_cum_final = 0.0
+    arb_pnl_cum_final = 0.0
+    lp_pnl_total_final = 0.0
+    lp_pnl_active_final = 0.0
+    lp_pnl_passive_final = 0.0
+    lp_fee_value_total_final = 0.0
+    lp_fee_value_active_final = 0.0
+    lp_fee_value_passive_final = 0.0
+    jiter_pnl_final = 0.0
+    fee_sum = 0.0
+    fee_count = 0
+
+    # Compute smart-router DEX-share metrics online so scalar-only consumers do
+    # not need the full per-block routing count history in memory.
+    sr_dex_share_steps: List[int] = []
+    sr_dex_share_series: List[float] = []
+    sr_window_cex_execs = 0
+    sr_window_dex_execs = 0
+    sr_window_block_count = 0
+    sr_total_cex_execs = 0
+    sr_total_dex_execs = 0
+    sr_dex_share_sum = 0.0
+    sr_dex_share_count = 0
+
+    def _commit_sr_window(window_end_step: int) -> None:
+        """Close the current DEX-share window using the current block index."""
+        nonlocal sr_window_cex_execs, sr_window_dex_execs, sr_window_block_count
+        nonlocal sr_dex_share_sum, sr_dex_share_count
+        if sr_window_block_count <= 0:
+            return
+        window_total = sr_window_cex_execs + sr_window_dex_execs
+        ratio = float(sr_window_dex_execs / window_total) if window_total > 0 else float("nan")
+        sr_dex_share_steps.append(int(window_end_step))
+        sr_dex_share_series.append(ratio)
+        if math.isfinite(ratio):
+            sr_dex_share_sum += ratio
+            sr_dex_share_count += 1
+        sr_window_cex_execs = 0
+        sr_window_dex_execs = 0
+        sr_window_block_count = 0
 
     # EWMA signals for controllers
     ewma_sigma_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # |log m_t - log m_{t-1}|
@@ -4635,6 +4851,9 @@ def simulate(
         trader_pnl_this = sr_acc.pnl + noise_acc.pnl
         arb_acc.settle(arb_ref_m)
         arb_pnl_this = arb_acc.pnl
+        smart_router_pnl_cum_final += float(sr_acc.pnl)
+        noise_trader_pnl_cum_final += float(noise_acc.pnl)
+        arb_pnl_cum_final += float(arb_pnl_this)
 
         _assert_active_liquidity_state_full("end_of_step")
 
@@ -4767,6 +4986,13 @@ def simulate(
         lp_lvr_total = lp_fee_value_total - lp_total
         lp_lvr_active = lp_fee_value_active - lp_total_active
         lp_lvr_passive = lp_fee_value_passive - lp_total_passive
+        lp_pnl_total_final = lp_total
+        lp_pnl_active_final = lp_total_active
+        lp_pnl_passive_final = lp_total_passive
+        lp_fee_value_total_final = lp_fee_value_total
+        lp_fee_value_active_final = lp_fee_value_active
+        lp_fee_value_passive_final = lp_fee_value_passive
+        jiter_pnl_final = jiter_pnl_now
         lp_pnl_total_series.append(lp_total)
         lp_pnl_active_series.append(lp_total_active)
         lp_pnl_passive_series.append(lp_total_passive)
@@ -4897,6 +5123,8 @@ def simulate(
 
         # record current fee (before next-step commit)
         fee_series.append(pool.f)
+        fee_sum += float(pool.f)
+        fee_count += 1
         # ==================================================================
 
         # store per-step trader/arb details (now that order is randomized)
@@ -4913,6 +5141,13 @@ def simulate(
         noise_exec_count.append(noise_acc.execs)
         sr_cex_exec_count.append(sr_cex_execs_this)
         sr_dex_exec_count.append(sr_dex_execs_this)
+        sr_total_cex_execs += int(sr_cex_execs_this)
+        sr_total_dex_execs += int(sr_dex_execs_this)
+        sr_window_cex_execs += int(sr_cex_execs_this)
+        sr_window_dex_execs += int(sr_dex_execs_this)
+        sr_window_block_count += 1
+        if sr_window_block_count >= n_block_SR_ratio:
+            _commit_sr_window(window_end_step=t)
         L_pre_arb_eff.append(L_pre_arb_eff_this)
 
         price_moved = abs(P_after - P_before) > EPS_PRICE_CHANGE
@@ -4999,38 +5234,25 @@ def simulate(
         validated_tick = pool.tick
         validated_cex = ref.m
 
-    # Smart-router DEX share, computed every n_block_SR_ratio blocks:
-    # ratio = DEX / (CEX + DEX), where counts are executed trades routed to each venue.
-    sr_dex_share_steps: List[int] = []
-    sr_dex_share_series: List[float] = []
-    sr_cex_count_by_window: List[int] = []
-    sr_dex_count_by_window: List[int] = []
+    # Close any trailing smart-router window so partial final windows are treated
+    # exactly like the historical post-processing path.
+    if sr_window_block_count > 0:
+        _commit_sr_window(window_end_step=max(0, T - 1))
 
-    total_sr_cex_execs = int(sum(sr_cex_exec_count))
-    total_sr_dex_execs = int(sum(sr_dex_exec_count))
+    total_sr_cex_execs = int(sr_total_cex_execs)
+    total_sr_dex_execs = int(sr_total_dex_execs)
     total_sr_execs = total_sr_cex_execs + total_sr_dex_execs
     sr_dex_share_overall = (
         float(total_sr_dex_execs / total_sr_execs) if total_sr_execs > 0 else float("nan")
     )
 
-    for w_start in range(0, len(sr_cex_exec_count), n_block_SR_ratio):
-        w_end = min(w_start + n_block_SR_ratio, len(sr_cex_exec_count))
-        w_cex = int(sum(sr_cex_exec_count[w_start:w_end]))
-        w_dex = int(sum(sr_dex_exec_count[w_start:w_end]))
-        w_total = w_cex + w_dex
-        ratio = float(w_dex / w_total) if w_total > 0 else float("nan")
-        sr_dex_share_steps.append(w_end - 1)
-        sr_dex_share_series.append(ratio)
-        sr_cex_count_by_window.append(w_cex)
-        sr_dex_count_by_window.append(w_dex)
+    sr_dex_share_mean = (
+        float(sr_dex_share_sum / sr_dex_share_count)
+        if sr_dex_share_count > 0 else float("nan")
+    )
+    fee_mean = float(fee_sum / fee_count) if fee_count > 0 else float("nan")
 
-    sr_dex_share_arr = np.asarray(sr_dex_share_series, dtype=float)
-    if sr_dex_share_arr.size > 0 and np.isfinite(sr_dex_share_arr).any():
-        sr_dex_share_mean = float(np.nanmean(sr_dex_share_arr))
-    else:
-        sr_dex_share_mean = float("nan")
-
-    if not light_mode:
+    if not light_mode and verbose_log is not None:
         summary_lines = [
             "# Run summary",
             f"total_mints = {len(mint_steps)}",
@@ -5198,6 +5420,84 @@ def simulate(
     fee_signal_series = np.array(fee_signal_series)
     cex_sigma_series = np.array(cex_sigma_series)
     sigma_panel = heston_mode
+
+    if requested_record_keys is not None:
+        selective_results: Dict[str, Any] = {}
+        if "arb_no_op_in_band" in requested_record_keys:
+            selective_results["arb_no_op_in_band"] = int(total_arb_no_op_in_band)
+        if "arb_pnl_cum" in requested_record_keys:
+            selective_results["arb_pnl_cum"] = arb_pnl_cum.tolist()
+        if "arb_pnl_cum_final" in requested_record_keys:
+            selective_results["arb_pnl_cum_final"] = float(arb_pnl_cum_final)
+        if "arb_swaps_rejected_profitability" in requested_record_keys:
+            selective_results["arb_swaps_rejected_profitability"] = int(total_arb_swaps_rejected_profitability)
+        if "cex_sigma_series" in requested_record_keys:
+            selective_results["cex_sigma_series"] = cex_sigma_series.tolist()
+        if "fee_mean" in requested_record_keys:
+            selective_results["fee_mean"] = float(fee_mean)
+        if "fee_series" in requested_record_keys:
+            selective_results["fee_series"] = list(fee_series)
+        if "jiter_pnl_final" in requested_record_keys:
+            selective_results["jiter_pnl_final"] = float(jiter_pnl_final)
+        if "jiter_pnl_series" in requested_record_keys:
+            selective_results["jiter_pnl_series"] = jiter_pnl_series.tolist()
+        if "lp_fee_value_active_final" in requested_record_keys:
+            selective_results["lp_fee_value_active_final"] = float(lp_fee_value_active_final)
+        if "lp_fee_value_active_series" in requested_record_keys:
+            selective_results["lp_fee_value_active_series"] = lp_fee_value_active_series.tolist()
+        if "lp_fee_value_passive_final" in requested_record_keys:
+            selective_results["lp_fee_value_passive_final"] = float(lp_fee_value_passive_final)
+        if "lp_fee_value_passive_series" in requested_record_keys:
+            selective_results["lp_fee_value_passive_series"] = lp_fee_value_passive_series.tolist()
+        if "lp_fee_value_total_final" in requested_record_keys:
+            selective_results["lp_fee_value_total_final"] = float(lp_fee_value_total_final)
+        if "lp_fee_value_total_series" in requested_record_keys:
+            selective_results["lp_fee_value_total_series"] = lp_fee_value_total_series.tolist()
+        if "lp_lvr_active_series" in requested_record_keys:
+            selective_results["lp_lvr_active_series"] = lp_lvr_active_series.tolist()
+        if "lp_lvr_passive_series" in requested_record_keys:
+            selective_results["lp_lvr_passive_series"] = lp_lvr_passive_series.tolist()
+        if "lp_lvr_total_series" in requested_record_keys:
+            selective_results["lp_lvr_total_series"] = lp_lvr_total_series.tolist()
+        if "lp_pnl_active" in requested_record_keys:
+            selective_results["lp_pnl_active"] = lp_pnl_active_series.tolist()
+        if "lp_pnl_active_final" in requested_record_keys:
+            selective_results["lp_pnl_active_final"] = float(lp_pnl_active_final)
+        if "lp_pnl_passive" in requested_record_keys:
+            selective_results["lp_pnl_passive"] = lp_pnl_passive_series.tolist()
+        if "lp_pnl_passive_final" in requested_record_keys:
+            selective_results["lp_pnl_passive_final"] = float(lp_pnl_passive_final)
+        if "lp_pnl_total" in requested_record_keys:
+            selective_results["lp_pnl_total"] = lp_pnl_total_series.tolist()
+        if "noise_trader_pnl_cum" in requested_record_keys:
+            selective_results["noise_trader_pnl_cum"] = noise_pnl_cum.tolist()
+        if "noise_trader_pnl_cum_final" in requested_record_keys:
+            selective_results["noise_trader_pnl_cum_final"] = float(noise_trader_pnl_cum_final)
+        if "smart_router_cex_exec_count" in requested_record_keys:
+            selective_results["smart_router_cex_exec_count"] = list(sr_cex_exec_count)
+        if "smart_router_dex_exec_count" in requested_record_keys:
+            selective_results["smart_router_dex_exec_count"] = list(sr_dex_exec_count)
+        if "smart_router_dex_share_mean" in requested_record_keys:
+            selective_results["smart_router_dex_share_mean"] = float(sr_dex_share_mean)
+        if "smart_router_dex_share_overall" in requested_record_keys:
+            selective_results["smart_router_dex_share_overall"] = float(sr_dex_share_overall)
+        if "smart_router_dex_share_series" in requested_record_keys:
+            selective_results["smart_router_dex_share_series"] = list(sr_dex_share_series)
+        if "smart_router_dex_share_steps" in requested_record_keys:
+            selective_results["smart_router_dex_share_steps"] = list(sr_dex_share_steps)
+        if "smart_router_pnl_cum" in requested_record_keys:
+            selective_results["smart_router_pnl_cum"] = sr_pnl_cum.tolist()
+        if "smart_router_pnl_cum_final" in requested_record_keys:
+            selective_results["smart_router_pnl_cum_final"] = float(smart_router_pnl_cum_final)
+        if "total_arb_swaps" in requested_record_keys:
+            selective_results["total_arb_swaps"] = int(total_arb_swaps_executed)
+        if "total_jit_trades_executed" in requested_record_keys:
+            selective_results["total_jit_trades_executed"] = int(total_jit_trades_executed)
+        if "total_noise_trader_swaps" in requested_record_keys:
+            selective_results["total_noise_trader_swaps"] = int(total_noise_swaps_executed)
+        if "total_smart_router_swaps" in requested_record_keys:
+            selective_results["total_smart_router_swaps"] = int(total_smart_swaps_executed)
+        return selective_results
 
     # --- Agent activity series (per step, then cumulative) ---
     n_steps = len(P_series)

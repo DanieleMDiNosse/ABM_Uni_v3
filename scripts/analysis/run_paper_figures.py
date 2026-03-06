@@ -24,8 +24,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -33,11 +34,11 @@ if str(_REPO_ROOT) not in sys.path:
 
 from core.utils import load_simulation_parameters
 from scripts.analysis.common import (
-    ANALYSIS_KEYS, run_multi_seed, save_figure,
+    iter_multi_seed, save_figure,
 )
 from scripts.analysis.pnl_heatmap import pnl_summary_table
 from scripts.analysis.scalar_heatmaps import dex_share_barplot, fee_value_barplot, mean_fee_barplot
-from scripts.analysis.volatility_conditioned import volatility_binned_analysis
+from scripts.analysis.volatility_conditioned import volatility_binned_analysis_from_artifacts
 
 # ---------------------------------------------------------------------------
 # Model definitions
@@ -60,25 +61,17 @@ def _label(model: str, fee_mode: str) -> str:
     return f"{model} — {fee_mode}"
 
 
-def _run_scenario(
+def _scenario_params(
     base_params: Dict[str, Any],
     model_name: str,
     fee_mode: str,
-    *,
-    n_seeds: int,
-    seed_base: int,
-    max_workers: int,
-) -> List[Dict[str, Any]]:
-    """Run a single (model, fee_mode) scenario and return per-seed outputs."""
+) -> Dict[str, Any]:
+    """Build the simulation parameter dict for one (model, fee_mode) scenario."""
     params = dict(base_params)
     model_overrides = MODELS[model_name]
     params.update(model_overrides)
     params["fee_mode"] = fee_mode
-    print(f"  [{model_name}, {fee_mode}] running {n_seeds} seeds ...")
-    return run_multi_seed(
-        params, n_seeds,
-        seed_base=seed_base, max_workers=max_workers,
-    )
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -120,22 +113,49 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # -----------------------------------------------------------------------
-    # Phase 1: run all (model, fee_mode) combinations
+    # Phase 1: run one scenario at a time and generate scenario-local figures
     # -----------------------------------------------------------------------
-    print("[run_paper_figures] Phase 1: running simulations ...")
+    print("[run_paper_figures] Phase 1: running simulations and streaming scenario artifacts ...")
     all_results: Dict[str, List[Dict[str, Any]]] = {}
 
     for model in args.models:
         for fee_mode in args.fee_modes:
             label = _label(model, fee_mode)
-            all_results[label] = _run_scenario(
-                base_params, model, fee_mode,
-                n_seeds=args.runs, seed_base=args.seed_base,
-                max_workers=args.max_workers,
-            )
+            params = _scenario_params(base_params, model, fee_mode)
+            print(f"  [{model}, {fee_mode}] running {args.runs} seeds ...")
+            with tempfile.TemporaryDirectory(prefix=f"abm_paper_{model}_{fee_mode}_") as tmp_dir:
+                artifact_dir = Path(tmp_dir)
+                scenario_scalars: List[Dict[str, Any]] = []
+                artifact_records: List[tuple[int, Path]] = []
+                for payload in iter_multi_seed(
+                    params,
+                    args.runs,
+                    seed_base=args.seed_base,
+                    max_workers=args.max_workers,
+                    mode="paper",
+                    artifact_dir=artifact_dir,
+                    skip=skip,
+                ):
+                    scenario_scalars.append(dict(payload["scalars"]))
+                    artifact_records.append((int(payload["seed"]), Path(payload["artifact_path"])))
+                scenario_scalars.sort(key=lambda row: int(row.get("seed", 0)))
+                artifact_paths = [path for _, path in sorted(artifact_records, key=lambda item: item[0])]
+                all_results[label] = scenario_scalars
+
+                for cohort in ("passive", "active"):
+                    if model == "Model0" and cohort == "active":
+                        continue
+                    tag = f"vol_cond_{model}_{fee_mode}_{cohort}"
+                    print(f"  → {tag}")
+                    fig = volatility_binned_analysis_from_artifacts(
+                        artifact_paths,
+                        n_bins=5,
+                        cohort=cohort,
+                    )
+                    save_figure(fig, out_dir, tag)
 
     # -----------------------------------------------------------------------
-    # Phase 2: generate analysis figures
+    # Phase 2: generate cross-scenario figures from scalar summaries only
     # -----------------------------------------------------------------------
     print("[run_paper_figures] Phase 2: generating figures ...")
 
@@ -158,21 +178,6 @@ def main() -> None:
     print("  → Mean fee level bar plot")
     fig = mean_fee_barplot(all_results)
     save_figure(fig, out_dir, "mean_fee_barplot")
-
-    # 5. Volatility-conditioned analysis
-    for model in args.models:
-        for fee_mode in args.fee_modes:
-            label = _label(model, fee_mode)
-            results = all_results[label]
-            for cohort in ("passive", "active"):
-                if model == "Model0" and cohort == "active":
-                    continue
-                tag = f"vol_cond_{model}_{fee_mode}_{cohort}"
-                print(f"  → {tag}")
-                fig = volatility_binned_analysis(
-                    results, n_bins=5, skip=skip, cohort=cohort,
-                )
-                save_figure(fig, out_dir, tag)
 
     print(f"[run_paper_figures] Done. Outputs in {out_dir}/")
 
