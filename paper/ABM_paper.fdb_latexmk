@@ -1,18 +1,18 @@
 # Fdb version 4
-["bibtex ABM_paper"] 1772621863.77261 "ABM_paper.aux" "ABM_paper.bbl" "ABM_paper" 1772621975.84111 0
+["bibtex ABM_paper"] 1772980166.31434 "ABM_paper.aux" "ABM_paper.bbl" "ABM_paper" 1772980167.7274 0
   "./bibliography.bib" 1770027083.5091 6036 b4672b0c75eaa9bf482de8fe23308650 ""
   "/usr/share/texlive/texmf-dist/bibtex/bst/base/abbrv.bst" 1292289607 20329 b5fed53e10044d0f8112183785c759b1 ""
-  "ABM_paper.aux" 1772621975.64815 16391 d90934f6be93d84dafb2c5d0de8beadf "pdflatex"
+  "ABM_paper.aux" 1772980167.62033 16942 b7f5193ea1b49cf662767e334c040ad8 "pdflatex"
   (generated)
   "ABM_paper.bbl"
   "ABM_paper.blg"
   (rewritten before read)
-["pdflatex"] 1772621972.11048 "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" "ABM_paper.pdf" "ABM_paper" 1772621975.84149 0
+["pdflatex"] 1772980166.33576 "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" "ABM_paper.pdf" "ABM_paper" 1772980167.72761 0
   "/etc/texmf/web2c/texmf.cnf" 1769361868.29643 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0800.600pk" 1769362290.78819 9268 87791122d3f27e491953217389a3fb03 ""
   "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0900.600pk" 1769362290.52355 10448 442ff10d92e20ec81e5ef5c19a9ccf0d ""
   "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk" 1769362290.2558 12644 6325a57144dd94f70514a8f8f8a8504e ""
-  "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" 1772621971.82674 133496 44a2940df484d6f5677676da60dbc97c ""
+  "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" 1772980164.46889 137202 0bba8c4dfc00e12b40cc820d02c9eea8 ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm0800.tfm" 1136768653 1536 05df9db6aeccc4eea94fec15c9024f79 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm0900.tfm" 1136768653 1536 c4f439db76ef96a9c53bc437f35ffe20 ""
@@ -220,20 +220,21 @@
   "/usr/share/texmf/web2c/texmf.cnf" 1707919699 40399 f2c302f7d2af602abb742093540a5834 ""
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1770216664.3603 165012 f177baa1c39a3ebd62c3096a43521a0d ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1772126331 6831208 d2f0d249532bdb35075dfaab5e991280 ""
-  "ABM_paper.aux" 1772621975.64815 16391 d90934f6be93d84dafb2c5d0de8beadf "pdflatex"
-  "ABM_paper.bbl" 1772621863.81086 4088 75f9a5c00747d2d6cb4c369aa771b830 "bibtex ABM_paper"
-  "ABM_paper.out" 1772621975.65015 5389 32b8cf416bf11aa1042f7508a06dc41d "pdflatex"
-  "ABM_paper.tex" 1772621971.82674 133496 44a2940df484d6f5677676da60dbc97c ""
-  "ABM_paper.toc" 1772621975.65157 4413 9b161556ccffd31ea1aea137e4727a28 "pdflatex"
+  "ABM_paper.aux" 1772980167.62033 16942 b7f5193ea1b49cf662767e334c040ad8 "pdflatex"
+  "ABM_paper.bbl" 1772980166.33032 4060 4aaa15ce93922dc20d9e0cf119c7d153 "bibtex ABM_paper"
+  "ABM_paper.out" 1772980167.62133 5305 9a4e8597a146a012ca0bc86c403f546e "pdflatex"
+  "ABM_paper.tex" 1772980164.46889 137202 0bba8c4dfc00e12b40cc820d02c9eea8 ""
+  "ABM_paper.toc" 1772980167.62208 4398 49cf1a7fa9d98e1cd836dd685c1f1eda "pdflatex"
   "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png" 1769357730 253461 8c1740a90ec8441a2e9186857a35d6a9 ""
   "images/274418_static_LPpassiveshare0.5_pjit0.0_1c_dex_return_acf_steps10000.png" 1769357730 61365 a838f36935b6e9559c49115785bd0b00 ""
-  "images/analysis/png/dex_share_barplot.png" 1772575920.47517 104151 fcae1f1324ec55e98d0ede9083eab0cb ""
-  "images/analysis/png/fee_value_barplot.png" 1772575922.76779 112442 c236f0799dc4820e3b7253cb314ce62f ""
-  "images/analysis/png/mean_fee_barplot.png" 1772575925.49425 83355 fece517f337ac103793e939815485264 ""
-  "images/analysis/png/pnl_heatmap.png" 1772575918.12429 142875 a7f7704906f63ba5d503a4838babcdf5 ""
+  "images/analysis/png/dex_share_barplot.png" 1772962916 102133 5f7fabf3f18a10fbc8ddb4657cd473b4 ""
+  "images/analysis/png/fee_value_barplot.png" 1772962919 111241 412a1eb30ce200d1a2564aa70b89107a ""
+  "images/analysis/png/mean_fee_barplot.png" 1772962921 78376 d761cbf5fc8f38b14a2d458ff0076a97 ""
+  "images/analysis/png/pnl_heatmap.png" 1772962914 202409 b312b71b966fdea46e40a260ed9c69cb ""
   "images/cex_dex_band.pdf" 1769357730 168111 aa65f7bebec406cc7c2189e265df5280 ""
   "images/dLVR_over_dFees_medians_vs_block_time_static_flow_test_runs100.png" 1772316791 61210 32c21fc44ba1699b70bfbb16837c431b ""
   "images/dLVR_over_dFees_medians_vs_block_time_volatility_dex_flow_test_runs100.png" 1772343263 64358 3254b489cadaf1319b3bb84199d53325 ""
+  "images/distributions_core_static.png" 1772979603.98602 173411 21b6b0a7798e67e245db8b9f416cb656 ""
   (generated)
   "ABM_paper.aux"
   "ABM_paper.log"

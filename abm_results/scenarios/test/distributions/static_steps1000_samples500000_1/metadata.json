@@ -1,0 +1,10 @@
+{
+  "config_path": "/home/danielemdn/Documents/repositories/ABM_Uni_v3/abm_results/scenarios/test.yml",
+  "created_at_utc": "2026-03-08T14:11:21Z",
+  "git_commit": "ea5facc75333439e97a325c4b56b089f44b66d88",
+  "platform": "linux",
+  "python": "3.11.14",
+  "run_id": "static_steps1000_samples500000_1",
+  "scenario_label": "static",
+  "script": "visualize_distributions"
+}

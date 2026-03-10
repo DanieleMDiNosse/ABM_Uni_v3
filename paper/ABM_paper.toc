@@ -45,10 +45,10 @@
 \contentsline {paragraph}{Shared fee update controller}{22}{section*.22}%
 \contentsline {subsection}{\numberline {3.6}Initialization}{23}{subsection.3.6}%
 \contentsline {section}{\numberline {4}Results}{23}{section.4}%
-\contentsline {subsection}{\numberline {4.1}Microstructure diagnostics (illustrative)}{24}{subsection.4.1}%
-\contentsline {subsection}{\numberline {4.2}Cross-scenario outcome summary}{24}{subsection.4.2}%
-\contentsline {paragraph}{Hedged PnL across models and fee modes.}{24}{section*.26}%
-\contentsline {paragraph}{Competitiveness: DEX share.}{25}{section*.28}%
-\contentsline {paragraph}{Fee levels and fee incidence across cohorts.}{25}{section*.30}%
-\contentsline {subsection}{\numberline {4.3}LVR vs fees vs block size}{25}{subsection.4.3}%
-\contentsline {section}{\numberline {5}Conclusions}{26}{section.5}%
+\contentsline {subsection}{\numberline {4.1}Microstructure diagnostics}{24}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Cross-scenario outcome summary}{25}{subsection.4.2}%
+\contentsline {paragraph}{Hedged PnL across models and fee modes.}{25}{section*.27}%
+\contentsline {paragraph}{Competitiveness: DEX share.}{25}{section*.29}%
+\contentsline {paragraph}{Fee levels and fee incidence across cohorts.}{26}{section*.31}%
+\contentsline {subsection}{\numberline {4.3}LVR vs fees vs block size}{26}{subsection.4.3}%
+\contentsline {section}{\numberline {5}Conclusions}{27}{section.5}%

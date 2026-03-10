@@ -2,17 +2,19 @@
 Visualize the stochastic components and distributions used in the ABM simulation.
 
 Outputs Plotly figures (HTML, and PNG if kaleido is installed) for:
-- Initial binomial-hill liquidity distribution.
+- Initial binomial-hill liquidity profile (deterministic initialization, not sampled).
+- Trader-side Bernoulli draw.
 - Binomial noise term in the LP width rule.
+- Realized active-LP width distribution from the clipped/snap-to-grid width rule.
 - Log-normal trader notional distribution.
 - Capped log-normal LP wallet utilization distribution (η = min(1, Z)).
 - Geometric distribution for LP review clocks.
 - Uniform distribution for LP out-of-range recenter thresholds (k_out_threshold).
+- Discrete-uniform LP post-burn cooldown.
 - Poisson arrival distributions:
   - traders: intents per block
   - LPs: target mint/burn counts per block
-- Bernoulli distribution for JIT (Jiter) arrival attempts.
-- Reference market path (price, volatility, and return/volatility histograms).
+- Effective Bernoulli distribution for JIT (Jiter) attempt blocks.
 
 By default this script mirrors the parameters in `abm_results/scenarios/test.yml`.
 You can point it at any run-style scenario YAML (the same config used by `scripts/run.py`)
@@ -23,7 +25,7 @@ import argparse
 import math
 import random
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,7 +42,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.utils import ReferenceMarket, build_empty_pool, scenario_output_root
+from core.utils import EWMA, ReferenceMarket, TICK_LN, build_empty_pool, scenario_output_root
 from core.artifacts import (
     build_run_manifest,
     make_unique_dir,
@@ -58,6 +60,8 @@ from core.artifacts import (
 DEFAULT_CONFIG_PATH = Path("abm_results") / "scenarios" / "test.yml"
 PLOTLY_STATIC_WARNING_EMITTED = False
 _DEFAULT_GRID_STYLE = dict(showgrid=True, gridcolor="#e1e1e1", gridwidth=1)
+LP_COOLDOWN_BLOCK_MIN = 3
+LP_COOLDOWN_BLOCK_MAX = 8
 
 
 @dataclass(frozen=True)
@@ -87,14 +91,21 @@ class DistributionParams:
         Total initial liquidity to distribute across ticks.
     min_L_per_tick : float
         Minimum per-tick liquidity to include in the histogram.
+    w_min_ticks, w_max_ticks : int
+        Minimum/maximum narrow-LP widths in tick units after snapping and clipping.
+    basis_half_life : int
+        EWMA half-life used for the volatility signal inside the width rule.
+    slope_s : float
+        Width sensitivity in ticks per unit of EWMA volatility (expressed in tick units).
     binom_n, binom_p : int, float
         Binomial noise parameters for the LP width rule.
     trader_mean, trader_sigma : float
         Trader notional log-normal parameters (in log space).
     mint_mu, mint_sigma : float
         LP mint-scale log-normal parameters (in log space).
-    tau : float
-        Mean LP review interval in steps (geometric distribution).
+    tau : int
+        Legacy mean LP review interval in blocks. `scripts/run.py` coerces this
+        parameter to an integer before constructing the geometric review clock.
     tau_seconds : float | None
         Optional real-time LP review interval in seconds (micro-step = 1 second). When set,
         it overrides `tau` for scheduling semantics in the main simulator.
@@ -147,13 +158,17 @@ class DistributionParams:
     initial_binom_N: int = 450
     initial_total_L: float = 500_000.0
     min_L_per_tick: float = 1e-9
+    w_min_ticks: int = 10
+    w_max_ticks: int = 100
+    basis_half_life: int = 1
+    slope_s: float = 1.0
     binom_n: int = 70
     binom_p: float = 0.5
     trader_mean: float = 2.5
     trader_sigma: float = 1.5
     mint_mu: float = -1.0
     mint_sigma: float = 1.5
-    tau: float = 5.0
+    tau: int = 5
     tau_seconds: Optional[float] = None
     k_out_min: int = 10
     k_out_max: int = 20
@@ -330,6 +345,7 @@ def build_distribution_params(
     seed = int(simulate_params.get("seed", DistributionParams.seed))
     block_time = int(simulate_params.get("block_time", DistributionParams.block_time))
     initial_price = float(simulate_params.get("initial_price", DistributionParams.initial_price))
+    tau_raw = simulate_params.get("tau")
 
     cex_mu = float(simulate_params.get("cex_mu", DistributionParams.cex_mu))
     cex_sigma = float(simulate_params.get("cex_sigma", DistributionParams.cex_sigma))
@@ -350,13 +366,17 @@ def build_distribution_params(
         initial_binom_N=int(simulate_params.get("initial_binom_N", DistributionParams.initial_binom_N)),
         initial_total_L=float(simulate_params.get("initial_total_L", DistributionParams.initial_total_L)),
         min_L_per_tick=float(simulate_params.get("min_L_per_tick", DistributionParams.min_L_per_tick)),
+        w_min_ticks=int(simulate_params.get("w_min_ticks", DistributionParams.w_min_ticks)),
+        w_max_ticks=int(simulate_params.get("w_max_ticks", DistributionParams.w_max_ticks)),
+        basis_half_life=int(simulate_params.get("basis_half_life", DistributionParams.basis_half_life)),
+        slope_s=float(simulate_params.get("slope_s", DistributionParams.slope_s)),
         binom_n=int(simulate_params.get("binom_n", DistributionParams.binom_n)),
         binom_p=float(simulate_params.get("binom_p", DistributionParams.binom_p)),
         trader_mean=float(simulate_params.get("trader_mean", DistributionParams.trader_mean)),
         trader_sigma=float(simulate_params.get("trader_sigma", DistributionParams.trader_sigma)),
         mint_mu=float(simulate_params.get("mint_mu", DistributionParams.mint_mu)),
         mint_sigma=float(simulate_params.get("mint_sigma", DistributionParams.mint_sigma)),
-        tau=float(DistributionParams.tau if simulate_params.get("tau") is None else simulate_params.get("tau")),
+        tau=int(DistributionParams.tau if tau_raw is None else tau_raw),
         tau_seconds=_coerce_optional_float(simulate_params.get("tau_seconds", DistributionParams.tau_seconds)),
         k_out_min=int(simulate_params.get("k_out_min", DistributionParams.k_out_min)),
         k_out_max=int(simulate_params.get("k_out_max", DistributionParams.k_out_max)),
@@ -477,7 +497,6 @@ def _add_hist_with_mean(
     histnorm: str = "probability density",
 ) -> None:
     data = np.asarray(data, dtype=float)
-    mean_val = float(np.mean(data)) if data.size else 0.0
 
     fig.add_trace(
         go.Histogram(
@@ -491,30 +510,6 @@ def _add_hist_with_mean(
         row=row,
         col=col,
     )
-    fig.add_vline(
-        x=mean_val,
-        line_width=1,
-        line_dash="dash",
-        line_color="black",
-        row=row,
-        col=col,
-    )
-    # fig.add_annotation(
-    #     x=mean_val,
-    #     y=0.98,
-    #     xref="x",
-    #     yref="y domain",
-    #     # text=f"Mean: {mean_val:.3g}",
-    #     showarrow=False,
-    #     xanchor="left",
-    #     yanchor="top",
-    #     bgcolor="rgba(255,255,255,0.90)",
-    #     bordercolor="black",
-    #     borderwidth=1,
-    #     font=dict(color="black", size=12),
-    #     row=row,
-    #     col=col,
-    # )
     fig.update_xaxes(title_text=x_label, row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
     fig.update_yaxes(title_text=y_label, type="log" if log_y else "linear", row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
 
@@ -529,9 +524,11 @@ def _add_discrete_pmf(
     x_label: str,
     y_label: str,
     color: str,
+    tick_text: Optional[List[str]] = None,
+    show_mean: bool = False,
 ) -> None:
     """
-    Add a discrete probability mass function as a bar chart (with mean marker).
+    Add a discrete probability mass function as a bar chart.
 
     Parameters
     ----------
@@ -571,15 +568,26 @@ def _add_discrete_pmf(
         row=row,
         col=col,
     )
-    fig.add_vline(
-        x=mean_val,
-        line_width=1,
-        line_dash="dash",
-        line_color="black",
-        row=row,
-        col=col,
-    )
+    if show_mean:
+        fig.add_vline(
+            x=mean_val,
+            line_width=1,
+            line_dash="dash",
+            line_color="black",
+            row=row,
+            col=col,
+        )
     fig.update_xaxes(title_text=x_label, row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
+    if tick_text is not None:
+        if len(tick_text) != int(x.size):
+            raise ValueError("tick_text must match the support size.")
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=x.tolist(),
+            ticktext=list(tick_text),
+            row=row,
+            col=col,
+        )
     fig.update_yaxes(title_text=y_label, row=row, col=col, showgrid=True, gridcolor="lightgray", gridwidth=1)
 
 
@@ -608,7 +616,8 @@ def sample_initial_liquidity(
     Notes
     -----
     Matches the binomial weight construction used in
-    utils.bootstrap_initial_binomial_hill_sharded.
+    utils.bootstrap_initial_binomial_hill_sharded. This is a deterministic
+    initialization profile, not a stochastic sample.
 
     Examples
     --------
@@ -624,6 +633,28 @@ def sample_initial_liquidity(
         if L_i >= min_L_per_tick:
             L_vals.append(L_i)
     return np.asarray(L_vals, dtype=float)
+
+
+def sample_trader_side(n_samples: int = 500_000) -> np.ndarray:
+    """
+    Sample trader directions used by smart and noise traders.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of side draws.
+
+    Returns
+    -------
+    np.ndarray
+        Integer-coded directions in {0, 1}, where 0 = X_to_Y and 1 = Y_to_X.
+
+    Notes
+    -----
+    `scripts/run.py` uses `random.choice(["X_to_Y", "Y_to_X"])`, which is a
+    symmetric Bernoulli draw on the two directions.
+    """
+    return np.random.binomial(1, 0.5, size=n_samples).astype(float)
 
 
 def sample_width_noise(
@@ -756,7 +787,8 @@ def sample_review_intervals(
     Parameters
     ----------
     tau : float
-        Mean review interval in steps (p = 1 / max(1, tau)).
+        Effective mean review interval after applying the simulator's coercions
+        and clamps (p = 1 / max(1, tau)).
     n_samples : int
         Number of samples.
 
@@ -767,7 +799,8 @@ def sample_review_intervals(
 
     Notes
     -----
-    Matches scripts/run.py: next_review ~ Geometric(1 / max(1, tau)).
+    Matches the geometric draw used by `scripts/run.py` once the review-rate
+    parameter has been converted into an effective mean interval.
 
     Examples
     --------
@@ -777,6 +810,199 @@ def sample_review_intervals(
     """
     p = 1.0 / max(1.0, float(tau))
     return np.random.geometric(p, size=n_samples).astype(float)
+
+
+def sample_post_burn_cooldown(
+    *,
+    block_time: int,
+    tau_seconds: Optional[float],
+    n_samples: int = 500_000,
+) -> np.ndarray:
+    """
+    Sample LP cooldown durations after a burn.
+
+    Parameters
+    ----------
+    block_time : int
+        Seconds (micro-steps) per block.
+    tau_seconds : float | None
+        If set, cooldowns are scaled into seconds by multiplying the sampled
+        block count by `block_time`, matching the simulator.
+    n_samples : int
+        Number of cooldown draws.
+
+    Returns
+    -------
+    np.ndarray
+        Cooldown durations in blocks (legacy mode) or seconds (real-time mode).
+
+    Notes
+    -----
+    Mirrors `scripts/run.py`:
+
+        cooldown_blocks ~ UniformInt[3, 8]
+        cooldown = cooldown_blocks * block_time  if tau_seconds is set
+        cooldown = cooldown_blocks               otherwise
+    """
+    cooldown_blocks = np.random.randint(
+        LP_COOLDOWN_BLOCK_MIN,
+        LP_COOLDOWN_BLOCK_MAX + 1,
+        size=n_samples,
+    ).astype(float)
+    if tau_seconds is not None:
+        return cooldown_blocks * float(max(1, int(block_time)))
+    return cooldown_blocks
+
+
+def _effective_review_interval_and_unit(params: DistributionParams) -> Tuple[float, str]:
+    """
+    Return the simulator-implied mean review interval and its unit label.
+
+    Parameters
+    ----------
+    params : DistributionParams
+        Scenario-aligned visualization parameters.
+
+    Returns
+    -------
+    tuple[float, str]
+        Effective geometric mean interval and unit label (`"blocks"` or `"s"`).
+
+    Notes
+    -----
+    This mirrors `scripts/run.py`:
+
+    - legacy mode: `review_rate = 1 / max(1, int(tau))`
+    - real-time mode: `review_rate = min(1, 1 / max(1e-12, tau_seconds))`
+
+    The returned mean is `1 / review_rate`, which is what the geometric draw
+    actually uses inside the simulator.
+    """
+    if params.tau_seconds is not None:
+        review_rate = min(1.0, 1.0 / max(1e-12, float(params.tau_seconds)))
+        return 1.0 / review_rate, "s"
+    review_rate = 1.0 / max(1, int(params.tau))
+    return 1.0 / review_rate, "blocks"
+
+
+def _effective_jit_attempt_probability(params: DistributionParams) -> float:
+    """
+    Return the simulator-implied JIT attempt probability per block.
+
+    Parameters
+    ----------
+    params : DistributionParams
+        Scenario-aligned visualization parameters.
+
+    Returns
+    -------
+    float
+        Effective Bernoulli probability in [0, 1].
+
+    Notes
+    -----
+    In `scripts/run.py`, JIT planning is skipped unless all of the following
+    are true:
+
+    - `p_jit > 0`
+    - `N_jit > 0`
+    - `liquidity_perc_jit > 0`
+
+    `N_jit` no longer increases the target count, but it still acts as an
+    enable/disable knob and therefore affects whether Bernoulli attempts occur.
+    """
+    p_jit = max(0.0, min(1.0, float(params.p_jit)))
+    if p_jit <= 0.0:
+        return 0.0
+    if int(params.N_jit) <= 0:
+        return 0.0
+    if float(params.liquidity_perc_jit) <= 0.0:
+        return 0.0
+    return p_jit
+
+
+def sample_lp_widths_from_reference_prices(
+    prices: np.ndarray,
+    *,
+    basis_half_life: int,
+    w_min_ticks: int,
+    w_max_ticks: int,
+    slope_s: float,
+    binom_n: int,
+    binom_p: float,
+    tick_spacing: int,
+) -> np.ndarray:
+    """
+    Sample realized active-LP widths from a reference-price path.
+
+    Parameters
+    ----------
+    prices : np.ndarray
+        Reference prices `m_t` with shape `(n_steps + 1,)`.
+    basis_half_life : int
+        EWMA half-life for the volatility signal.
+    w_min_ticks, w_max_ticks : int
+        Minimum and maximum allowed widths in tick units.
+    slope_s : float
+        Width sensitivity to EWMA volatility measured in tick units.
+    binom_n, binom_p : int, float
+        Binomial-noise parameters.
+    tick_spacing : int
+        Pool tick spacing used for grid snapping.
+
+    Returns
+    -------
+    np.ndarray
+        Realized widths in ticks with shape `(n_steps,)`.
+
+    Notes
+    -----
+    This follows the exact width rule in `scripts/run.py`:
+
+        vol_hat_t = EWMA(|log m_t - log m_{t-1}|)
+        noise_t = (K_t - n p) * tick_spacing
+        w_t = clip_round(w_min + slope_s * vol_hat_t / TICK_LN + noise_t)
+
+    where `clip_round` snaps to the tick grid and clamps to `[w_min_ticks, w_max_ticks]`.
+    """
+    prices_arr = np.asarray(prices, dtype=float)
+    if prices_arr.ndim != 1:
+        raise ValueError("prices must be a 1D array.")
+    if prices_arr.size <= 1:
+        return np.asarray([], dtype=float)
+
+    spacing = max(1, int(tick_spacing))
+    ewma_width = EWMA(half_life_steps=max(1, int(basis_half_life)))
+    prev_m_for_width = float(prices_arr[0])
+    noise_ticks = sample_width_noise(
+        n=int(binom_n),
+        p=float(binom_p),
+        tick_spacing=spacing,
+        n_samples=int(prices_arr.size - 1),
+    )
+
+    min_bands = max(1, (int(w_min_ticks) + spacing - 1) // spacing)
+    max_bands = max(1, int(w_max_ticks) // spacing)
+    snapped_min = min_bands * spacing
+    snapped_max = max_bands * spacing
+
+    widths: List[float] = []
+    for idx, m_now in enumerate(prices_arr[1:]):
+        try:
+            log_m_now = math.log(max(float(m_now), 1e-18))
+            log_m_prev = math.log(max(prev_m_for_width, 1e-18))
+            vol_obs = abs(log_m_now - log_m_prev)
+        except ValueError:
+            vol_obs = 0.0
+        prev_m_for_width = float(m_now)
+        vol_hat = ewma_width.update(vol_obs)
+        vol_in_ticks = vol_hat / TICK_LN
+        w_unclipped = float(w_min_ticks) + float(slope_s) * vol_in_ticks + float(noise_ticks[idx])
+        w_ticks = int(round(w_unclipped / spacing)) * spacing
+        w_ticks = max(snapped_min, min(w_ticks, snapped_max))
+        widths.append(float(w_ticks))
+
+    return np.asarray(widths, dtype=float)
 
 
 def sample_poisson_per_micro_step(per_block_rate: float, block_time: int, n_samples: int) -> np.ndarray:
@@ -934,7 +1160,11 @@ def plot_reference_market_paths(prices: List[float], vols: List[float], *, sigma
     return fig
 
 
-def plot_distribution_suite(params: DistributionParams) -> go.Figure:
+def plot_distribution_suite(
+    params: DistributionParams,
+    *,
+    reference_prices: Optional[List[float]] = None,
+) -> go.Figure:
     """
     Build a Plotly figure with core distribution histograms.
 
@@ -946,8 +1176,8 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
     Returns
     -------
     go.Figure
-        2x3 subplot figure covering liquidity, width noise, notionals, mint scale,
-        and review intervals.
+        3x3 subplot figure covering deterministic initialization plus the main
+        stochastic primitives sampled by the simulator.
 
     Notes
     -----
@@ -964,6 +1194,9 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
 
     pool, _ = build_empty_pool()
     tick_spacing = pool.tick_spacing
+    prices_for_width = reference_prices
+    if prices_for_width is None:
+        prices_for_width, _ = simulate_reference_market_path(params)
 
     L_vals = sample_initial_liquidity(
         N=int(params.initial_binom_N),
@@ -976,6 +1209,16 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
         tick_spacing=tick_spacing,
         n_samples=int(params.n_samples),
     )
+    sampled_widths = sample_lp_widths_from_reference_prices(
+        np.asarray(prices_for_width, dtype=float),
+        basis_half_life=int(params.basis_half_life),
+        w_min_ticks=int(params.w_min_ticks),
+        w_max_ticks=int(params.w_max_ticks),
+        slope_s=float(params.slope_s),
+        binom_n=int(params.binom_n),
+        binom_p=float(params.binom_p),
+        tick_spacing=int(tick_spacing),
+    )
     trader_notionals = sample_trader_notional(
         mean_log=float(params.trader_mean),
         sigma_log=float(params.trader_sigma),
@@ -986,9 +1229,17 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
         sigma_log=float(params.mint_sigma),
         n_samples=int(params.n_samples),
     )
-    tau_for_review = float(params.tau_seconds) if params.tau_seconds is not None else float(params.tau)
-    tau_unit = "s" if params.tau_seconds is not None else "blocks"
-    review_intervals = sample_review_intervals(tau=tau_for_review, n_samples=int(params.n_samples))
+    review_interval_mean, tau_unit = _effective_review_interval_and_unit(params)
+    review_intervals = sample_review_intervals(
+        tau=review_interval_mean,
+        n_samples=int(params.n_samples),
+    )
+    cooldowns = sample_post_burn_cooldown(
+        block_time=int(params.block_time),
+        tau_seconds=params.tau_seconds,
+        n_samples=int(params.n_samples),
+    )
+    cooldown_unit = "s" if params.tau_seconds is not None else "blocks"
 
     k_out_min = int(params.k_out_min)
     k_out_max = int(params.k_out_max)
@@ -1000,15 +1251,18 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
     k_out_pmf = np.full_like(k_out_support, 1.0 / float(k_out_support.size), dtype=float)
 
     fig = make_subplots(
-        rows=2,
+        rows=3,
         cols=3,
         subplot_titles=(
-            "Initial liquidity per tick (binomial hill)",
-            f"LP width noise (Binomial, tick_spacing={tick_spacing})",
+            "Initial liquidity profile per tick (deterministic binomial hill)",
+            "Trader side (Bernoulli 0.5 / 0.5)",
             "Trader notional distribution (log-normal)",
+            f"LP width noise (Binomial, tick_spacing={tick_spacing})",
+            f"Sampled narrow-LP width (clip[{int(params.w_min_ticks)},{int(params.w_max_ticks)}], snap={tick_spacing})",
             "LP wallet utilization η = min(1, Z)",
-            f"LP review intervals (Geometric, mean≈{tau_for_review:g} {tau_unit})",
+            f"LP review intervals (Geometric, mean≈{review_interval_mean:g} {tau_unit})",
             f"Out-of-range recenter threshold (UniformInt[{k_out_min},{k_out_max}])",
+            f"Post-burn cooldown (UniformInt[{LP_COOLDOWN_BLOCK_MIN},{LP_COOLDOWN_BLOCK_MAX}] {cooldown_unit})",
         ),
     )
 
@@ -1023,16 +1277,17 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
         log_y=True,
         histnorm="probability density",
     )
-    _add_hist_with_mean(
+    _add_discrete_pmf(
         fig,
         row=1,
         col=2,
-        data=width_noise,
-        x_label="Noise (ticks)",
+        support=np.asarray([0.0, 1.0], dtype=float),
+        probabilities=np.asarray([0.5, 0.5], dtype=float),
+        x_label="Direction",
         y_label="Probability",
-        color="#ff7f0e",
-        log_y=False,
-        histnorm="probability",
+        color="#17becf",
+        tick_text=["X_to_Y", "Y_to_X"],
+        show_mean=False,
     )
     _add_hist_with_mean(
         fig,
@@ -1049,6 +1304,28 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
         fig,
         row=2,
         col=1,
+        data=width_noise,
+        x_label="Noise (ticks)",
+        y_label="Probability",
+        color="#ff7f0e",
+        log_y=False,
+        histnorm="probability",
+    )
+    _add_hist_with_mean(
+        fig,
+        row=2,
+        col=2,
+        data=sampled_widths,
+        x_label="Width (ticks)",
+        y_label="Probability",
+        color="#bcbd22",
+        log_y=False,
+        histnorm="probability",
+    )
+    _add_hist_with_mean(
+        fig,
+        row=2,
+        col=3,
         data=wallet_utilization,
         x_label="Utilization factor η",
         y_label="Probability",
@@ -1058,10 +1335,10 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
     )
     _add_hist_with_mean(
         fig,
-        row=2,
-        col=2,
+        row=3,
+        col=1,
         data=review_intervals,
-        x_label="Steps between reviews",
+        x_label=f"Review interval ({tau_unit})",
         y_label="Probability",
         color="#9467bd",
         log_y=True,
@@ -1070,15 +1347,26 @@ def plot_distribution_suite(params: DistributionParams) -> go.Figure:
 
     _add_discrete_pmf(
         fig,
-        row=2,
-        col=3,
+        row=3,
+        col=2,
         support=k_out_support,
         probabilities=k_out_pmf,
         x_label="k_out_threshold (steps)",
         y_label="Probability",
         color="#7f7f7f",
     )
-    fig.update_layout(template="plotly_white", height=750, width=1400, margin=dict(l=40, r=20, t=60, b=40))
+    _add_hist_with_mean(
+        fig,
+        row=3,
+        col=3,
+        data=cooldowns,
+        x_label=f"Cooldown ({cooldown_unit})",
+        y_label="Probability",
+        color="#8c564b",
+        log_y=False,
+        histnorm="probability",
+    )
+    fig.update_layout(template="plotly_white", height=1000, width=1500, margin=dict(l=40, r=20, t=60, b=40))
     return fig
 
 
@@ -1094,7 +1382,7 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
     Returns
     -------
     go.Figure
-        2x4 subplot figure covering trader and LP arrival counts.
+        3x3 subplot figure covering trader, LP, and JIT arrival counts.
 
     Notes
     -----
@@ -1104,6 +1392,8 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
       `λ_micro = λ_block / block_time`, so the block sum is `Poisson(λ_block)`.
     - Real-time per-second: provide `*_per_second` and the simulator uses `λ_micro = λ_second`
       (micro-step = 1 second), so the block sum is `Poisson(block_time * λ_second)`.
+    - JIT attempts occur only when the searcher is enabled, i.e. when
+      `p_jit > 0`, `N_jit > 0`, and `liquidity_perc_jit > 0`.
 
     Examples
     --------
@@ -1156,8 +1446,7 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
     passive_mints = sample_poisson_per_block(float(passive_mints_lambda_block), n_samples)
     passive_burns = sample_poisson_per_block(float(passive_burns_lambda_block), n_samples)
 
-    p_jit = float(params.p_jit)
-    p_jit = max(0.0, min(1.0, p_jit))
+    p_jit = _effective_jit_attempt_probability(params)
     jit_support = np.asarray([0.0, 1.0])
     jit_pmf = np.asarray([1.0 - p_jit, p_jit], dtype=float)
 
@@ -1167,7 +1456,7 @@ def plot_arrival_distributions(params: DistributionParams) -> go.Figure:
         subplot_titles=(
             f"Smart intents / micro-step (1s) (λ={float(smart_lambda_micro):.3g})",
             f"Noise intents / micro-step (1s) (λ={float(noise_lambda_micro):.3g})",
-            f"JIT attempt / block (Bernoulli p={p_jit:.3g})",
+            f"Effective JIT attempt / block (Bernoulli p={p_jit:.3g})",
             f"Smart intents / block (λ={float(smart_lambda_block):g})",
             f"Noise intents / block (λ={float(noise_lambda_block):g})",
             f"Narrow mint targets / block (λ={float(narrow_lambda_block):g})",
@@ -1243,8 +1532,11 @@ def _run_self_check(params: DistributionParams) -> None:
     These checks are intended as guardrails for paper figures:
     - Wallet utilization factor η is capped at 1.
     - The point mass at η=1 matches the closed-form probability P(Z>=1).
+    - Trader sides are symmetric Bernoulli draws.
     - k_out thresholds form a valid discrete uniform distribution.
+    - Burn cooldowns have the correct support in block or second units.
     - Binomial width noise has approximately zero mean.
+    - Sampled narrow-LP widths stay on-grid and within the configured clip range.
     """
     n = int(min(50_000, max(10_000, params.n_samples // 50)))
     np.random.seed(int(params.seed) + 12_345)
@@ -1270,11 +1562,40 @@ def _run_self_check(params: DistributionParams) -> None:
             f"(observed={observed_mass_at_one:.3f}, expected={expected_mass_at_one:.3f})."
         )
 
+    # --- Trader side: symmetric Bernoulli via random.choice(["X_to_Y", "Y_to_X"]) ---
+    trader_side = sample_trader_side(n_samples=n)
+    if trader_side.size == 0:
+        raise AssertionError("trader side check failed: empty sample.")
+    if not np.all(np.isin(trader_side, [0.0, 1.0])):
+        raise AssertionError("trader side check failed: support is not {0, 1}.")
+    if abs(float(np.mean(trader_side)) - 0.5) > 0.02:
+        raise AssertionError("trader side check failed: imbalance exceeds tolerance.")
+
     # --- k_out threshold: discrete uniform on [k_out_min, k_out_max] ---
     k_out_min = int(params.k_out_min)
     k_out_max = int(params.k_out_max)
     if k_out_min <= 0 or k_out_max <= 0 or k_out_min > k_out_max:
         raise AssertionError("k_out threshold check failed: invalid bounds.")
+
+    # --- Burn cooldown: UniformInt[3, 8] in blocks or seconds ---
+    cooldowns = sample_post_burn_cooldown(
+        block_time=int(params.block_time),
+        tau_seconds=params.tau_seconds,
+        n_samples=n,
+    )
+    expected_support = np.arange(
+        LP_COOLDOWN_BLOCK_MIN,
+        LP_COOLDOWN_BLOCK_MAX + 1,
+        dtype=float,
+    )
+    if params.tau_seconds is not None:
+        expected_support = expected_support * float(max(1, int(params.block_time)))
+    observed_support = np.unique(cooldowns)
+    if not np.array_equal(observed_support, expected_support):
+        raise AssertionError(
+            "cooldown check failed: unexpected support "
+            f"(observed={observed_support.tolist()}, expected={expected_support.tolist()})."
+        )
 
     # --- Width noise: mean-zero binomial term in tick units ---
     pool, _ = build_empty_pool()
@@ -1286,6 +1607,30 @@ def _run_self_check(params: DistributionParams) -> None:
     )
     if abs(float(np.mean(width_noise))) > float(pool.tick_spacing):
         raise AssertionError("width noise check failed: mean too far from zero.")
+
+    width_params = replace(params, n_steps=int(min(2_500, max(100, params.n_steps))))
+    prices, _ = simulate_reference_market_path(width_params)
+    sampled_widths = sample_lp_widths_from_reference_prices(
+        np.asarray(prices, dtype=float),
+        basis_half_life=int(params.basis_half_life),
+        w_min_ticks=int(params.w_min_ticks),
+        w_max_ticks=int(params.w_max_ticks),
+        slope_s=float(params.slope_s),
+        binom_n=int(params.binom_n),
+        binom_p=float(params.binom_p),
+        tick_spacing=int(pool.tick_spacing),
+    )
+    if sampled_widths.size == 0:
+        raise AssertionError("width-rule check failed: empty sampled-width series.")
+    if np.any(np.mod(sampled_widths, float(pool.tick_spacing)) != 0.0):
+        raise AssertionError("width-rule check failed: widths are off-grid.")
+    min_allowed = max(
+        pool.tick_spacing,
+        ((int(params.w_min_ticks) + pool.tick_spacing - 1) // pool.tick_spacing) * pool.tick_spacing,
+    )
+    max_allowed = max(pool.tick_spacing, (int(params.w_max_ticks) // pool.tick_spacing) * pool.tick_spacing)
+    if float(np.min(sampled_widths)) < float(min_allowed) or float(np.max(sampled_widths)) > float(max_allowed):
+        raise AssertionError("width-rule check failed: sampled widths exceed clip bounds.")
 
 
 def main() -> None:
@@ -1370,27 +1715,16 @@ def main() -> None:
     html_dir = out_root / "html"
     png_dir = out_root / "png"
 
-    prices, vols = simulate_reference_market_path(params)
-    fig_market = plot_reference_market_paths(prices, vols, sigma_mode=params.cex_sigma_mode)
-    fig_distributions = plot_distribution_suite(params)
+    prices, _ = simulate_reference_market_path(params)
+    fig_distributions = plot_distribution_suite(params, reference_prices=prices)
     fig_arrivals = plot_arrival_distributions(params)
-
-    save_plotly_figure(
-        fig_market,
-        png_dir / f"distributions_reference_market_{scenario_label}.png",
-        html_dir / f"distributions_reference_market_{scenario_label}.html",
-        "reference_market",
-        width=1400,
-        height=800,
-        scale=1.0,
-    )
     save_plotly_figure(
         fig_distributions,
         png_dir / f"distributions_core_{scenario_label}.png",
         html_dir / f"distributions_core_{scenario_label}.html",
         "distributions_core",
         width=1600,
-        height=900,
+        height=1150,
         scale=1.0,
     )
     save_plotly_figure(

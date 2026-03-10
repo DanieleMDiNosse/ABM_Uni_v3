@@ -18,6 +18,12 @@ two years. The key assumptions are:
 The script accepts CSV, Parquet, or pickle inputs and auto-detects whether
 the timestamp column is in seconds or milliseconds.
 
+Current script behavior worth knowing before you run it:
+
+- Parquet input/output requires a pandas parquet engine such as `pyarrow` or `fastparquet`. Those engines are not pinned by this repo’s default environment files, so CSV or pickle are the safer zero-setup formats.
+- `--save-csv` and `--save-parquet` never overwrite an existing file; if the target already exists, the script writes a suffixed path such as `name_1.csv`.
+- The script calibrates per-second volatility levels only. It does **not** estimate Heston parameters like `cex_heston_kappa`, `cex_heston_theta`, `cex_heston_sigma_v`, or `cex_heston_rho`.
+
 The goal is to derive **low** and **high** values of `cex_sigma` that are
 empirically grounded in the historical ETH/USDC volatility.
 
@@ -48,7 +54,8 @@ Key options:
 - `--low-quantile` / `--high-quantile`: define the regime thresholds used
   to extract representative `cex_sigma` values.
 - `--save-csv` / `--save-parquet`: optionally persist the time series with
-  columns `close`, `log_return_1s`, `sigma_1s`, and `sigma_annualized`.
+  columns `close`, `log_return_1s`, `sigma_1s`, and `sigma_annualized`. Existing
+  targets are preserved by auto-suffixing the requested path.
 - `--percentiles`: which percentiles of the per-second sigma distribution
   to print (defaults to `0.1 0.25 0.5 0.75 0.9 0.99`).
 
@@ -461,6 +468,8 @@ Once you have `sigma_1s_low` and `sigma_1s_high`:
 
 - **Static sigma:** use `sigma_1s_low` or `sigma_1s_high` directly as `cex_sigma`.
 - **Heston sigma:** use `cex_sigma_mode: heston`, keep `cex_sigma` as the fallback `sqrt(v0)`, and map calibrated levels to variance targets (for example `theta_low = sigma_1s_low^2`, `theta_high = sigma_1s_high^2`).
+
+The remaining Heston parameters still need to be chosen separately in the scenario YAML; this script does not fit them.
 
 For example (static vs. Heston):
 

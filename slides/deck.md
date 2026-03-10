@@ -150,14 +150,14 @@ Controller: bounds $[f_{min},f_{max}]$, hysteresis ($\Delta f_{min}$), step cap 
 
 ---
 
-# Microstructure Signature: Within-Block Lag
+<!-- # Microstructure Signature: Within-Block Lag
 
 <img src="assets/figures/microstructure_prices_micro.png" alt="Zoomed CEX vs DEX with band" width="700"/>
 
 - CEX moves during micro-steps; DEX executes at block boundary → systematic latency-induced basis.
 - Band uses a lagged reference snapshot, structurally shifting relative to contemporaneous $m_t$.
 
----
+--- -->
 
 # Microstructure Signature: DEX Return ACF
 
@@ -173,67 +173,53 @@ Related empirical pattern discussed in the paper (see citations there).
 
 # Experiments: Three Model Specifications
 
-- **Model 0:** arbitrageur + noise trader + smart router + passive LPs.
-- **Model 1:** add active LP cohort (narrower ranges).
-- **Model 2:** add JIT liquidity searcher (fee sniping around largest swap per block).
-
-Reporting:
-- PnLs averaged across 50 runs; shaded region is $\pm 2$ standard deviations (in figures).
-- Parameters chosen for plausible, interpretable dynamics (not full empirical calibration).
+- **Model 0:** arbitrageur, noise trader, smart router, and passive LPs only.
+- **Model 1:** add an active, more concentrated LP cohort alongside passive LPs.
+- **Model 2:** add a JIT liquidity provider to study MEV-style fee sniping.
+- **Reporting:** 100 independent seeds per `(model, fee schedule)`; summary figures show mean ± standard error.
+- **Outcomes:** hedged PnL, DEX share, and the endogenous fee level.
 
 ---
 
-# Results (Model 0): Static Fees
+# Results: Hedged PnL Across Scenarios
 
-| PnLs (mean ± 2 std) | Fee + DEX share |
+<img src="assets/figures/pnl_heatmap.png" alt="Hedged PnL heatmap across models and fee modes" width="500"/>
+
+- Static fees leave standing liquidity negative in every model: passive LP hedged PnL is below zero in Models 0-2, and active LPs are far more exposed once concentration is introduced.
+- In Model 0, all dynamic rules make passive LPs profitable, with a clear ranking: **toxicity > DEX-volatility > CEX-volatility**.
+- In Model 1, toxicity is the only controller that keeps **both** passive and active LPs positive on a hedged basis.
+- In Model 2, the same ordering persists, but dynamic fees also make JIT strongly profitable, sharpening the fee-incidence trade-off.
+
+---
+
+# Results: Competitiveness Cost
+
+<img src="assets/figures/dex_share_barplot.png" alt="DEX share across models and fee modes" width="520"/>
+
+- Static fees maximize DEX share: about **30%** in Model 0 and about **34%** in Models 1-2.
+- Dynamic fees reduce routed flow to roughly **21%-27%**; toxicity produces the largest decline because it is the highest-fee regime.
+- The paper’s point is not that adaptive fees eliminate order flow, but that LP protection is purchased with a measurable, partial loss of competitiveness.
+
+---
+
+# Results: Fee Levels and Fee Incidence
+
+| Mean fee | Cumulative fee value |
 | --- | --- |
-| <img src="assets/figures/model0_pnl_static.png" alt="Model 0 static fee PnLs (mean ± 2 std)" width="520"/> | <img src="assets/figures/model0_fee_static.png" alt="Model 0 static fee + DEX share distribution" width="360"/> |
+| <img src="assets/figures/mean_fee_barplot.png" alt="Mean fee by model and fee mode" width="400"/> | <img src="assets/figures/fee_value_barplot.png" alt="Cumulative fee value by cohort and scenario" width="500"/> |
 
-- Passive LP hedged PnL is negative; arbitrageur profits are positive.
-- DEX retains non-trivial routed flow (paper reports ~35% in this baseline).
-
----
-
-# Results (Model 0): Toxicity-Driven Fees
-
-| PnLs (mean ± 2 std) | Fee + DEX share |
-| --- | --- |
-| <img src="assets/figures/model0_pnl_toxicity.png" alt="Model 0 toxicity fee PnLs (mean ± 2 std)" width="520"/> | <img src="assets/figures/model0_fee_toxicity.png" alt="Model 0 toxicity fee + DEX share distribution" width="360"/> |
-
-- Passive LP hedged PnL becomes positive (and exceeds arbitrageur profits on average).
-- Fees rise in adverse-selection regimes; DEX share decreases but remains stable (paper reports ~25%).
+- Toxicity is systematically the highest-fee regime: about **19 bps** in Model 0 and **11-12 bps** in Models 1-2.
+- DEX-volatility is intermediate, while CEX-volatility remains close to **5 bps** across models.
+- Higher fee income alone is not enough: under volatility-based rules, active LPs still remain hedged-negative in Models 1-2.
+- Once JIT is admitted, part of the enlarged rent pool is diverted to the fast liquidity provider.
 
 ---
 
-# Results (Model 0): Volatility-Driven Fees (DEX)
+# Results: Economic Interpretation
 
-| PnLs (mean ± 2 std) | Fee + DEX share |
-| --- | --- |
-| <img src="assets/figures/model0_pnl_vol_dex.png" alt="Model 0 DEX-volatility fee PnLs (mean ± 2 std)" width="520"/> | <img src="assets/figures/model0_fee_vol_dex.png" alt="Model 0 DEX-volatility fee + DEX share distribution" width="360"/> |
-
-- Improves LP outcomes relative to static, but with weaker gains than toxicity in the paper’s experiments.
-
----
-
-# Results (Model 1): Active LPs (Concentration Trade-off)
-
-| Static fee | Toxicity fee |
-| --- | --- |
-| <img src="assets/figures/model1_pnl_static.png" alt="Model 1 static fee PnLs" width="450"/> | <img src="assets/figures/model1_pnl_toxicity.png" alt="Model 1 toxicity fee PnLs" width="450"/> |
-
-- Active LPs (narrow ranges) have higher LVR exposure → worse hedged PnL under static/volatility proxies.
-- Paper finding: toxicity-driven fees are the only schedule where **both** passive and active LP cohorts achieve positive hedged PnL.
-
----
-
-# Results (Model 2): JIT Liquidity (Fee Sniping)
-
-| Static fee | Toxicity fee | Volatility (CEX) |
-| --- | --- | --- |
-| <img src="assets/figures/model2_pnl_static.png" alt="Model 2 static fee PnLs" width="300"/> | <img src="assets/figures/model2_pnl_toxicity.png" alt="Model 2 toxicity fee PnLs" width="300"/> | <img src="assets/figures/model2_pnl_vol_cex.png" alt="Model 2 CEX-volatility fee PnLs" width="300"/> |
-
-- Dynamic fees make the JIT strategy profitable, but passive/active LPs do not achieve consistently positive hedged PnL.
-- Interpretation in the paper: dynamic fees increase fee mass in “toxic” blocks that also trigger JIT entry → fee redistribution.
+- **Model 0:** adaptive fees can restore passive LP profitability without eliminating routed flow.
+- **Model 1:** concentrated liquidity improves local depth but amplifies LVR; only toxicity targets adverse selection precisely enough to compensate active LPs.
+- **Model 2:** the same fee adaptivity that protects standing liquidity also raises the value of JIT entry, reallocating fee income toward latency-sensitive liquidity.
 
 ---
 
@@ -244,12 +230,13 @@ $$
 R_t=\frac{\Delta \mathrm{LVR}_t}{\Delta F_t}.
 $$
 
-| Static | Toxicity |
+| Static | Volatility (DEX) |
 | --- | --- |
-| <img src="assets/figures/ratio_lvr_over_fees_static.png" alt="ΔLVR/ΔFees vs block time (static)" width="450"/> | <img src="assets/figures/ratio_lvr_over_fees_toxicity.png" alt="ΔLVR/ΔFees vs block time (toxicity)" width="450"/> |
+| <img src="assets/figures/ratio_lvr_over_fees_static_summary.png" alt="Delta LVR over Delta Fees versus block time under static fees" width="450"/> | <img src="assets/figures/ratio_lvr_over_fees_vol_dex_summary.png" alt="Delta LVR over Delta Fees versus block time under DEX-volatility fees" width="450"/> |
 
-- As block time $B$ increases, within-block mispricing grows (variance scales with time) → higher LVR per block.
-- Static fees: $R_t>1$ and rising with $B$ (fees fail to cover LVR). Toxicity fees: $R_t<1$ and more stable.
+- Static fees: $R_t > 1$ for passive and active LPs at all block sizes; the paper reports a median coverage ratio around **2.2-2.5**.
+- DEX-volatility fees: the coverage ratio declines with block size and crosses below one around **$B \gtrsim 5$**.
+- For successful JIT events under dynamic fees, the ratio stays near zero and well below one, consistent with short-lived fee capture and limited LVR exposure.
 
 ---
 

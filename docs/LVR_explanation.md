@@ -163,7 +163,7 @@ $$
 
 The computation is handled by `RebalancerState` in `core/agents.py` and updated inside `scripts/run.py`.
 
-The benchmark’s *price-move accrual* is implemented by `_accrue_price_move`:
+The benchmark’s *price-move accrual* is implemented by the `_accrue_price_move(...)` helper, which is called through `_broadcast_price_move(...)` whenever the CEX moves because of diffusion or impact:
 
 ```python
 # scripts/run.py: _accrue_price_move
@@ -225,9 +225,9 @@ The main per-block series are (each split into `total` / `active` / `passive` co
 - `lp_fee_value_*_series`: $F_t$ (cumulative fees, valued at $m_t$).
 - `lp_rebal_value_*_series`: $V_t^{reb}$ (benchmark value).
 - `lp_rebal_*_series`: $R_t = V_t^{reb} - V_0^{reb}$ (benchmark PnL path).
-- `lp_pnl_*`: hedged PnL $V_t^{LP} - V_t^{reb} = F_t - \mathrm{LVR}_t$.
+- `lp_pnl_total`, `lp_pnl_active`, `lp_pnl_passive`: hedged PnL $V_t^{LP} - V_t^{reb} = F_t - \mathrm{LVR}_t$.
 - `lp_lvr_*_series`: LVR, computed as `lp_fee_value_*_series - lp_pnl_*`.
-- `lp_unhedged_*`: unhedged PnL $V_t^{LP} - V_0^{LP}$.
+- `lp_unhedged_total`, `lp_unhedged_active`, `lp_unhedged_passive`: unhedged PnL $V_t^{LP} - V_0^{LP}$.
 
 These are the quantities typically plotted in the dashboards and consumed by batch runners such as
 `scripts/run_multiple.py`, `scripts/run_parameter_surface_nd_pnl_fee_dashboard.py`, and

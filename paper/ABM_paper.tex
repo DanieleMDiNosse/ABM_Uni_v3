@@ -611,7 +611,7 @@ in the same state $(s_t;s_a,s_b)$. Hence
   \label{eq:lp-Lmax-cash}
 \end{equation}
 
-To model heterogeneous aggressiveness while avoiding unrealistically ``all-in'' mints, each mint attempt draws
+To model heterogeneous aggressiveness while avoiding all the mints to be ``all-in'', each time the LP draws
 a wallet utilization factor $\eta_{j,t}\in(0,1]$:
 \begin{equation}
   Z_{j,t}\sim \log\mathcal{N}(\mu_{\mathrm{mint}},\sigma_{\mathrm{mint}}),\qquad
@@ -1059,31 +1059,48 @@ The model is initialized by setting an initial pool price $P^{\mathrm{DEX}}_0$ a
 \section{Results}
 \label{sec:results}
 
-In this section we illustrate the results obtained with the ABM framework introduced in the previous sections. The goal is to assess whether dynamic fees can mitigate adverse selection (LVR) under block-time execution, and to quantify the trade-offs with competitiveness (DEX share) and with strategic liquidity provision (active LPs and JIT liquidity).
+In this section we illustrate the results obtained with the ABM framework introduced in the previous sections. The goal 
+is to assess whether dynamic fees can mitigate adverse selection (LVR) under block-time execution, and to quantify the 
+trade-offs with competitiveness (DEX share) and with strategic liquidity provision (active LPs and JIT liquidity).
 
 We consider three models with increased complexity:
 \begin{enumerate}
-    \item \textbf{Model 0:} arbitrageur, noise trader, smart router, and a passive LP cohort only. This baseline isolates block-time stale-quote risk without strategic liquidity provision.
-    \item \textbf{Model 1:} we introduce an active (more concentrated) LP cohort alongside passive LPs (equal split of the LP population) and compare hedged PnL across cohorts under different fee policies.
-    \item \textbf{Model 2:} we additionally allow a JIT liquidity provider (the ``Jiter'') to operate, to study how MEV-style liquidity affects the incidence of fees and LVR across LP cohorts.
+    \item \textbf{Model 0:} arbitrageur, noise trader, smart router, and a passive LP cohort only. This baseline isolates 
+    block-time stale-quote risk without strategic liquidity provision.
+    \item \textbf{Model 1:} we introduce an active (more concentrated) LP cohort alongside passive LPs (equal split of 
+    the LP population) and compare hedged PnL across cohorts under different fee policies.
+    \item \textbf{Model 2:} we additionally allow a JIT liquidity provider (the ``Jiter'') to operate, to study how 
+    MEV-style liquidity affects the incidence of fees and LVR across LP cohorts.
 \end{enumerate}
 
-All simulations share a common set of parameters (Table \ref{tab:common_params}). As stated in the introduction, our objective is not to construct a data-generating process that accurately reproduces empirical market properties, but rather to develop a framework that allows us to study how different types of agents interact and how the introduction of dynamic fee mechanisms affects the economics of liquidity provision. Accordingly, parameter values are chosen to generate plausible and interpretable dynamics, providing a meaningful setting in which qualitative reasoning and comparative analysis can be carried out. Several parameters (e.g., the order-flow intensity per block) are chosen to be consistent with the empirical calibration in \cite{dinosse_gatta}.
+All simulations share a common set of parameters (Table \ref{tab:common_params}). As stated in the introduction, 
+our objective is not to construct a data-generating process that accurately reproduces empirical market properties, 
+but rather to develop a framework that allows us to study how different types of agents interact and how the 
+introduction of dynamic fee mechanisms affects the economics of liquidity provision. Accordingly, parameter values 
+are chosen to generate plausible and interpretable dynamics, providing a meaningful setting in which qualitative 
+reasoning and comparative analysis can be carried out. Several parameters (e.g., the order-flow intensity per block) 
+are chosen to be consistent with the empirical calibration in \cite{dinosse_gatta}. We anyway provides a brief
+section in which we shows that even without a proper empirical calibration, the model is able to generate realistic 
+price and trade dynamics, see Section \ref{sec:stylized}.
 
-Unless otherwise stated, summary figures report mean \(\pm\) standard deviation across \textbf{100 independent seeds} per \((\text{model},\text{fee schedule})\) configuration.
+Unless otherwise stated, summary figures report mean \(\pm\) standard error across \textbf{100 independent seeds} per 
+\((\text{model},\text{fee schedule})\) configuration.
 
 The main metrics of interest are:
 \begin{itemize}
-    \item the \textbf{hedged LP PnL} (Section~\ref{paragraph:PnL_decomposition}), which quantifies the profitability of liquidity provision in the AMM net of market risk:
+    \item the \textbf{hedged LP PnL} (Section~\ref{paragraph:PnL_decomposition}), which quantifies the profitability of 
+    liquidity provision in the AMM net of market risk:
     \begin{equation}
         \Pi_T^{\mathrm{hedged}} = F_T - \mathrm{LVR}_T - \mathbb{1}_{JIT}C_{\mathrm{flash}},
     \end{equation}
     where $\mathbb{1}_{JIT}=1$ for the Jiter cohort and $0$ otherwise;
-    \item the \textbf{fraction of trades routed to the DEX} relative to total trades (DEX share), which serves as a measure of the AMM’s attractiveness compared to the CEX:
+    \item the \textbf{fraction of trades routed to the DEX} relative to total trades (DEX share), which serves as a 
+    measure of the AMM’s attractiveness compared to the CEX:
     \begin{equation}
         \text{DEX}_{share} = \frac{\text{\#DEX trades }}{\text{\# CEX+DEX trades}}
     \end{equation}
-    \item the \textbf{liquidity-taker fee level} $f_t$. Holding all other parameters fixed, higher fees increase LP revenues but reduce the competitiveness of the AMM, thereby discouraging order routing by the smart router in favor of the CEX.
+    \item the \textbf{liquidity-taker fee level} $f_t$. Holding all other parameters fixed, higher fees increase LP 
+    revenues but reduce the competitiveness of the AMM, thereby discouraging order routing by the smart router in favor of the CEX.
 \end{itemize}
 
 
@@ -1198,10 +1215,29 @@ The main metrics of interest are:
 \label{tab:common_params}
 \end{table*}
 
-\subsection{Microstructure diagnostics (illustrative)}
-Before comparing fee policies, we validate that the ABM reproduces the expected microstructure channel: block-time latency generates transient CEX--DEX deviations that are harvested by priority arbitrage, implying adverse selection (LVR) for LPs.
+\subsection{Microstructure diagnostics}
+\label{sec:stylized}
+Before comparing fee policies, we validate that the ABM reproduces the expected microstructure channel: block-time 
+latency generates transient CEX--DEX deviations that are harvested by priority arbitrage, implying adverse selection (LVR) for LPs.
 
-Figure~\ref{fig:microstructure_prices} compares the reference (CEX) price with the AMM (DEX) price and the implied no-arbitrage band. The DEX series exhibits pronounced spikes because the CEX price evolves within each block while on-chain swaps are executed at the block boundary. Mispricings are then corrected by arbitrage at the beginning of the next block, generating the spike-and-reversion dynamics documented empirically in \cite{dinosse_gatta}. The apparent lag between the CEX series and the shaded band is structural: the band is computed from the lagged snapshot \(m_{t-1}\), whereas the plotted \(m_t\) is the contemporaneous end-of-block reference price after intra-block diffusion.
+Figure \ref{fig:distributions} shows the distribution from which the ABM samples the different
+values (amounts, width, LP internal clocks, LP utilization factor etc.) used during the simulations.
+
+Figure~\ref{fig:microstructure_prices} compares the reference (CEX) price with the AMM (DEX) price and the implied 
+no-arbitrage band. The DEX series exhibits pronounced spikes because the CEX price evolves within each block while 
+on-chain swaps are executed at the block boundary. Mispricings are then corrected by arbitrage at the beginning of 
+the next block, generating the spike-and-reversion dynamics documented empirically in \cite{dinosse_gatta}. 
+However, this behaviour disappears when we move to dynamic fees, as the fee level adjusts to offset the stale-quote r
+isk and prevent huge arbitrage opportunities from materializing. 
+The apparent lag between the CEX series and the shaded band is structural: the band is computed from the lagged 
+snapshot \(m_{t-1}\), whereas the plotted \(m_t\) is the contemporaneous end-of-block reference price after intra-block diffusion.
+
+\begin{figure}
+  \centering
+  \includegraphics[width=0.85\linewidth]{images/distributions_core_static.png}
+  \caption{Distributions of key variables (trade sizes, LP widths, review times, mint sizes, etc.) used in the ABM.}
+  \label{fig:distributions}
+\end{figure}
 
 \begin{figure}[t]
   \centering
@@ -1218,61 +1254,119 @@ Figure~\ref{fig:microstructure_prices} compares the reference (CEX) price with t
     \includegraphics[width=0.75\linewidth]{images/cex_dex_band.pdf}
     \caption{Zoomed-in view highlighting the lag induced by block-time execution.}
   \end{subfigure}
-  \caption{Microstructure illustration under static fees (Model~0). Block-time latency and priority arbitrage induce transient deviations between the AMM price and the reference market, which are then corrected at the next block.}
+  \caption{Microstructure illustration under static fees (Model~0). Block-time latency and priority arbitrage induce 
+  transient deviations between the AMM price and the reference market, which are then corrected at the next block.}
   \label{fig:microstructure_prices}
 \end{figure}
 
-Another informative diagnostic is the autocorrelation function (ACF) of end-of-block DEX returns. Figure~\ref{fig:microstructure_acf} shows a pronounced negative spike at lag 1, indicating short-horizon mean reversion across consecutive blocks. A qualitatively similar lag-1 anticorrelation has been documented in \cite{dinosse_gatta} and is often linked to arbitrage dynamics; our simulations show that block-time non-atomic CEX--DEX arbitrage alone can generate this signature.
+Another informative diagnostic is the autocorrelation function (ACF) of end-of-block DEX returns. 
+Figure~\ref{fig:microstructure_acf} shows a pronounced negative spike at lag 1, indicating short-horizon mean reversion 
+across consecutive blocks. A qualitatively similar lag-1 anticorrelation has been documented in \cite{dinosse_gatta} and
+is often linked to arbitrage dynamics; our simulations show that block-time non-atomic CEX--DEX arbitrage alone can 
+generate this signature. Also in this case, the negative lag-1 spike disappears under dynamic fees.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.55\linewidth]{images/274418_static_LPpassiveshare0.5_pjit0.0_1c_dex_return_acf_steps10000.png}
-  \caption{Autocorrelation function of end-of-block DEX returns (representative static-fee run), exhibiting a pronounced lag-1 negative spike.}
+  \caption{Autocorrelation function of end-of-block DEX returns (representative static-fee run), exhibiting a pronounced 
+  lag-1 negative spike.}
   \label{fig:microstructure_acf}
 \end{figure}
 
 \subsection{Cross-scenario outcome summary}
 \label{subsec:results_summary}
-We now summarize outcomes across all \((\text{model},\text{fee schedule})\) combinations using aggregated cross-scenario figures. This presentation avoids repeating near-identical time-series plots and focuses instead on comparisons that are directly aligned with the paper's scope: how fee policies reshape the balance between fee income and adverse selection (LVR), how they move the smart router's flow allocation, and how they affect the distribution of revenues across LP types.
+We now summarize outcomes across all \((\text{model},\text{fee schedule})\) combinations using aggregated cross-scenario 
+figures. This presentation focuses on the paper's central 
+question: whether dynamic fees can offset block-time adverse selection without rendering the AMM uncompetitive, and how 
+the answer changes once liquidity provision becomes more strategic.
 
 \paragraph{Hedged PnL across models and fee modes.}
-Figure~\ref{fig:pnl_heatmap} reports the final hedged PnL by cohort (token-1 numéraire). Under \textbf{static fees}, passive LP hedged PnL is negative in all three models (Model~0: \(-108.8\pm 10.5\); Model~1: \(-63.7\pm 3.2\); Model~2: \(-71.6\pm 6.9\)), consistent with a structural wedge between fixed fee revenue and stale-quote losses under block-time execution. Active LPs (more concentrated liquidity) are substantially more negative under static fees (\(-928.8\pm 12.2\) in Model~1; \(-954.7\pm 39.3\) in Model~2), highlighting that concentration amplifies exposure to adverse selection.
+Figure~\ref{fig:pnl_heatmap} reports the final hedged PnL by cohort (token-1 numéraire). The static-fee benchmark remains 
+unfavorable for standing liquidity in every model. Passive LP hedged PnL is negative in Model~0, Model~1, and Model~2 
+(\(-578.6\pm 4.7\), \(-660.3\pm 3.8\), and \(-666.7\pm 3.5\), respectively), while active LPs are much more exposed 
+(\(-5558.1\pm 50.6\) in Model~1 and \(-5501.7\pm 45.5\) in Model~2). This establishes the baseline microstructure result 
+at the aggregate level: a fixed fee does not compensate stale-quote losses, and concentration amplifies that exposure.
 
-Dynamic fees can restore positive hedged profitability, but performance depends critically on the \emph{signal} driving fee updates. A \textbf{toxicity-driven controller} delivers the strongest improvement in the no-JIT setting: passive LP hedged PnL becomes strongly positive in Model~0 (\(+361.9\pm 30.2\)) and both passive and active LPs become positive in Model~1 (\(+77.1\pm 5.5\) and \(+108.3\pm 0.0\), respectively). Volatility-based controllers are less targeted: while they can improve passive LP outcomes in Model~0, they fail to restore positive hedged PnL for active LPs in Model~1.
+Dynamic fees materially change this ranking, but only when the fee signal is sufficiently aligned with adverse selection. 
+In Model~0, all dynamic controllers turn passive LP PnL positive, with a clear ordering 
+\texttt{toxicity} \(>\) \texttt{volatility\_dex} \(>\) \texttt{volatility\_cex}: \(+26698.4\pm 45.3\), 
+\(+18356.9\pm 42.9\), and \(+5431.0\pm 7.8\), respectively. Once active liquidity is introduced (Model~1), 
+the toxicity controller remains the only specification that protects both LP cohorts simultaneously, delivering 
+\(+1356.0\pm 11.2\) for passive LPs and \(+5704.9\pm 103.4\) for active LPs. By contrast, the two volatility-based 
+rules still leave active LPs substantially negative (\(-3439.6\pm 76.0\) and \(-2658.4\pm 91.3\)), even though passive 
+LPs become mildly positive.
 
-Model~2 highlights a protocol-design tension. When JIT liquidity is allowed, fee policies that increase the fee stream in ``toxic'' states can create a larger opportunity set for short-horizon liquidity provision. Under toxicity-driven fees, passive LPs remain modestly positive (\(+18.3\pm 2.8\)) while active LPs remain slightly negative (\(-13.6\pm 8.0\)); at the same time, the Jiter becomes profitable (\(+94.1\pm 13.7\)). In this parameterization, dynamic fees partially internalize adverse selection for the AMM as a whole, but they also reallocate surplus toward latency/priority strategies.
+The same ordering persists in Model~2, but with a sharper incidence pattern. Toxicity-driven fees keep both passive and 
+active LPs positive (\(+496.6\pm 6.4\) and \(+1853.1\pm 66.4\)), whereas the volatility-based rules keep passive LPs 
+positive but leave active LPs deeply negative. At the same time, the Jiter is essentially inactive under static fees 
+(\(+5.8\pm 0.3\)) but becomes strongly profitable under every dynamic schedule, especially under toxicity (\(+4086.7\pm 21.9\), 
+versus \(+2913.3\pm 10.1\) and \(+2138.6\pm 11.8\) for the two volatility rules). The updated figure therefore sharpens the 
+paper's main trade-off: dynamic fees can mitigate LVR for standing liquidity, but they also enlarge the rent pool available 
+to fast, event-contingent liquidity. In this comparison, the toxicity controller is the only rule that robustly restores 
+positive hedged profitability for both passive and active LPs once strategic liquidity is present.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{images/analysis/png/pnl_heatmap.png}
-  \caption{Final hedged PnL (token-1) across models and fee modes. Cells report mean \(\pm\) sd across 100 seeds. Inactive cohorts (e.g., JIT in Models 0--1) are left blank.}
+  \caption{Final hedged PnL (token-1) across models and fee modes. Cells report mean \(\pm\) standard error across 100 seeds. 
+  Inactive cohorts (e.g., JIT in Models 0--1) are left blank.}
   \label{fig:pnl_heatmap}
 \end{figure}
 
 \paragraph{Competitiveness: DEX share.}
-The smart router trades off execution quality against fees, so higher endogenous fees can reduce AMM competitiveness. Figure~\ref{fig:dex_share_barplot} shows that the AMM remains used under all regimes, but dynamic fees reduce routed DEX share relative to static fees (e.g., from \(\approx 35\%\)--\(39\%\) under static to \(\approx 23\%\)--\(28\%\) under dynamic controllers in this parameterization). This emphasizes that fee design must be evaluated jointly on (i) LP protection and (ii) induced order-flow allocation.
+The smart router trades off execution quality against fees, so higher endogenous fees can reduce AMM competitiveness. 
+Figure~\ref{fig:dex_share_barplot} shows a systematic competitiveness cost: static fees yield the highest DEX share 
+in every model (about \(30\%\) in Model~0 and about \(34\%\) in Models~1--2), whereas dynamic controllers lower routed 
+DEX share to roughly \(21\%\)--\(27\%\). The toxicity rule produces the largest decline in routed flow, especially in 
+Model~0, consistent with its much higher average fee level. The volatility-based rules preserve slightly more order 
+flow than toxicity, but they still remain well below the static benchmark. Importantly, the AMM remains economically 
+relevant in all configurations; dynamic fees reduce DEX share rather than eliminating routed flow. The improvement in 
+LP protection documented in Figure~\ref{fig:pnl_heatmap} is therefore achieved through a measurable, but partial, loss 
+of competitiveness rather than through a collapse in trading activity. It is worth noting, however, that the tracked
+DEX share should be seen as a lower bound for the AMM's competitiveness, since the smart router is a simplified proxy 
+for real-world routing logic and may not capture all the nuances of how traders choose between venues in practice.
+For instance, a trader can choose to swap on the DEX for other reasons beyond pure price and fee considerations, such as
+ privacy, censorship resistance, or simply as a part of a bigger strategy that involves on-chain interactions.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.95\linewidth]{images/analysis/png/dex_share_barplot.png}
-  \caption{Mean smart-router DEX share across scenarios (mean \(\pm\) sd across 100 seeds).}
+  \caption{Mean smart-router DEX share across scenarios (mean \(\pm\) standard error across 100 seeds).}
   \label{fig:dex_share_barplot}
 \end{figure}
 
 \paragraph{Fee levels and fee incidence across cohorts.}
-Figure~\ref{fig:mean_fee_barplot} reports the time-averaged fee level for dynamic modes. Toxicity-driven fees imply the highest average fee in all three models (about 11--15 bps on average), whereas volatility-driven modes remain closer to the baseline floor (about 4--7 bps on average). Figure~\ref{fig:fee_value_barplot} decomposes the cumulative fee value accrued to passive LPs, active LPs, and the total. Dynamic fees substantially increase total fee value relative to static fees; however, the hedged PnL results in Figure~\ref{fig:pnl_heatmap} show that higher fee value does not mechanically translate into positive hedged profitability for concentrated LPs, because LVR can increase even faster. In Model~2, this tension is amplified by JIT liquidity, which can appropriate fee income precisely in the most lucrative blocks.
+Figure~\ref{fig:mean_fee_barplot} reports the time-averaged fee level for the dynamic modes. Toxicity is systematically 
+the highest-fee regime, reaching about \(19\) bps in Model~0 and about \(11\)--\(12\) bps in Models~1--2. The DEX-volatility 
+controller is intermediate, around \(12\) bps in Model~0 and around \(6\) bps thereafter, while the CEX-volatility 
+controller remains close to \(5\) bps across all models. Figure~\ref{fig:fee_value_barplot} shows the associated 
+fee-incidence decomposition. In Model~0, where all standing liquidity is passive, higher fees map almost one-for-one 
+into passive fee income: total fee value rises from only about \(1.5\times 10^3\) under static fees to more than 
+\(3\times 10^4\) under toxicity.
+
+Once passive and active liquidity coexist, the fee distribution becomes highly asymmetric. In Models~1 and~2, the active 
+cohort receives the dominant share of dynamic fee income, especially under toxicity, where total cumulative fee value 
+rises to roughly \(7.6\times 10^4\) in Model~1 and \(5.5\times 10^4\) in Model~2. This comparison is important because 
+it shows that large fee revenues do not, by themselves, guarantee protection against adverse selection. Under both 
+volatility-based rules, active LPs collect substantial fees yet remain strongly negative in hedged PnL terms (Figure 
+\ref{fig:pnl_heatmap}). What matters is not only charging more, but charging more precisely in the states in which 
+stale-quote risk is highest. The toxicity controller is the only specification that simultaneously raises the fee wedge 
+and moves active LP hedged PnL into positive territory. Once JIT liquidity is admitted, part of the enlarged rent pool 
+is still diverted to the fast liquidity provider, as evidenced by the large positive JIT PnL in Figure~\ref{fig:pnl_heatmap}. 
+The aggregate message is therefore two-sided: dynamic fees can mitigate LVR, but the signal design determines whether the 
+additional fee income compensates standing LPs or is shared with strategic, latency-sensitive liquidity.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{images/analysis/png/fee_value_barplot.png}
-  \caption{Final cumulative fee value (token-1) by LP cohort across scenarios (mean \(\pm\) sd across 100 seeds).}
+  \caption{Final cumulative fee value (token-1) by LP cohort across scenarios (mean \(\pm\) standard error across 100 seeds).}
   \label{fig:fee_value_barplot}
 \end{figure}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.95\linewidth]{images/analysis/png/mean_fee_barplot.png}
-  \caption{Time-averaged taker fee under dynamic fee modes (static excluded), mean \(\pm\) sd across 100 seeds.}
+  \caption{Time-averaged taker fee under dynamic fee modes (static excluded), mean \(\pm\) standard error across 100 seeds.}
   \label{fig:mean_fee_barplot}
 \end{figure}
 

@@ -5,7 +5,38 @@ nav_order: 1
 
 # ABM Uni v3 Documentation
 
-Documentation for an Agent Based Model (ABM) simulating Uniswap v3, with equations rendered via MathJax (inline `$...$`, display `$$...$$`).
+Documentation for the current `ABM_Uni_v3` codebase: a Python simulator for a Uniswap v3-style pool, plus experiment-design utilities, diagnostics scripts, and a live Dash webapp.
+
+## Quick Start
+
+```bash
+conda activate main
+python -m scripts.run --config abm_results/scenarios/test.yml
+pytest -q
+```
+
+Main outputs land under `abm_results/scenarios/<scenario_name>/`. The newest CLI run for each scenario is recorded in `abm_results/scenarios/<scenario_name>/latest_run.json`.
+
+## Documentation Map
+
+- [Model Overview](README.md): simulator scope, preferred scenario knobs, output layout, and main entry points.
+- [Agent Behaviour Details](agents_spec.md): execution ordering, mempool semantics, LP behavior, arbitrage, and JIT logic as implemented in `scripts/run.py`.
+- [Loss-Versus-Rebalancing](LVR_explanation.md): theory and the repo’s discrete-time benchmark construction.
+- [LP PnL](LP_PnL.md): unhedged vs hedged LP accounting, fees, LVR, and reported series.
+- [Fee Schedules](fee_schedules.md): the five fee modes and the shared controller logic.
+- [Sigma Calibration](sigma_calibration.md): turning Binance 1-second ETH/USDC data into `cex_sigma` inputs.
+- [Stress Tests](stress_tests.md): YAML-only stress scenarios and recommended diagnostics.
+- [Webapp](webapp.md): Dash architecture, persistence, crash recovery, and live telemetry.
+- [LP Width Mint Signals](lp_width_mint_signals.md): research notes on alternative active-LP width signals.
+- [nD Sampling Designs](nd_grid_sampling_methods.md): grid, sampled, and sequential experiment workflows.
+
+## Output Conventions
+
+- Scenario configs live under `abm_results/scenarios/*.yml`.
+- Each CLI run writes a new record under `abm_results/scenarios/<scenario_name>/runs/<run_id>/`.
+- Experiment-design caches write immutable tagged folders under `abm_results/experiments_runs/`.
+- ND grid sweeps write global caches under `abm_results/grid_search/dashboard_nd/`.
+- Webapp runs are isolated under `abm_results/web_runs/<run_id>/`.
 
 ## Pages
 

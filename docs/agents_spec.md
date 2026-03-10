@@ -229,14 +229,14 @@ Both trader types share the same size distribution and micro-step arrival proces
   - Each non-JIT LP has a review clock (`next_review`) drawn from a geometric distribution.
     - Legacy: mean waiting time `tau` is in **blocks**.
     - Optional real-time mode: if `tau_seconds` is set, mean waiting time is in **seconds** and the scheduler advances the review clock by `block_time` seconds per block.
-  - After burns, LPs enter a cooldown (random 3–8 blocks) during which they are not selected as “due” (and therefore will not schedule new actions). Cooldown is enforced block-to-block; it does not retroactively cancel already-enqueued intents in the current mempool.
+  - After burns, LPs enter a cooldown drawn from 3–8 base units. In legacy block-based mode this is 3–8 blocks; when `tau_seconds` is set, the code multiplies that draw by `block_time`, so the cooldown scales in seconds rather than blocks. Cooldown is enforced block-to-block; it does not retroactively cancel already-enqueued intents in the current mempool.
   - Block-level Poisson targets schedule actions among eligible LPs:
     - Legacy per-block targets: `narrow_mints_per_block`, `passive_mints_per_block`, `passive_burns_per_block`.
     - Optional real-time targets:
       - `*_per_second` define intensities per micro-step (second), so the per-block mean scales as `lambda_block = block_time * lambda_second`.
 - **LP types in the code**:
   - **Active narrow** (`is_active_narrow=True`, `is_passive=False`): can TP/SL burn and recenter; uses the dynamic `w_ticks` width signal for new mints and recenters.
-  - **Passive** (`is_passive=True`): does not TP/SL burn or recenter; can be randomly burned (`passive_burns_per_block`) and can mint with a passive width rule.
+  - **Passive** (`is_passive=True`): does not TP/SL burn or recenter; can be randomly burned (preferred `passive_burns_per_second`, legacy `passive_burns_per_block`) and can mint with a passive width rule.
   - **Seed/background LPs** (`is_seed=True`): created by `bootstrap_initial_binomial_hill_sharded(...)` to provide initial liquidity; excluded from cohort PnL/wealth aggregates but otherwise behave like passive LPs in scheduling.
 - **Initialization**:
   - **Active vs passive composition**:
@@ -259,7 +259,7 @@ Both trader types share the same size distribution and micro-step arrival proces
 - **Passive random burns (implemented)**:
   - For passive LPs, burns are not TP/SL-triggered. Instead:
     - Collect all positions belonging to **due** passive LPs.
-    - Draw `n_burn_intents ~ Poisson(passive_burns_per_block)` and sample that many positions uniformly without replacement.
+    - Draw `n_burn_intents` from the preferred real-time intensity when `passive_burns_per_second` is set; otherwise fall back to the legacy per-block target `Poisson(passive_burns_per_block)`.
     - Enqueue each sampled position as an `lp_burn` intent.
 - **Recenter rule (implemented)**:
   - Each position tracks consecutive out-of-range blocks (`out_steps`), based on the **validated** tick snapshot `agent_tick_ref`.
@@ -288,7 +288,7 @@ Both trader types share the same size distribution and micro-step arrival proces
       - Compute current principal: `(amt0_now, amt1_now) = pos.current_amounts(S_exec)`
       - Include uncollected fees: `amt0_total = amt0_now + fees0`, `amt1_total = amt1_now + fees1`
       - Convert to token1: `wallet_y ← wallet_y + amt1_total + amt0_total * m_exec`, `wallet_x ← 0`
-      - Set `lp.cooldown ← randint(3, 8)` (implemented as `np.random.randint(3, 9)`).
+      - Set `lp.cooldown ← randint(3, 8)` in legacy block units, or `block_time * randint(3, 8)` when `tau_seconds` is active (implemented with `np.random.randint(3, 9)` and then scaled).
 - **Mint range construction (tick-based, active and passive fallback)**:
   - For a desired total width in ticks `width_ticks`:
     - `n_bands = max(1, round(width_ticks / tick_spacing))`
@@ -516,7 +516,7 @@ Whenever an agent “touches the CEX”, `scripts/run.py` applies **permanent ad
   - `Δa > 0`: buy token0 (pushes `m` up)
   - `Δa < 0`: sell token0 (pushes `m` down)
 - Impact function (from `ReferenceMarket.apply_impact_only` in `core/utils.py`):
-  - `impact = kappa * sign(Δa) * |Δa|^(1 + xi)`
+  - `impact = kappa * sign(Δa) * |Δa|^xi`
   - `m ← max(1e-12, m + impact)`
 - In `scripts/run.py`, `kappa` is set when constructing the reference market (currently `kappa = 1e-3`).
 

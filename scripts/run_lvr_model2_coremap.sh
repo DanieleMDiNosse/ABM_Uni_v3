@@ -2,13 +2,32 @@
 set -euo pipefail
 
 # Run LVR_vs_blocksize for all model2 scenarios plus vol_conditioned_wide,
-# binding each scenario run to a CPU core (scenario -> core mapping).
+# binding each scenario run to a dedicated CPU set.
 #
 # Usage:
 #   bash scripts/run_lvr_model2_coremap.sh --runs 50 --fee-definition flow
 #
 # Optional environment variable:
 #   CORE_IDS="0,1,2,3,4"   # explicit cores to use (default: all cores from nproc)
+#
+# Parallelization procedure:
+#   1. Build the available CPU list from CORE_IDS or from `nproc`.
+#   2. Read `--max-workers` from the CLI. If it is omitted, this wrapper forces
+#      `scripts.LVR_vs_blocksize` to run with `--max-workers 1`.
+#   3. Reserve a non-overlapping CPU group of size `max_workers` for each
+#      concurrent scenario. For example, with 16 cores and `--max-workers 4`,
+#      the wrapper creates 4 groups: `0,1,2,3`, `4,5,6,7`, `8,9,10,11`,
+#      `12,13,14,15`.
+#   4. Launch at most `floor(n_cores / max_workers)` scenarios at a time, each
+#      pinned via `taskset` to one of those CPU groups. `scripts.LVR_vs_blocksize`
+#      can then use its internal `ProcessPoolExecutor` on that CPU group.
+#   5. Wait for the whole batch to finish before launching the next batch.
+#
+# Notes:
+#   - If `n_cores` is not divisible by `max_workers`, the remainder cores are
+#     left idle so CPU groups stay disjoint.
+#   - If `--max-workers` exceeds the number of available cores, the wrapper
+#     exits with an error rather than silently oversubscribing.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -40,7 +59,21 @@ _parse_core_ids() {
     _out=()
 
     if [[ -n "${CORE_IDS:-}" ]]; then
-        IFS=',' read -r -a _out <<< "${CORE_IDS}"
+        local -a raw_core_ids=()
+        local core
+        IFS=',' read -r -a raw_core_ids <<< "${CORE_IDS}"
+        for core in "${raw_core_ids[@]}"; do
+            core="${core//[[:space:]]/}"
+            if [[ -z "${core}" ]]; then
+                echo "[error] CORE_IDS contains an empty entry." >&2
+                exit 1
+            fi
+            if [[ ! "${core}" =~ ^[0-9]+$ ]]; then
+                echo "[error] CORE_IDS entries must be non-negative integers. Got: ${core}" >&2
+                exit 1
+            fi
+            _out+=("${core}")
+        done
         return
     fi
 
@@ -55,14 +88,78 @@ _parse_core_ids() {
     done
 }
 
-_has_max_workers_flag() {
+_extract_max_workers() {
+    local -n _out=$1
+    shift
+
+    _out=""
+
     local arg
+    local expect_value=0
     for arg in "$@"; do
-        if [[ "${arg}" == "--max-workers" || "${arg}" == --max-workers=* ]]; then
-            return 0
+        if [[ "${expect_value}" -eq 1 ]]; then
+            _out="${arg}"
+            expect_value=0
+            continue
         fi
+
+        case "${arg}" in
+            --max-workers)
+                expect_value=1
+                ;;
+            --max-workers=*)
+                _out="${arg#--max-workers=}"
+                ;;
+        esac
     done
-    return 1
+
+    if [[ "${expect_value}" -eq 1 ]]; then
+        echo "[error] --max-workers requires a value." >&2
+        exit 1
+    fi
+}
+
+_require_positive_int() {
+    local value=$1
+    local label=$2
+
+    if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "[error] ${label} must be a positive integer. Got: ${value}" >&2
+        exit 1
+    fi
+}
+
+_build_core_groups() {
+    local -n _out=$1
+    local workers_per_scenario=$2
+    shift 2
+
+    local -a cores=("$@")
+    local ncores=${#cores[@]}
+
+    _out=()
+
+    _require_positive_int "${workers_per_scenario}" "--max-workers"
+
+    if [[ "${ncores}" -lt "${workers_per_scenario}" ]]; then
+        echo "[error] requested --max-workers=${workers_per_scenario} but only ${ncores} cores are available." >&2
+        exit 1
+    fi
+
+    local ngroups=$((ncores / workers_per_scenario))
+    local g idx start end group
+    for ((g = 0; g < ngroups; g++)); do
+        start=$((g * workers_per_scenario))
+        end=$((start + workers_per_scenario))
+        group=""
+        for ((idx = start; idx < end; idx++)); do
+            if [[ -n "${group}" ]]; then
+                group+=","
+            fi
+            group+="${cores[$idx]}"
+        done
+        _out+=("${group}")
+    done
 }
 
 main() {
@@ -107,36 +204,67 @@ main() {
 
     local -a extra_args=("$@")
     local -a base_cmd=(python -m scripts.LVR_vs_blocksize)
-    if ! _has_max_workers_flag "${extra_args[@]}"; then
-        # One simulation process per mapped core by default.
+    local max_workers_arg=""
+    _extract_max_workers max_workers_arg "${extra_args[@]}"
+
+    local workers_per_scenario=1
+    if [[ -n "${max_workers_arg}" ]]; then
+        _require_positive_int "${max_workers_arg}" "--max-workers"
+        workers_per_scenario="${max_workers_arg}"
+    else
+        # Keep the default conservative: one worker per scenario unless the
+        # user explicitly asks for internal parallelism.
         base_cmd+=(--max-workers 1)
     fi
 
+    local -a core_groups=()
+    _build_core_groups core_groups "${workers_per_scenario}" "${core_ids[@]}"
+
+    local concurrent_slots=${#core_groups[@]}
+    local total_scenarios=${#scenarios[@]}
+    local total_batches=$(((total_scenarios + concurrent_slots - 1) / concurrent_slots))
+    local idle_cores=$(( ${#core_ids[@]} % workers_per_scenario ))
+
     echo "[info] logs: ${log_dir}"
-    echo "[info] scenarios: ${#scenarios[@]}"
+    echo "[info] scenarios: ${total_scenarios}"
     echo "[info] cores: ${core_ids[*]}"
-
-    local -a pids=()
-    local idx core scenario stem log_file pid
-    for idx in "${!scenarios[@]}"; do
-        scenario="${scenarios[$idx]}"
-        core="${core_ids[$((idx % ${#core_ids[@]}))]}"
-        stem="$(basename "${scenario}")"
-        stem="${stem%.yml}"
-        stem="${stem%.yaml}"
-        log_file="${log_dir}/${idx}_${stem}.log"
-
-        echo "[map] ${scenario} -> core ${core}"
-        taskset -c "${core}" "${base_cmd[@]}" --config "${scenario}" "${extra_args[@]}" >"${log_file}" 2>&1 &
-        pid=$!
-        pids+=("${pid}")
-    done
+    echo "[info] workers per scenario: ${workers_per_scenario}"
+    echo "[info] concurrent scenario slots: ${concurrent_slots}"
+    echo "[info] total batches: ${total_batches}"
+    if [[ "${idle_cores}" -gt 0 ]]; then
+        echo "[info] idle cores per batch: ${idle_cores} (left unused to keep CPU groups disjoint)"
+    fi
 
     local rc=0
-    for pid in "${pids[@]}"; do
-        if ! wait "${pid}"; then
-            rc=1
-        fi
+    local batch_idx slot idx scenario stem log_file pid core_group
+    local -a pids=()
+    for ((batch_idx = 0; batch_idx < total_batches; batch_idx++)); do
+        echo "[batch $((batch_idx + 1))/${total_batches}] launching"
+        pids=()
+        for ((slot = 0; slot < concurrent_slots; slot++)); do
+            idx=$((batch_idx * concurrent_slots + slot))
+            if [[ "${idx}" -ge "${total_scenarios}" ]]; then
+                break
+            fi
+
+            scenario="${scenarios[$idx]}"
+            core_group="${core_groups[$slot]}"
+            stem="$(basename "${scenario}")"
+            stem="${stem%.yml}"
+            stem="${stem%.yaml}"
+            log_file="${log_dir}/${idx}_${stem}.log"
+
+            echo "[map] batch $((batch_idx + 1))/${total_batches} | ${scenario} -> cores ${core_group}"
+            taskset -c "${core_group}" "${base_cmd[@]}" --config "${scenario}" "${extra_args[@]}" >"${log_file}" 2>&1 &
+            pid=$!
+            pids+=("${pid}")
+        done
+
+        for pid in "${pids[@]}"; do
+            if ! wait "${pid}"; then
+                rc=1
+            fi
+        done
     done
 
     if [[ "${rc}" -ne 0 ]]; then

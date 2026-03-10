@@ -131,15 +131,18 @@
 \newlabel{sec:results}{{4}{23}{Results}{section.4}{}}
 \citation{dinosse_gatta}
 \citation{dinosse_gatta}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Microstructure diagnostics (illustrative)}{24}{subsection.4.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Cross-scenario outcome summary}{24}{subsection.4.2}\protected@file@percent }
-\newlabel{subsec:results_summary}{{4.2}{24}{Cross-scenario outcome summary}{subsection.4.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Hedged PnL across models and fee modes.}{24}{section*.26}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Competitiveness: DEX share.}{25}{section*.28}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Fee levels and fee incidence across cohorts.}{25}{section*.30}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}LVR vs fees vs block size}{25}{subsection.4.3}\protected@file@percent }
-\newlabel{eq:lvr_time_scaling}{{65}{25}{LVR vs fees vs block size}{equation.4.65}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {5}Conclusions}{26}{section.5}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Distributions of key variables (trade sizes, LP widths, review times, mint sizes, etc.) used in the ABM.}}{24}{figure.caption.24}\protected@file@percent }
+\newlabel{fig:distributions}{{1}{24}{Distributions of key variables (trade sizes, LP widths, review times, mint sizes, etc.) used in the ABM}{figure.caption.24}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Microstructure diagnostics}{24}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:stylized}{{4.1}{24}{Microstructure diagnostics}{subsection.4.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Cross-scenario outcome summary}{25}{subsection.4.2}\protected@file@percent }
+\newlabel{subsec:results_summary}{{4.2}{25}{Cross-scenario outcome summary}{subsection.4.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Hedged PnL across models and fee modes.}{25}{section*.27}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Competitiveness: DEX share.}{25}{section*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Fee levels and fee incidence across cohorts.}{26}{section*.31}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}LVR vs fees vs block size}{26}{subsection.4.3}\protected@file@percent }
+\newlabel{eq:lvr_time_scaling}{{65}{26}{LVR vs fees vs block size}{equation.4.65}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Conclusions}{27}{section.5}\protected@file@percent }
 \bibstyle{abbrv}
 \bibdata{bibliography}
 \bibcite{Adams2020UniswapVC}{1}
@@ -162,23 +165,23 @@
 \bibcite{milionis2023}{18}
 \bibcite{dinosse_gatta}{19}
 \bibcite{zhang2023}{20}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Baseline simulation parameters shared across all models.}}{29}{table.caption.23}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Baseline simulation parameters shared across all models.}}{30}{table.caption.23}\protected@file@percent }
 \providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
-\newlabel{tab:common_params}{{1}{29}{Baseline simulation parameters shared across all models}{table.caption.23}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Microstructure illustration under static fees (Model~0). Block-time latency and priority arbitrage induce transient deviations between the AMM price and the reference market, which are then corrected at the next block.}}{30}{figure.caption.24}\protected@file@percent }
-\newlabel{fig:microstructure_prices}{{1}{30}{Microstructure illustration under static fees (Model~0). Block-time latency and priority arbitrage induce transient deviations between the AMM price and the reference market, which are then corrected at the next block}{figure.caption.24}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Autocorrelation function of end-of-block DEX returns (representative static-fee run), exhibiting a pronounced lag-1 negative spike.}}{31}{figure.caption.25}\protected@file@percent }
-\newlabel{fig:microstructure_acf}{{2}{31}{Autocorrelation function of end-of-block DEX returns (representative static-fee run), exhibiting a pronounced lag-1 negative spike}{figure.caption.25}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Final hedged PnL (token-1) across models and fee modes. Cells report mean \(\pm \) sd across 100 seeds. Inactive cohorts (e.g., JIT in Models 0--1) are left blank.}}{31}{figure.caption.27}\protected@file@percent }
-\newlabel{fig:pnl_heatmap}{{3}{31}{Final hedged PnL (token-1) across models and fee modes. Cells report mean \(\pm \) sd across 100 seeds. Inactive cohorts (e.g., JIT in Models 0--1) are left blank}{figure.caption.27}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Mean smart-router DEX share across scenarios (mean \(\pm \) sd across 100 seeds).}}{32}{figure.caption.29}\protected@file@percent }
-\newlabel{fig:dex_share_barplot}{{4}{32}{Mean smart-router DEX share across scenarios (mean \(\pm \) sd across 100 seeds)}{figure.caption.29}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Arbitrage-related metrics reported as (mean, standard deviation) across simulation runs for the baseline parameterization in Table~\ref {tab:common_params}. “Arb Exec” denotes the number of executed arbitrage trades, “No Arb” the number of instances in which arbitrage was infeasible because prices lay within the no-arbitrage band, and “Arb Rej” the number of arbitrage attempts rejected by the profitability filter.}}{32}{table.caption.33}\protected@file@percent }
-\newlabel{tab:arb_detailed}{{2}{32}{Arbitrage-related metrics reported as (mean, standard deviation) across simulation runs for the baseline parameterization in Table~\ref {tab:common_params}. “Arb Exec” denotes the number of executed arbitrage trades, “No Arb” the number of instances in which arbitrage was infeasible because prices lay within the no-arbitrage band, and “Arb Rej” the number of arbitrage attempts rejected by the profitability filter}{table.caption.33}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Final cumulative fee value (token-1) by LP cohort across scenarios (mean \(\pm \) sd across 100 seeds).}}{33}{figure.caption.31}\protected@file@percent }
-\newlabel{fig:fee_value_barplot}{{5}{33}{Final cumulative fee value (token-1) by LP cohort across scenarios (mean \(\pm \) sd across 100 seeds)}{figure.caption.31}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Time-averaged taker fee under dynamic fee modes (static excluded), mean \(\pm \) sd across 100 seeds.}}{34}{figure.caption.32}\protected@file@percent }
-\newlabel{fig:mean_fee_barplot}{{6}{34}{Time-averaged taker fee under dynamic fee modes (static excluded), mean \(\pm \) sd across 100 seeds}{figure.caption.32}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Median of $r=\Delta \mathrm  {LVR}/\Delta \mathrm  {Fees}$ vs block time $B$ for active+passive LPs and Jiter (100 runs).}}{35}{figure.caption.34}\protected@file@percent }
-\newlabel{fig:static_vs_volatility_dex_ratio}{{7}{35}{Median of $r=\Delta \mathrm {LVR}/\Delta \mathrm {Fees}$ vs block time $B$ for active+passive LPs and Jiter (100 runs)}{figure.caption.34}{}}
-\gdef \@abspage@last{35}
+\newlabel{tab:common_params}{{1}{30}{Baseline simulation parameters shared across all models}{table.caption.23}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Microstructure illustration under static fees (Model~0). Block-time latency and priority arbitrage induce transient deviations between the AMM price and the reference market, which are then corrected at the next block.}}{31}{figure.caption.25}\protected@file@percent }
+\newlabel{fig:microstructure_prices}{{2}{31}{Microstructure illustration under static fees (Model~0). Block-time latency and priority arbitrage induce transient deviations between the AMM price and the reference market, which are then corrected at the next block}{figure.caption.25}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Autocorrelation function of end-of-block DEX returns (representative static-fee run), exhibiting a pronounced lag-1 negative spike.}}{32}{figure.caption.26}\protected@file@percent }
+\newlabel{fig:microstructure_acf}{{3}{32}{Autocorrelation function of end-of-block DEX returns (representative static-fee run), exhibiting a pronounced lag-1 negative spike}{figure.caption.26}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Final hedged PnL (token-1) across models and fee modes. Cells report mean \(\pm \) standard error across 100 seeds. Inactive cohorts (e.g., JIT in Models 0--1) are left blank.}}{32}{figure.caption.28}\protected@file@percent }
+\newlabel{fig:pnl_heatmap}{{4}{32}{Final hedged PnL (token-1) across models and fee modes. Cells report mean \(\pm \) standard error across 100 seeds. Inactive cohorts (e.g., JIT in Models 0--1) are left blank}{figure.caption.28}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Mean smart-router DEX share across scenarios (mean \(\pm \) standard error across 100 seeds).}}{33}{figure.caption.30}\protected@file@percent }
+\newlabel{fig:dex_share_barplot}{{5}{33}{Mean smart-router DEX share across scenarios (mean \(\pm \) standard error across 100 seeds)}{figure.caption.30}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Arbitrage-related metrics reported as (mean, standard deviation) across simulation runs for the baseline parameterization in Table~\ref {tab:common_params}. “Arb Exec” denotes the number of executed arbitrage trades, “No Arb” the number of instances in which arbitrage was infeasible because prices lay within the no-arbitrage band, and “Arb Rej” the number of arbitrage attempts rejected by the profitability filter.}}{33}{table.caption.34}\protected@file@percent }
+\newlabel{tab:arb_detailed}{{2}{33}{Arbitrage-related metrics reported as (mean, standard deviation) across simulation runs for the baseline parameterization in Table~\ref {tab:common_params}. “Arb Exec” denotes the number of executed arbitrage trades, “No Arb” the number of instances in which arbitrage was infeasible because prices lay within the no-arbitrage band, and “Arb Rej” the number of arbitrage attempts rejected by the profitability filter}{table.caption.34}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Final cumulative fee value (token-1) by LP cohort across scenarios (mean \(\pm \) standard error across 100 seeds).}}{34}{figure.caption.32}\protected@file@percent }
+\newlabel{fig:fee_value_barplot}{{6}{34}{Final cumulative fee value (token-1) by LP cohort across scenarios (mean \(\pm \) standard error across 100 seeds)}{figure.caption.32}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Time-averaged taker fee under dynamic fee modes (static excluded), mean \(\pm \) standard error across 100 seeds.}}{35}{figure.caption.33}\protected@file@percent }
+\newlabel{fig:mean_fee_barplot}{{7}{35}{Time-averaged taker fee under dynamic fee modes (static excluded), mean \(\pm \) standard error across 100 seeds}{figure.caption.33}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces Median of $r=\Delta \mathrm  {LVR}/\Delta \mathrm  {Fees}$ vs block time $B$ for active+passive LPs and Jiter (100 runs).}}{36}{figure.caption.35}\protected@file@percent }
+\newlabel{fig:static_vs_volatility_dex_ratio}{{8}{36}{Median of $r=\Delta \mathrm {LVR}/\Delta \mathrm {Fees}$ vs block time $B$ for active+passive LPs and Jiter (100 runs)}{figure.caption.35}{}}
+\gdef \@abspage@last{36}

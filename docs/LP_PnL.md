@@ -350,14 +350,14 @@ The pair **(unhedged PnL, hedged PnL)** gives you:
 - `lp_wallet_series`, `lp_wallet_active_series`, `lp_wallet_passive_series`: realized token1 wallet after mints/burns.
 - `lp_wealth_series` (+ active/passive splits): wallet + mark-to-market of open positions, i.e., $V^{\text{LP}}_t$.
 - `lp_fee_value_*_series`: cumulative fees *earned* (realized + uncollected), marked to the CEX price.
-- `lp_unhedged_*`: unhedged PnL $V^{\text{LP}}_t - V^{\text{LP}}_0$.
+- `lp_unhedged_total`, `lp_unhedged_active`, `lp_unhedged_passive`: unhedged PnL $V^{\text{LP}}_t - V^{\text{LP}}_0$.
 - `lp_rebal_value_*_series` and `lp_rebal_*_series`: rebalancing benchmark value $V^{\text{reb}}_t$ and its PnL path.
-- `lp_pnl_*` (hedged) = $F^{\text{cum}}_t - \text{LVR}_t$; `lp_lvr_*` = $\text{LVR}_t$.
+- `lp_pnl_total`, `lp_pnl_active`, `lp_pnl_passive` (hedged) = $F^{\text{cum}}_t - \text{LVR}_t$; `lp_lvr_*_series` = $\text{LVR}_t$.
 
 Notes (matching current `scripts/run.py`):
 - `lp_pnl_*` is computed as $\sum_i (V^{LP,i}_t - V^{reb,i}_t)$ at end-of-block, where `V^{reb,i}_t = initial_rebal_value_y + cumulative_R`.
 - `lp_lvr_*` is computed as the identity `lp_fee_value_*_series - lp_pnl_*` (so the decomposition holds by construction), and it should not be expected to match `arb_pnl_*` exactly (flash fees, CEX impact, and settlement conventions differ).
-- In `light_mode: true`, most recorder series (including LP PnL/LVR) are disabled and returned as empty lists.
+- In `light_mode: true`, the engine still returns the active/passive hedged and unhedged LP series used by lighter dashboards, but the richer total/LVR/fee/rebalancer recorder families are disabled and returned as empty lists.
 - As of the current implementation, `lp_wallet_*_series` and `lp_wealth_*_series` are declared/returned but not populated inside the main loop (they will be empty). You can reconstruct cohort total wealth as `lp_pnl_total[t] + lp_rebal_value_total_series[t]` (and analogously for active/passive).
 
 All series are split into total/active/passive cohorts (seed LPs are excluded; Jiter has its own `jiter_*` series) and are consumed by batch runners such as `scripts/run_multiple.py`, `scripts/run_parameter_surface_nd_pnl_fee_dashboard.py`, and `scripts/build_parameter_surface_nd_pnl_fee_dashboard.py`.

@@ -277,7 +277,7 @@ If you compute VPIN on **all executed DEX swaps**, high VPIN episodes can be dri
 
 1. **Arbitrage dominance:** a single, large, one-sided arb trade can contribute a large fraction of notional in a bucket, mechanically pushing imbalance toward 1 even if noise is symmetric.
 2. **Smart-router venue selection:** when the DEX is mispriced vs the current CEX mid, smart router executes on DEX primarily on the “favorable” side and routes the other side to CEX. This creates DEX-side imbalance even though the smart router is not “directional” in how it samples trade side.
-3. **Noise dilution:** increasing `noise_trades_per_block` adds symmetric volume that tends to *lower* VPIN (in expectation), but the effect depends strongly on the bucket size vs the trade-size distribution (next point).
+3. **Noise dilution:** increasing the preferred `noise_trades_per_second` arrival rate (or legacy `noise_trades_per_block`) adds symmetric volume that tends to *lower* VPIN (in expectation), but the effect depends strongly on the bucket size vs the trade-size distribution (next point).
 4. **Slippage filtering + block ordering:** submitted swaps can be skipped at execution if the realized quote violates `slippage_tolerance`. Since the arbitrage intent executes first and the remaining swaps are randomly shuffled within the block, this can create additional one-sided selection in what actually executes on the DEX.
 
 So in this ABM, VPIN is better interpreted as a proxy for **cross-venue mispricing pressure** (arb + best-ex filtering) than as “probability of privately informed trading” in the original TradFi sense.
@@ -406,7 +406,7 @@ Run the existing baseline scenario:
 1. Activate env: `conda activate main`
 2. Run: `python -m scripts.run --config abm_results/scenarios/test.yml`
 
-Outputs land under `abm_results/scenarios/test/` (a new run subfolder), including width series (`w_ticks_series`) and LP PnL plots.
+Outputs land under `abm_results/scenarios/test/` (a new run subfolder), including LP PnL plots and the standard price/fee diagnostics. The narrow-LP width path is currently used for plotting and logging, but `simulate()` does not persist a raw `w_ticks_series` in its returned output dict.
 
 ### Next step (implementation sketch, not done here)
 Add a config switch like `active_lp_width_mode: {volatility_cex, net_edge, vpin, markout, ...}` and implement each signal as a separate function to keep comparisons honest.

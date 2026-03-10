@@ -66,10 +66,12 @@ the CEX can move far during micro-steps while the DEX is frozen, so the eventual
 - `cex_heston_kappa` (controls how quickly `v_t` tracks schedule changes)
 - `cex_heston_sigma_v` (adds stochasticity around the scheduled baseline)
 
+Important implementation detail: the current code shuffles `cex_heston_theta_schedule` once per run and then assigns the shuffled values to equal-duration segments. So the YAML list is a set of regime levels, not a guaranteed low-then-high chronology.
+
 **Suggested “spike” design.**
-- Keep the first scheduled `theta` at a baseline level (`theta_low = sigma_low^2`).
-- Add a later scheduled `theta_high` that is a multiple (e.g., ×10–×30 in variance).
-- Use smaller `kappa` for gradual transitions, larger `kappa` for sharper jumps.
+- Include one or more calm variance levels (`theta_low = sigma_low^2`) and one or more stressed levels (`theta_high` larger by 10–30× in variance).
+- Use smaller `kappa` for gradual transitions, larger `kappa` for sharper jumps once the scheduled regime changes.
+- If you need a guaranteed chronological low-then-high path, the current implementation does not provide it through YAML alone because of the per-run shuffle.
 
 **Expected signatures (to verify).**
 - Dislocation widens rapidly after the first jump to high `theta`:
@@ -178,15 +180,17 @@ So a liquidity run is also a **CEX flow shock** (sell pressure) in this model.
 **Knobs (scenario YAML).**
 Two main channels:
 1) **Forced / frequent burns**
-   - `passive_burns_per_block` (Poisson burns among passive LPs that are “due”)
+   - preferred: `passive_burns_per_second`
+   - legacy: `passive_burns_per_block`
    - For active narrow LPs: lower `theta_SL` (burn earlier on losses), optionally lower `theta_TP` to realize gains sooner (more churn).
 2) **Starving new liquidity**
-   - reduce `passive_mints_per_block` and `narrow_mints_per_block`
-   - increase `tau` (LPs review less often, so recovery is slower)
+   - preferred: reduce `passive_mints_per_second` and `narrow_mints_per_second`
+   - legacy: reduce `passive_mints_per_block` and `narrow_mints_per_block`
+   - prefer increasing `tau_seconds` (or legacy `tau`) so LPs review less often and recovery is slower
 
 **Design variants.**
 - *Slow run (grinding crisis):* moderate burns + low mints + high `tau`.
-- *Sudden run (bank-run style):* very high `passive_burns_per_block` and low/zero mints for a sustained window.
+- *Sudden run (bank-run style):* very high preferred `passive_burns_per_second` (or legacy `passive_burns_per_block`) and low/zero mints for a sustained window.
   (Without code changes, this is implemented as “run the whole scenario” at run-like settings; later we can add time-scheduled shocks if useful.)
 
 **Expected signatures (to verify).**
@@ -203,9 +207,9 @@ Minimal YAML sketch (overrides):
 fee_mode: static
 simulate:
   passive_lp_share: 1.0
-  passive_burns_per_block: 5.0
-  passive_mints_per_block: 0.1
-  tau: 25
+  passive_burns_per_second: 1.0
+  passive_mints_per_second: 0.02
+  tau_seconds: 25.0
 ```
 
 Active-narrow “panic” variant (adds stop-loss sensitivity):
@@ -213,7 +217,7 @@ Active-narrow “panic” variant (adds stop-loss sensitivity):
 simulate:
   passive_lp_share: 0.5
   theta_SL: 0.05
-  narrow_mints_per_block: 0.1
+  narrow_mints_per_second: 0.02
 ```
 
 ---
@@ -241,7 +245,8 @@ So a flow shock can simultaneously:
 
 **Knobs (scenario YAML).**
 - Arrivals:
-  - `smart_trades_per_block`, `noise_trades_per_block`
+  - preferred: `smart_trades_per_second`, `noise_trades_per_second`
+  - legacy: `smart_trades_per_block`, `noise_trades_per_block`
 - Sizes:
   - `trader_mean` (median notional scale), `trader_sigma` (tail thickness)
 - Routing / execution filters:
@@ -250,7 +255,7 @@ So a flow shock can simultaneously:
 
 **Suggested stress sweep.**
 Start with a baseline scenario and apply multiplicative shocks:
-- intensity shock: multiply both `*_trades_per_block` by 5×, 10×, 25×
+- intensity shock: multiply both preferred `*_trades_per_second` knobs by 5×, 10×, 25×
 - size shock: increase `trader_mean` and/or `trader_sigma` (fatter tail tends to create rare “whales”)
 
 Then cross with:
@@ -266,8 +271,8 @@ Minimal YAML sketch (overrides):
 ```yaml
 fee_mode: static
 simulate:
-  smart_trades_per_block: 10.0
-  noise_trades_per_block: 10.0
+  smart_trades_per_second: 2.0
+  noise_trades_per_second: 2.0
   trader_mean: 3.2
   trader_sigma: 2.0
   slippage_tolerance: 0.005
@@ -290,7 +295,7 @@ Enable Jiter (`p_jit > 0`, `liquidity_perc_jit > 0`, `jit_flash_loan_fee` small)
 python -m scripts.run --config abm_results/scenarios/<your_scenario>.yml
 ```
 Outputs are written under:
-`abm_results/scenarios/<scenario_name>/runs/<fee_mode>_seed<seed>_<n>/`.
+`abm_results/scenarios/<scenario_name>/runs/<fee_mode>_seed<seed>_<n>/`, and the newest CLI run is recorded in `abm_results/scenarios/<scenario_name>/latest_run.json`.
 
 3) Run multiple seeds to stabilize conclusions:
 ```bash
