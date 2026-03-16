@@ -6,6 +6,8 @@ set -euo pipefail
 #
 # Usage:
 #   bash scripts/run_lvr_model2_coremap.sh --runs 50 --fee-definition flow
+#   bash scripts/run_lvr_model2_coremap.sh --runs 50 --fee-definition flow \
+#     --max-workers 10 --scenario-slots 1
 #
 # Optional environment variable:
 #   CORE_IDS="0,1,2,3,4"   # explicit cores to use (default: all cores from nproc)
@@ -18,9 +20,10 @@ set -euo pipefail
 #      concurrent scenario. For example, with 16 cores and `--max-workers 4`,
 #      the wrapper creates 4 groups: `0,1,2,3`, `4,5,6,7`, `8,9,10,11`,
 #      `12,13,14,15`.
-#   4. Launch at most `floor(n_cores / max_workers)` scenarios at a time, each
-#      pinned via `taskset` to one of those CPU groups. `scripts.LVR_vs_blocksize`
-#      can then use its internal `ProcessPoolExecutor` on that CPU group.
+#   4. Launch at most `floor(n_cores / max_workers)` scenarios at a time, or
+#      fewer if `--scenario-slots` is provided. Each scenario is pinned via
+#      `taskset` to one of those CPU groups. `scripts.LVR_vs_blocksize` can then
+#      use its internal `ProcessPoolExecutor` on that CPU group.
 #   5. Wait for the whole batch to finish before launching the next batch.
 #
 # Notes:
@@ -28,6 +31,9 @@ set -euo pipefail
 #     left idle so CPU groups stay disjoint.
 #   - If `--max-workers` exceeds the number of available cores, the wrapper
 #     exits with an error rather than silently oversubscribing.
+#   - `--scenario-slots` is a wrapper-only argument. It caps how many scenario
+#     YAMLs are launched concurrently without changing the inner
+#     `scripts.LVR_vs_blocksize --max-workers` setting.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -88,33 +94,59 @@ _parse_core_ids() {
     done
 }
 
-_extract_max_workers() {
-    local -n _out=$1
-    shift
+_split_wrapper_args() {
+    local -n _forwarded_args=$1
+    local -n _max_workers_out=$2
+    local -n _scenario_slots_out=$3
+    shift 3
 
-    _out=""
+    _forwarded_args=()
+    _max_workers_out=""
+    _scenario_slots_out=""
 
     local arg
-    local expect_value=0
+    local expect_max_workers=0
+    local expect_scenario_slots=0
     for arg in "$@"; do
-        if [[ "${expect_value}" -eq 1 ]]; then
-            _out="${arg}"
-            expect_value=0
+        if [[ "${expect_max_workers}" -eq 1 ]]; then
+            _max_workers_out="${arg}"
+            _forwarded_args+=("${arg}")
+            expect_max_workers=0
+            continue
+        fi
+        if [[ "${expect_scenario_slots}" -eq 1 ]]; then
+            _scenario_slots_out="${arg}"
+            expect_scenario_slots=0
             continue
         fi
 
         case "${arg}" in
             --max-workers)
-                expect_value=1
+                _forwarded_args+=("${arg}")
+                expect_max_workers=1
                 ;;
             --max-workers=*)
-                _out="${arg#--max-workers=}"
+                _max_workers_out="${arg#--max-workers=}"
+                _forwarded_args+=("${arg}")
+                ;;
+            --scenario-slots)
+                expect_scenario_slots=1
+                ;;
+            --scenario-slots=*)
+                _scenario_slots_out="${arg#--scenario-slots=}"
+                ;;
+            *)
+                _forwarded_args+=("${arg}")
                 ;;
         esac
     done
 
-    if [[ "${expect_value}" -eq 1 ]]; then
+    if [[ "${expect_max_workers}" -eq 1 ]]; then
         echo "[error] --max-workers requires a value." >&2
+        exit 1
+    fi
+    if [[ "${expect_scenario_slots}" -eq 1 ]]; then
+        echo "[error] --scenario-slots requires a value." >&2
         exit 1
     fi
 }
@@ -202,10 +234,11 @@ main() {
     local log_dir="${REPO_ROOT}/abm_results/scenarios/_batch_logs/lvr_vs_blocksize_model2_${ts}"
     mkdir -p "${log_dir}"
 
-    local -a extra_args=("$@")
+    local -a forwarded_args=()
     local -a base_cmd=(python -m scripts.LVR_vs_blocksize)
     local max_workers_arg=""
-    _extract_max_workers max_workers_arg "${extra_args[@]}"
+    local scenario_slots_arg=""
+    _split_wrapper_args forwarded_args max_workers_arg scenario_slots_arg "$@"
 
     local workers_per_scenario=1
     if [[ -n "${max_workers_arg}" ]]; then
@@ -220,19 +253,40 @@ main() {
     local -a core_groups=()
     _build_core_groups core_groups "${workers_per_scenario}" "${core_ids[@]}"
 
-    local concurrent_slots=${#core_groups[@]}
+    local max_concurrent_slots=${#core_groups[@]}
+    local concurrent_slots=${max_concurrent_slots}
+    if [[ -n "${scenario_slots_arg}" ]]; then
+        _require_positive_int "${scenario_slots_arg}" "--scenario-slots"
+        if [[ "${scenario_slots_arg}" -gt "${max_concurrent_slots}" ]]; then
+            echo "[error] requested --scenario-slots=${scenario_slots_arg} but only ${max_concurrent_slots} disjoint scenario slots are available." >&2
+            exit 1
+        fi
+        concurrent_slots=${scenario_slots_arg}
+    fi
+
     local total_scenarios=${#scenarios[@]}
     local total_batches=$(((total_scenarios + concurrent_slots - 1) / concurrent_slots))
-    local idle_cores=$(( ${#core_ids[@]} % workers_per_scenario ))
+    local idle_cores_disjoint=$(( ${#core_ids[@]} % workers_per_scenario ))
+    local idle_core_groups=$(( max_concurrent_slots - concurrent_slots ))
+    local idle_cores_slot_cap=$(( idle_core_groups * workers_per_scenario ))
 
     echo "[info] logs: ${log_dir}"
     echo "[info] scenarios: ${total_scenarios}"
     echo "[info] cores: ${core_ids[*]}"
     echo "[info] workers per scenario: ${workers_per_scenario}"
+    if [[ -n "${scenario_slots_arg}" ]]; then
+        echo "[info] requested scenario slots: ${scenario_slots_arg}"
+    else
+        echo "[info] requested scenario slots: auto"
+    fi
+    echo "[info] max disjoint scenario slots from cores: ${max_concurrent_slots}"
     echo "[info] concurrent scenario slots: ${concurrent_slots}"
     echo "[info] total batches: ${total_batches}"
-    if [[ "${idle_cores}" -gt 0 ]]; then
-        echo "[info] idle cores per batch: ${idle_cores} (left unused to keep CPU groups disjoint)"
+    if [[ "${idle_cores_disjoint}" -gt 0 ]]; then
+        echo "[info] idle cores per batch from disjoint core groups: ${idle_cores_disjoint}"
+    fi
+    if [[ "${idle_cores_slot_cap}" -gt 0 ]]; then
+        echo "[info] idle cores per batch from --scenario-slots cap: ${idle_cores_slot_cap}"
     fi
 
     local rc=0
@@ -255,7 +309,7 @@ main() {
             log_file="${log_dir}/${idx}_${stem}.log"
 
             echo "[map] batch $((batch_idx + 1))/${total_batches} | ${scenario} -> cores ${core_group}"
-            taskset -c "${core_group}" "${base_cmd[@]}" --config "${scenario}" "${extra_args[@]}" >"${log_file}" 2>&1 &
+            taskset -c "${core_group}" "${base_cmd[@]}" --config "${scenario}" "${forwarded_args[@]}" >"${log_file}" 2>&1 &
             pid=$!
             pids+=("${pid}")
         done

@@ -614,6 +614,75 @@ def _run_one(
     return payload
 
 
+def _store_run_payload_inplace(
+    payload: Mapping[str, Any],
+    *,
+    block_idx: Mapping[int, int],
+    seed_idx: Mapping[int, int],
+    cohort_names: Sequence[str],
+    expected_delta_len: int,
+    delta_arrays: Mapping[str, np.ndarray],
+    ratio_arrays: Mapping[str, np.ndarray],
+    jit_success_arrays: Optional[np.ndarray],
+) -> None:
+    """Write one completed `(block_time, seed)` payload into the preallocated arrays.
+
+    Parameters:
+        payload: Worker output produced by `_run_one()`.
+        block_idx: Mapping from block size `B` to the first array axis.
+        seed_idx: Mapping from RNG seed to the second array axis.
+        cohort_names: Enabled cohort names in stable output order.
+        expected_delta_len: Target time dimension length for all stored Δ series.
+        delta_arrays: Preallocated `dLVR_<cohort>` storage arrays.
+        ratio_arrays: Preallocated `dLVR_over_dFees_<cohort>` storage arrays.
+        jit_success_arrays: Optional preallocated mask array for successful JIT blocks.
+
+    Returns:
+        None
+
+    Notes:
+        Results are written in-place as futures complete so the parent process does
+        not keep a second full copy of every per-step series in an intermediate
+        `results` list. This preserves determinism because each `(block_time, seed)`
+        pair maps to a unique storage slot.
+    """
+    block_time = int(payload["block_time"])
+    seed = int(payload["seed"])
+    bi = block_idx.get(block_time)
+    si = seed_idx.get(seed)
+    if bi is None or si is None:
+        raise KeyError(
+            f"Received payload for unexpected (block_time={block_time}, seed={seed}); "
+            "the completed task is not present in the configured sweep grid."
+        )
+
+    for cohort in cohort_names:
+        key = f"dLVR_{cohort}"
+        if key not in payload:
+            continue
+        vals = np.asarray(payload[key], dtype=float)
+        if vals.size == 0 or expected_delta_len <= 0:
+            continue
+        n = min(int(vals.size), int(expected_delta_len))
+        delta_arrays[cohort][bi, si, :n] = vals[:n]
+
+    for cohort in cohort_names:
+        key = f"dLVR_over_dFees_{cohort}"
+        if key not in payload:
+            continue
+        vals = np.asarray(payload[key], dtype=float)
+        if vals.size == 0 or expected_delta_len <= 0:
+            continue
+        n = min(int(vals.size), int(expected_delta_len))
+        ratio_arrays[cohort][bi, si, :n] = vals[:n]
+
+    if jit_success_arrays is not None and "jit_success_mask" in payload:
+        mask = np.asarray(payload["jit_success_mask"], dtype=bool)
+        if mask.size > 0 and expected_delta_len > 0:
+            n = min(int(mask.size), int(expected_delta_len))
+            jit_success_arrays[bi, si, :n] = mask[:n].astype(np.uint8)
+
+
 def _build_violin_figure(
     distributions: Mapping[str, Mapping[int, np.ndarray]],
     *,
@@ -1418,7 +1487,6 @@ def _run_blocksize_sweep_for_fee_mode(
     from concurrent.futures import ProcessPoolExecutor, as_completed
     from tqdm import tqdm
 
-    results: List[Dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=int(args.max_workers)) as executor:
         futures = [
             executor.submit(
@@ -1435,40 +1503,20 @@ def _run_blocksize_sweep_for_fee_mode(
         ]
         with tqdm(total=len(futures), desc="Runs", unit="sim") as pbar:
             for fut in as_completed(futures):
-                results.append(fut.result())
+                payload = fut.result()
+                # Stream each result directly into its `(B, seed)` slot to avoid
+                # holding a second full copy of all long time-series outputs.
+                _store_run_payload_inplace(
+                    payload,
+                    block_idx=block_idx,
+                    seed_idx=seed_idx,
+                    cohort_names=cohort_names,
+                    expected_delta_len=expected_delta_len,
+                    delta_arrays=delta_arrays,
+                    ratio_arrays=ratio_arrays,
+                    jit_success_arrays=jit_success_arrays,
+                )
                 pbar.update(1)
-
-    # Fill aligned arrays.
-    for r in results:
-        b = int(r["block_time"])
-        s = int(r["seed"])
-        bi = block_idx.get(b)
-        si = seed_idx.get(s)
-        if bi is None or si is None:
-            continue
-        for cohort in cohort_names:
-            key = f"dLVR_{cohort}"
-            if key not in r:
-                continue
-            vals = np.asarray(r[key], dtype=float)
-            if vals.size == 0 or expected_delta_len <= 0:
-                continue
-            n = min(int(vals.size), int(expected_delta_len))
-            delta_arrays[cohort][bi, si, :n] = vals[:n]
-        for cohort in cohort_names:
-            key = f"dLVR_over_dFees_{cohort}"
-            if key not in r:
-                continue
-            vals = np.asarray(r[key], dtype=float)
-            if vals.size == 0 or expected_delta_len <= 0:
-                continue
-            n = min(int(vals.size), int(expected_delta_len))
-            ratio_arrays[cohort][bi, si, :n] = vals[:n]
-        if jit_success_arrays is not None and "jit_success_mask" in r:
-            mask = np.asarray(r["jit_success_mask"], dtype=bool)
-            if mask.size > 0 and expected_delta_len > 0:
-                n = min(int(mask.size), int(expected_delta_len))
-                jit_success_arrays[bi, si, :n] = mask[:n].astype(np.uint8)
 
     # Save arrays for reproducibility (time series per run).
     npz_path = out_root / (
