@@ -11,6 +11,7 @@ set -euo pipefail
 #
 # Optional environment variable:
 #   CORE_IDS="0,1,2,3,4"   # explicit cores to use (default: all cores from nproc)
+#   HEARTBEAT_SECONDS=60   # heartbeat interval while a batch is running (0 disables)
 #
 # Parallelization procedure:
 #   1. Build the available CPU list from CORE_IDS or from `nproc`.
@@ -161,6 +162,16 @@ _require_positive_int() {
     fi
 }
 
+_require_nonnegative_int() {
+    local value=$1
+    local label=$2
+
+    if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
+        echo "[error] ${label} must be a non-negative integer. Got: ${value}" >&2
+        exit 1
+    fi
+}
+
 _build_core_groups() {
     local -n _out=$1
     local workers_per_scenario=$2
@@ -191,6 +202,141 @@ _build_core_groups() {
             group+="${cores[$idx]}"
         done
         _out+=("${group}")
+    done
+}
+
+_format_bytes_human() {
+    local bytes=$1
+
+    if [[ ! "${bytes}" =~ ^[0-9]+$ ]]; then
+        echo "unknown"
+        return
+    fi
+
+    if [[ "${bytes}" -ge 1073741824 ]]; then
+        awk -v b="${bytes}" 'BEGIN { printf "%.2f GiB", b / 1073741824 }'
+    elif [[ "${bytes}" -ge 1048576 ]]; then
+        awk -v b="${bytes}" 'BEGIN { printf "%.2f MiB", b / 1048576 }'
+    elif [[ "${bytes}" -ge 1024 ]]; then
+        awk -v b="${bytes}" 'BEGIN { printf "%.2f KiB", b / 1024 }'
+    else
+        printf "%d B" "${bytes}"
+    fi
+}
+
+_print_batch_heartbeat() {
+    local batch_idx=$1
+    local total_batches=$2
+    local -n pids_arr=$3
+    local -n labels_arr=$4
+    local -n logs_arr=$5
+
+    local now_ts now_epoch
+    now_ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    now_epoch="$(date +%s)"
+
+    local total_slots=${#pids_arr[@]}
+    local active_slots=0
+    local i pid stat_value label log_file size_bytes size_human log_age
+
+    for i in "${!pids_arr[@]}"; do
+        pid="${pids_arr[$i]}"
+        if [[ -n "${pid}" ]]; then
+            active_slots=$((active_slots + 1))
+        fi
+    done
+
+    echo "[heartbeat] ${now_ts} | batch $((batch_idx + 1))/${total_batches} | active scenarios: ${active_slots}/${total_slots}"
+    for i in "${!pids_arr[@]}"; do
+        pid="${pids_arr[$i]}"
+        if [[ -z "${pid}" ]]; then
+            continue
+        fi
+
+        label="${labels_arr[$i]}"
+        log_file="${logs_arr[$i]}"
+
+        stat_value="unknown"
+        if stat_value="$(ps -o stat= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"; then
+            if [[ -z "${stat_value}" ]]; then
+                stat_value="done"
+            elif [[ "${stat_value}" == Z* ]]; then
+                stat_value="zombie"
+            fi
+        else
+            stat_value="done"
+        fi
+
+        size_bytes=0
+        log_age="unknown"
+        if [[ -f "${log_file}" ]]; then
+            size_bytes="$(stat -c %s "${log_file}" 2>/dev/null || echo 0)"
+            local log_mtime
+            log_mtime="$(stat -c %Y "${log_file}" 2>/dev/null || echo 0)"
+            if [[ "${log_mtime}" =~ ^[0-9]+$ ]] && [[ "${log_mtime}" -gt 0 ]]; then
+                log_age="$((now_epoch - log_mtime))s"
+            fi
+        fi
+        size_human="$(_format_bytes_human "${size_bytes}")"
+        echo "[heartbeat] pid=${pid} status=${stat_value} scenario=${label} log=$(basename "${log_file}") size=${size_human} updated=${log_age} ago"
+    done
+}
+
+_wait_batch_with_heartbeat() {
+    local batch_idx=$1
+    local total_batches=$2
+    local heartbeat_seconds=$3
+    local -n pids_ref=$4
+    local -n labels_ref=$5
+    local -n logs_ref=$6
+    local -n rc_ref=$7
+
+    local i pid stat_value remaining
+
+    if [[ "${heartbeat_seconds}" -eq 0 ]]; then
+        for pid in "${pids_ref[@]}"; do
+            if ! wait "${pid}"; then
+                rc_ref=1
+            fi
+        done
+        return
+    fi
+
+    while true; do
+        sleep "${heartbeat_seconds}"
+
+        remaining=0
+        for i in "${!pids_ref[@]}"; do
+            pid="${pids_ref[$i]}"
+            if [[ -z "${pid}" ]]; then
+                continue
+            fi
+
+            stat_value="$(ps -o stat= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
+            if [[ -z "${stat_value}" ]]; then
+                if ! wait "${pid}"; then
+                    rc_ref=1
+                fi
+                pids_ref[$i]=""
+                continue
+            fi
+
+            if [[ "${stat_value}" == Z* ]]; then
+                if ! wait "${pid}"; then
+                    rc_ref=1
+                fi
+                pids_ref[$i]=""
+                continue
+            fi
+
+            remaining=$((remaining + 1))
+        done
+
+        if [[ "${remaining}" -eq 0 ]]; then
+            break
+        fi
+
+        _print_batch_heartbeat "${batch_idx}" "${total_batches}" pids_ref labels_ref logs_ref
     done
 }
 
@@ -269,6 +415,8 @@ main() {
     local idle_cores_disjoint=$(( ${#core_ids[@]} % workers_per_scenario ))
     local idle_core_groups=$(( max_concurrent_slots - concurrent_slots ))
     local idle_cores_slot_cap=$(( idle_core_groups * workers_per_scenario ))
+    local heartbeat_seconds="${HEARTBEAT_SECONDS:-60}"
+    _require_nonnegative_int "${heartbeat_seconds}" "HEARTBEAT_SECONDS"
 
     echo "[info] logs: ${log_dir}"
     echo "[info] scenarios: ${total_scenarios}"
@@ -282,6 +430,7 @@ main() {
     echo "[info] max disjoint scenario slots from cores: ${max_concurrent_slots}"
     echo "[info] concurrent scenario slots: ${concurrent_slots}"
     echo "[info] total batches: ${total_batches}"
+    echo "[info] heartbeat seconds: ${heartbeat_seconds}"
     if [[ "${idle_cores_disjoint}" -gt 0 ]]; then
         echo "[info] idle cores per batch from disjoint core groups: ${idle_cores_disjoint}"
     fi
@@ -292,9 +441,13 @@ main() {
     local rc=0
     local batch_idx slot idx scenario stem log_file pid core_group
     local -a pids=()
+    local -a batch_labels=()
+    local -a batch_logs=()
     for ((batch_idx = 0; batch_idx < total_batches; batch_idx++)); do
         echo "[batch $((batch_idx + 1))/${total_batches}] launching"
         pids=()
+        batch_labels=()
+        batch_logs=()
         for ((slot = 0; slot < concurrent_slots; slot++)); do
             idx=$((batch_idx * concurrent_slots + slot))
             if [[ "${idx}" -ge "${total_scenarios}" ]]; then
@@ -312,13 +465,11 @@ main() {
             taskset -c "${core_group}" "${base_cmd[@]}" --config "${scenario}" "${forwarded_args[@]}" >"${log_file}" 2>&1 &
             pid=$!
             pids+=("${pid}")
+            batch_labels+=("${stem}")
+            batch_logs+=("${log_file}")
         done
 
-        for pid in "${pids[@]}"; do
-            if ! wait "${pid}"; then
-                rc=1
-            fi
-        done
+        _wait_batch_with_heartbeat "${batch_idx}" "${total_batches}" "${heartbeat_seconds}" pids batch_labels batch_logs rc
     done
 
     if [[ "${rc}" -ne 0 ]]; then
