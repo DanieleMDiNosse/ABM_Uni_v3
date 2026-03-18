@@ -75,6 +75,8 @@ def test_simulate_record_keys_matches_full_outputs(tmp_path: Path) -> None:
     reduced = simulate(**_base_simulate_kwargs(
         tmp_path / "reduced",
         record_keys=[
+            "CEX_price",
+            "DEX_price",
             "lp_pnl_active_final",
             "lp_pnl_passive_final",
             "jiter_pnl_final",
@@ -83,9 +85,18 @@ def test_simulate_record_keys_matches_full_outputs(tmp_path: Path) -> None:
             "lp_fee_value_active_final",
             "lp_fee_value_passive_final",
             "lp_fee_value_total_final",
+            "lp_fees0_earned_active_series",
+            "lp_fees1_earned_active_series",
+            "lp_fees0_earned_passive_series",
+            "lp_fees1_earned_passive_series",
             "fee_mean",
             "smart_router_dex_share_mean",
             "cex_sigma_series",
+            "jiter_activity_cum",
+            "jiter_fee_value_series",
+            "jiter_fees0_earned_series",
+            "jiter_fees1_earned_series",
+            "jiter_flash_fee_paid_series",
             "lp_fee_value_active_series",
             "lp_fee_value_passive_series",
             "lp_lvr_active_series",
@@ -93,7 +104,63 @@ def test_simulate_record_keys_matches_full_outputs(tmp_path: Path) -> None:
         ],
     ))
 
+    np.testing.assert_allclose(reduced["CEX_price"], full["CEX_price"], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(reduced["DEX_price"], full["DEX_price"], rtol=0.0, atol=0.0)
     np.testing.assert_allclose(reduced["cex_sigma_series"], full["cex_sigma_series"], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(
+        reduced["lp_fees0_earned_active_series"],
+        full["lp_fees0_earned_active_series"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        reduced["lp_fees1_earned_active_series"],
+        full["lp_fees1_earned_active_series"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        reduced["lp_fees0_earned_passive_series"],
+        full["lp_fees0_earned_passive_series"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        reduced["lp_fees1_earned_passive_series"],
+        full["lp_fees1_earned_passive_series"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        reduced["jiter_activity_cum"],
+        full["jiter_activity_cum"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        reduced["jiter_fee_value_series"],
+        full["jiter_fee_value_series"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        reduced["jiter_fees0_earned_series"],
+        full["jiter_fees0_earned_series"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        reduced["jiter_fees1_earned_series"],
+        full["jiter_fees1_earned_series"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        reduced["jiter_flash_fee_paid_series"],
+        full["jiter_flash_fee_paid_series"],
+        rtol=0.0,
+        atol=0.0,
+    )
     np.testing.assert_allclose(
         reduced["lp_fee_value_active_series"],
         full["lp_fee_value_active_series"],

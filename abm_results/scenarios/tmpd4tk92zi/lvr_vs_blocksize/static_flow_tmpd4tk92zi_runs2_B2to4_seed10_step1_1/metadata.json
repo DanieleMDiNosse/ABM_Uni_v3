@@ -1,0 +1,22 @@
+{
+  "block_times": [
+    2,
+    3,
+    4
+  ],
+  "config_path": "/tmp/tmpd4tk92zi.yml",
+  "created_at_utc": "2026-03-18T08:14:50Z",
+  "fee_definition": "flow",
+  "fee_mode": "static",
+  "git_commit": "b11d393b68d380e13bb5508f4e07af5c85bfe2bb",
+  "max_workers": 1,
+  "platform": "linux",
+  "python": "3.11.14",
+  "run_id": "static_flow_tmpd4tk92zi_runs2_B2to4_seed10_step1_1",
+  "runs": 2,
+  "script": "LVR_vs_blocksize",
+  "seed_base": 10,
+  "seed_step": 1,
+  "skip_png": true,
+  "summary_only": true
+}

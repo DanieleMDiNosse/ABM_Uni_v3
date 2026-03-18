@@ -1942,6 +1942,8 @@ class _NullList(list):
 
 
 SUPPORTED_RECORD_KEYS: Set[str] = {
+    "CEX_price",
+    "DEX_price",
     "arb_no_op_in_band",
     "arb_pnl_cum",
     "arb_pnl_cum_final",
@@ -1949,12 +1951,21 @@ SUPPORTED_RECORD_KEYS: Set[str] = {
     "cex_sigma_series",
     "fee_mean",
     "fee_series",
+    "jiter_activity_cum",
+    "jiter_fee_value_series",
+    "jiter_fees0_earned_series",
+    "jiter_fees1_earned_series",
+    "jiter_flash_fee_paid_series",
     "jiter_pnl_final",
     "jiter_pnl_series",
     "lp_fee_value_active_final",
     "lp_fee_value_active_series",
     "lp_fee_value_passive_final",
     "lp_fee_value_passive_series",
+    "lp_fees0_earned_active_series",
+    "lp_fees0_earned_passive_series",
+    "lp_fees1_earned_active_series",
+    "lp_fees1_earned_passive_series",
     "lp_fee_value_total_final",
     "lp_fee_value_total_series",
     "lp_lvr_active_series",
@@ -2952,8 +2963,10 @@ def simulate(
             """Keep a recorder only when a requested output depends on it."""
             return buffer if _record_requested(*keys) else _NullList()
 
-        P_series = _select_recorder(P_series)
-        M_series = _select_recorder(M_series)
+        # These price series are consumed together by downstream spread diagnostics,
+        # so keep them paired whenever either side is requested.
+        P_series = _select_recorder(P_series, "DEX_price", "CEX_price")
+        M_series = _select_recorder(M_series, "DEX_price", "CEX_price")
         X_active_end = _NullList()
         Y_active_end = _NullList()
         L_end = _NullList()
@@ -2976,8 +2989,8 @@ def simulate(
         burn_is_passive = _NullList()
         mint_is_jiter = _NullList()
         burn_is_jiter = _NullList()
-        jiter_activity_steps = _NullList()
-        jiter_activity_signs = _NullList()
+        jiter_activity_steps = _select_recorder(jiter_activity_steps, "jiter_activity_cum")
+        jiter_activity_signs = _select_recorder(jiter_activity_signs, "jiter_activity_cum")
         smart_activity_steps = _NullList()
         smart_activity_signs = _NullList()
         noise_activity_steps = _NullList()
@@ -3017,21 +3030,36 @@ def simulate(
         lp_fee_value_passive_series = _select_recorder(lp_fee_value_passive_series, "lp_fee_value_passive_series")
         lp_fees0_earned_total_series = _NullList()
         lp_fees1_earned_total_series = _NullList()
-        lp_fees0_earned_active_series = _NullList()
-        lp_fees1_earned_active_series = _NullList()
-        lp_fees0_earned_passive_series = _NullList()
-        lp_fees1_earned_passive_series = _NullList()
+        lp_fees0_earned_active_series = _select_recorder(
+            lp_fees0_earned_active_series,
+            "lp_fees0_earned_active_series",
+        )
+        lp_fees1_earned_active_series = _select_recorder(
+            lp_fees1_earned_active_series,
+            "lp_fees1_earned_active_series",
+        )
+        lp_fees0_earned_passive_series = _select_recorder(
+            lp_fees0_earned_passive_series,
+            "lp_fees0_earned_passive_series",
+        )
+        lp_fees1_earned_passive_series = _select_recorder(
+            lp_fees1_earned_passive_series,
+            "lp_fees1_earned_passive_series",
+        )
         lp_lvr_total_series = _select_recorder(lp_lvr_total_series, "lp_lvr_total_series")
         lp_lvr_active_series = _select_recorder(lp_lvr_active_series, "lp_lvr_active_series")
         lp_lvr_passive_series = _select_recorder(lp_lvr_passive_series, "lp_lvr_passive_series")
         jiter_wallet_series = _NullList()
         jiter_wealth_series = _NullList()
-        jiter_fee_value_series = _NullList()
-        jiter_fees0_earned_series = _NullList()
-        jiter_fees1_earned_series = _NullList()
+        jiter_fee_value_series = _select_recorder(jiter_fee_value_series, "jiter_fee_value_series")
+        jiter_fees0_earned_series = _select_recorder(jiter_fees0_earned_series, "jiter_fees0_earned_series")
+        jiter_fees1_earned_series = _select_recorder(jiter_fees1_earned_series, "jiter_fees1_earned_series")
         jiter_position_value_series = _NullList()
         jiter_pnl_series = _select_recorder(jiter_pnl_series, "jiter_pnl_series")
-        jiter_flash_fee_paid_series = _NullList()
+        jiter_flash_fee_paid_series = _select_recorder(
+            jiter_flash_fee_paid_series,
+            "jiter_flash_fee_paid_series",
+        )
         trader_exec_count = _NullList()
         arb_exec_count = _NullList()
         sr_pnl_steps = _select_recorder(sr_pnl_steps, "smart_router_pnl_cum")
@@ -5423,6 +5451,10 @@ def simulate(
 
     if requested_record_keys is not None:
         selective_results: Dict[str, Any] = {}
+        if "DEX_price" in requested_record_keys:
+            selective_results["DEX_price"] = P_series.tolist()
+        if "CEX_price" in requested_record_keys:
+            selective_results["CEX_price"] = M_series.tolist()
         if "arb_no_op_in_band" in requested_record_keys:
             selective_results["arb_no_op_in_band"] = int(total_arb_no_op_in_band)
         if "arb_pnl_cum" in requested_record_keys:
@@ -5437,6 +5469,20 @@ def simulate(
             selective_results["fee_mean"] = float(fee_mean)
         if "fee_series" in requested_record_keys:
             selective_results["fee_series"] = list(fee_series)
+        if "jiter_activity_cum" in requested_record_keys:
+            jiter_activity = np.zeros(int(T), dtype=float)
+            for s, sign in zip(jiter_activity_steps, jiter_activity_signs):
+                if 0 <= s < int(T):
+                    jiter_activity[s] += sign
+            selective_results["jiter_activity_cum"] = np.cumsum(jiter_activity).tolist()
+        if "jiter_fee_value_series" in requested_record_keys:
+            selective_results["jiter_fee_value_series"] = jiter_fee_value_series.tolist()
+        if "jiter_fees0_earned_series" in requested_record_keys:
+            selective_results["jiter_fees0_earned_series"] = jiter_fees0_earned_series.tolist()
+        if "jiter_fees1_earned_series" in requested_record_keys:
+            selective_results["jiter_fees1_earned_series"] = jiter_fees1_earned_series.tolist()
+        if "jiter_flash_fee_paid_series" in requested_record_keys:
+            selective_results["jiter_flash_fee_paid_series"] = jiter_flash_fee_paid_series.tolist()
         if "jiter_pnl_final" in requested_record_keys:
             selective_results["jiter_pnl_final"] = float(jiter_pnl_final)
         if "jiter_pnl_series" in requested_record_keys:
@@ -5449,6 +5495,14 @@ def simulate(
             selective_results["lp_fee_value_passive_final"] = float(lp_fee_value_passive_final)
         if "lp_fee_value_passive_series" in requested_record_keys:
             selective_results["lp_fee_value_passive_series"] = lp_fee_value_passive_series.tolist()
+        if "lp_fees0_earned_active_series" in requested_record_keys:
+            selective_results["lp_fees0_earned_active_series"] = lp_fees0_earned_active_series.tolist()
+        if "lp_fees0_earned_passive_series" in requested_record_keys:
+            selective_results["lp_fees0_earned_passive_series"] = lp_fees0_earned_passive_series.tolist()
+        if "lp_fees1_earned_active_series" in requested_record_keys:
+            selective_results["lp_fees1_earned_active_series"] = lp_fees1_earned_active_series.tolist()
+        if "lp_fees1_earned_passive_series" in requested_record_keys:
+            selective_results["lp_fees1_earned_passive_series"] = lp_fees1_earned_passive_series.tolist()
         if "lp_fee_value_total_final" in requested_record_keys:
             selective_results["lp_fee_value_total_final"] = float(lp_fee_value_total_final)
         if "lp_fee_value_total_series" in requested_record_keys:

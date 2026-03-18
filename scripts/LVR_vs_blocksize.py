@@ -183,6 +183,60 @@ def _resolve_enabled_cohorts(params: Mapping[str, Any]) -> List[CohortSpec]:
     return enabled
 
 
+def _required_record_keys_for_lvr(*, cohort_names: Sequence[str], fee_definition: str) -> List[str]:
+    """Return the minimal `simulate()` outputs required by this sweep.
+
+    Parameters:
+        cohort_names: Enabled cohort names in the current scenario.
+        fee_definition: Fee metric mode (`"flow"` or `"mtm"`).
+
+    Returns:
+        List[str]: Deterministic sorted record-key list for `scripts.run.simulate()`.
+
+    Notes:
+        This shrinks worker-side recorder allocation and the payload returned from
+        `simulate()` to only the series consumed by `_run_one()`. The selected keys
+        preserve the exact per-block formulas already implemented by this script.
+    """
+    keys: set[str] = set()
+    fee_definition = str(fee_definition)
+
+    if fee_definition == "flow":
+        keys.add("CEX_price")
+
+    for cohort in cohort_names:
+        if cohort == "active":
+            if fee_definition == "flow":
+                keys.update(
+                    {
+                        "lp_fees0_earned_active_series",
+                        "lp_fees1_earned_active_series",
+                        "lp_pnl_active",
+                    }
+                )
+            else:
+                keys.update({"lp_lvr_active_series", "lp_fee_value_active_series"})
+        elif cohort == "passive":
+            if fee_definition == "flow":
+                keys.update(
+                    {
+                        "lp_fees0_earned_passive_series",
+                        "lp_fees1_earned_passive_series",
+                        "lp_pnl_passive",
+                    }
+                )
+            else:
+                keys.update({"lp_lvr_passive_series", "lp_fee_value_passive_series"})
+        elif cohort == "jiter":
+            keys.update({"jiter_pnl_series", "jiter_flash_fee_paid_series", "jiter_activity_cum"})
+            if fee_definition == "flow":
+                keys.update({"jiter_fees0_earned_series", "jiter_fees1_earned_series"})
+            else:
+                keys.add("jiter_fee_value_series")
+
+    return sorted(keys)
+
+
 def _delta_after_skip(values: Sequence[float], *, skip_step: int) -> np.ndarray:
     """Compute per-block increments Δx after skipping a transient prefix.
 
@@ -497,7 +551,9 @@ def _run_one(
     Notes:
         We call `scripts.run.simulate()` directly to keep results in-memory. We set
         `results_root` to a per-run folder so any verbose logs are isolated and
-        can be removed when `keep_run_artifacts=False`.
+        can be removed when `keep_run_artifacts=False`. The worker requests only
+        the series needed by the configured fee definition / cohorts so the
+        parent process avoids shipping unrelated long time series over IPC.
     """
     from scripts import run as _run_module
 
@@ -506,6 +562,13 @@ def _run_one(
     params = dict(base_params)
     params["seed"] = int(seed)
     params["block_time"] = int(block_time)
+    params["visualize"] = False
+    params["verbose"] = False
+    params["liquidity_for_gif"] = False
+    params["record_keys"] = _required_record_keys_for_lvr(
+        cohort_names=cohort_names,
+        fee_definition=fee_definition,
+    )
 
     run_dir = tmp_root / f"B{int(block_time)}_seed{int(seed)}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -681,6 +744,82 @@ def _store_run_payload_inplace(
         if mask.size > 0 and expected_delta_len > 0:
             n = min(int(mask.size), int(expected_delta_len))
             jit_success_arrays[bi, si, :n] = mask[:n].astype(np.uint8)
+
+
+def _extract_filtered_metric_from_payload(
+    payload: Mapping[str, Any],
+    *,
+    cohort: str,
+    metric_key: str,
+) -> np.ndarray:
+    """Extract one metric series from a worker payload and apply cohort filters.
+
+    Parameters:
+        payload: Completed worker payload produced by `_run_one()`.
+        cohort: Cohort name (`"active"`, `"passive"`, or `"jiter"`).
+        metric_key: Payload key prefix (for example `dLVR_active`).
+
+    Returns:
+        np.ndarray: Finite metric values for the selected cohort/run.
+
+    Notes:
+        Jiter metrics are conditioned on successful JIT execution blocks only, to
+        match the historical summary/distribution behavior of this script.
+    """
+    vals = np.asarray(payload.get(metric_key, []), dtype=float)
+    if vals.size <= 0:
+        return np.array([], dtype=float)
+
+    if cohort == "jiter" and "jit_success_mask" in payload:
+        mask = np.asarray(payload["jit_success_mask"], dtype=bool)
+        n = min(int(vals.size), int(mask.size))
+        vals = vals[:n]
+        mask = mask[:n]
+        vals = vals[mask]
+
+    vals = vals[np.isfinite(vals)]
+    return vals
+
+
+def _summary_stats_from_values(values: Sequence[float]) -> Dict[str, Any]:
+    """Compute deterministic summary statistics for a pooled sample.
+
+    Parameters:
+        values: 1D pooled sample values (possibly empty / non-finite).
+
+    Returns:
+        Dict[str, Any]: Summary row fields `n`, `mean`, `std`, `median`, `p2_5`,
+        `p25`, `p75`, and `p97_5`.
+
+    Notes:
+        Non-finite values are dropped before computing statistics. Empty samples
+        return `n=0` and NaN-valued moments/quantiles.
+    """
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size <= 0:
+        return {
+            "n": 0,
+            "mean": np.nan,
+            "std": np.nan,
+            "median": np.nan,
+            "p2_5": np.nan,
+            "p25": np.nan,
+            "p75": np.nan,
+            "p97_5": np.nan,
+        }
+
+    p2_5, p25, p75, p97_5 = [float(x) for x in np.percentile(arr, [2.5, 25.0, 75.0, 97.5])]
+    return {
+        "n": int(arr.size),
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr)),
+        "median": float(np.median(arr)),
+        "p2_5": p2_5,
+        "p25": p25,
+        "p75": p75,
+        "p97_5": p97_5,
+    }
 
 
 def _build_violin_figure(
@@ -1077,6 +1216,20 @@ def parse_args() -> argparse.Namespace:
         help="Keep per-run temp folders/logs. Default is to delete them.",
     )
     p.add_argument(
+        "--summary-only",
+        action="store_true",
+        help=(
+            "Fast path: skip the full `(block_time, seed, step)` NPZ archive and compute "
+            "summary CSV/HTML/PNG outputs directly from streamed worker payloads. "
+            "Recommended for large model2 wrapper runs when plot regeneration from NPZ is not needed."
+        ),
+    )
+    p.add_argument(
+        "--skip-png",
+        action="store_true",
+        help="Skip Plotly PNG export and write only CSV/HTML artifacts.",
+    )
+    p.add_argument(
         "--load-npz",
         type=Path,
         nargs="+",
@@ -1374,6 +1527,271 @@ def _parse_fee_mode_list(raw_values: Optional[Sequence[str]], *, default_fee_mod
     return ordered_unique
 
 
+def _write_blocksize_outputs(
+    *,
+    out_root: Path,
+    fee_mode_label: str,
+    fee_def_label: str,
+    config_path: Path,
+    runs: int,
+    enabled_cohorts: Sequence[CohortSpec],
+    cohort_names: Sequence[str],
+    block_times: Sequence[int],
+    summary_df: pd.DataFrame,
+    ratio_summary_df: pd.DataFrame,
+    distributions: Mapping[str, Mapping[int, np.ndarray]],
+    ratio_distributions: Mapping[str, Mapping[int, np.ndarray]],
+    yaxis_type: str,
+    yaxis_suffix: str,
+    plot_violin: bool,
+    plot_medians: bool,
+    plot_means: bool,
+    plot_95_interval: bool,
+    skip_png: bool,
+    npz_path: Optional[Path] = None,
+) -> Path:
+    """Persist summary tables and figures for one completed fee-mode sweep.
+
+    Parameters:
+        out_root: Output directory for the sweep.
+        fee_mode_label: Fee mode label used in filenames.
+        fee_def_label: Fee definition label (`flow` or `mtm`).
+        config_path: Scenario configuration path.
+        runs: Number of seeds executed per block size.
+        enabled_cohorts: Enabled cohort specs in subplot order.
+        cohort_names: Enabled cohort names.
+        block_times: Block-size grid.
+        summary_df: Pooled ΔLVR summary statistics by `(cohort, block_time)`.
+        ratio_summary_df: Pooled ΔLVR/ΔFees summary statistics by `(cohort, block_time)`.
+        distributions: Optional pooled ΔLVR samples for violin plots.
+        ratio_distributions: Optional pooled ΔLVR/ΔFees samples for violin plots.
+        yaxis_type: Plot y-axis mode (`linear` or `log`).
+        yaxis_suffix: Suffix appended to LVR axis titles.
+        plot_violin: Whether to render violin distributions.
+        plot_medians: Whether to render median lines.
+        plot_means: Whether to render mean lines.
+        plot_95_interval: Whether to render central 95% intervals.
+        skip_png: If True, skip static image export.
+        npz_path: Optional full-array NPZ archive path to report in logs.
+
+    Returns:
+        Path: The output directory.
+
+    Notes:
+        This helper owns all artifact writing after the simulation stage so the
+        full-array and summary-only execution paths stay behaviorally aligned.
+    """
+    lvr_yaxis_title = ("ΔLVR (block)" if fee_def_label == "flow" else "ΔLVR") + yaxis_suffix
+    base_ratio_yaxis_title = "ΔLVR/ΔFees" if fee_def_label == "flow" else "ΔLVR/ΔFees (mtm)"
+    ratio_yaxis_title = base_ratio_yaxis_title
+
+    summary_csv = out_root / "dLVR_summary.csv"
+    summary_df.to_csv(summary_csv, index=False)
+
+    ratio_summary_csv = out_root / "dLVR_over_dFees_summary.csv"
+    ratio_summary_df.to_csv(ratio_summary_csv, index=False)
+
+    merged = summary_df.rename(columns={c: f"dLVR_{c}" for c in summary_df.columns if c not in {"cohort", "block_time"}}).merge(
+        ratio_summary_df.rename(columns={c: f"ratio_{c}" for c in ratio_summary_df.columns if c not in {"cohort", "block_time"}}),
+        on=["cohort", "block_time"],
+        how="outer",
+    )
+    merged_csv = out_root / "summary.csv"
+    merged.to_csv(merged_csv, index=False)
+
+    ratio_cohort_names = list(cohort_names)
+    ratio_use_log10 = str(yaxis_type) == "log"
+    ratio_can_log_by_cohort: Dict[str, bool] = {c: False for c in ratio_cohort_names}
+    ratio_plot_yaxis_type = "linear" if bool(ratio_use_log10) else str(yaxis_type)
+    ratio_share_yaxes = True
+    ratio_axis_titles_by_cohort: Optional[Dict[str, str]] = None
+    ratio_plot_cohort_specs: List[CohortSpec] = list(enabled_cohorts)
+
+    if bool(ratio_use_log10):
+        ratio_can_log_by_cohort = _ratio_log10_eligibility_from_summary(
+            ratio_summary_df,
+            cohort_names=ratio_cohort_names,
+            use_medians=bool(plot_medians),
+            use_means=bool(plot_means),
+        )
+        has_raw_fallback = any(not bool(ratio_can_log_by_cohort.get(c, False)) for c in ratio_cohort_names)
+        ratio_share_yaxes = not has_raw_fallback
+        if has_raw_fallback:
+            ratio_yaxis_title = base_ratio_yaxis_title
+            ratio_axis_titles_by_cohort = {
+                c: (f"log({base_ratio_yaxis_title})" if bool(ratio_can_log_by_cohort.get(c, False)) else base_ratio_yaxis_title)
+                for c in ratio_cohort_names
+            }
+            fallback_names = [c for c in ratio_cohort_names if not bool(ratio_can_log_by_cohort.get(c, False))]
+            if fallback_names:
+                print(
+                    "[LVR_vs_blocksize] log-transform fallback to raw ratio (based on selected summary points) for cohorts: "
+                    + ", ".join(fallback_names)
+                )
+        else:
+            ratio_yaxis_title = f"log({base_ratio_yaxis_title})"
+            ratio_axis_titles_by_cohort = None
+
+        for cohort in cohort_names:
+            apply_log = bool(ratio_can_log_by_cohort.get(cohort, False))
+            for b in block_times:
+                vals = np.asarray(ratio_distributions.get(cohort, {}).get(int(b), np.array([], dtype=float)), dtype=float)
+                ratio_distributions[cohort][int(b)] = _transform_ratio_values_for_plot(
+                    vals,
+                    apply_log10=apply_log,
+                )
+
+    plot_label = "violin" if bool(plot_violin) else "medians"
+    if not bool(plot_violin):
+        medians_by_cohort: Dict[str, List[float]] = {}
+        means_by_cohort: Dict[str, List[float]] = {}
+        for cohort in cohort_names:
+            cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
+            medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
+            means_by_cohort[cohort] = [float(x) for x in cohort_df["mean"].to_list()]
+        p2_5_by_cohort = None
+        p97_5_by_cohort = None
+        if bool(plot_95_interval) and bool(plot_medians):
+            p2_5_by_cohort = {}
+            p97_5_by_cohort = {}
+            for cohort in cohort_names:
+                cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
+                p2_5_by_cohort[cohort] = [float(x) for x in cohort_df["p2_5"].to_list()]
+                p97_5_by_cohort[cohort] = [float(x) for x in cohort_df["p97_5"].to_list()]
+        fig = _build_medians_only_figure(
+            medians_by_cohort,
+            means=means_by_cohort,
+            p2_5=p2_5_by_cohort,
+            p97_5=p97_5_by_cohort,
+            cohort_specs=enabled_cohorts,
+            block_times=block_times,
+            yaxis_title=lvr_yaxis_title,
+            yaxis_type=yaxis_type,
+            plot_medians=bool(plot_medians),
+            plot_95_interval=bool(plot_95_interval),
+            plot_means=bool(plot_means),
+        )
+        html_path = out_root / (
+            f"dLVR_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(runs)}.html"
+        )
+        png_path = out_root / (
+            f"dLVR_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(runs)}.png"
+        )
+
+        ratio_medians_by_cohort: Dict[str, List[float]] = {}
+        ratio_means_by_cohort: Dict[str, List[float]] = {}
+        for cohort in cohort_names:
+            cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
+            apply_log = bool(ratio_use_log10 and ratio_can_log_by_cohort.get(cohort, False))
+            ratio_medians_by_cohort[cohort] = _transform_summary_series_for_plot(
+                cohort_df["median"].to_list(),
+                apply_log10=apply_log,
+            )
+            ratio_means_by_cohort[cohort] = _transform_summary_series_for_plot(
+                cohort_df["mean"].to_list(),
+                apply_log10=apply_log,
+            )
+        ratio_p2_5_by_cohort = None
+        ratio_p97_5_by_cohort = None
+        if bool(plot_95_interval) and bool(plot_medians):
+            ratio_p2_5_by_cohort = {}
+            ratio_p97_5_by_cohort = {}
+            for cohort in cohort_names:
+                cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
+                apply_log = bool(ratio_use_log10 and ratio_can_log_by_cohort.get(cohort, False))
+                ratio_p2_5_by_cohort[cohort] = _transform_summary_series_for_plot(
+                    cohort_df["p2_5"].to_list(),
+                    apply_log10=apply_log,
+                )
+                ratio_p97_5_by_cohort[cohort] = _transform_summary_series_for_plot(
+                    cohort_df["p97_5"].to_list(),
+                    apply_log10=apply_log,
+                )
+        ratio_fig = _build_medians_only_figure(
+            ratio_medians_by_cohort,
+            means=ratio_means_by_cohort,
+            p2_5=ratio_p2_5_by_cohort,
+            p97_5=ratio_p97_5_by_cohort,
+            cohort_specs=ratio_plot_cohort_specs,
+            block_times=block_times,
+            yaxis_title=ratio_yaxis_title,
+            yaxis_titles=ratio_axis_titles_by_cohort,
+            yaxis_type=ratio_plot_yaxis_type,
+            share_yaxes=bool(ratio_share_yaxes),
+            plot_medians=bool(plot_medians),
+            plot_95_interval=bool(plot_95_interval),
+            plot_means=bool(plot_means),
+        )
+        ratio_html_path = out_root / (
+            f"dLVR_over_dFees_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(runs)}.html"
+        )
+        ratio_png_path = out_root / (
+            f"dLVR_over_dFees_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(runs)}.png"
+        )
+    else:
+        fig = _build_violin_figure(
+            distributions,
+            cohort_specs=enabled_cohorts,
+            block_times=block_times,
+            yaxis_title=lvr_yaxis_title,
+            yaxis_type=yaxis_type,
+            plot_medians=bool(plot_medians),
+            plot_95_interval=bool(plot_95_interval),
+            plot_means=bool(plot_means),
+        )
+        html_path = out_root / (
+            f"dLVR_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(runs)}.html"
+        )
+        png_path = out_root / (
+            f"dLVR_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(runs)}.png"
+        )
+
+        ratio_fig = _build_violin_figure(
+            ratio_distributions,
+            cohort_specs=ratio_plot_cohort_specs,
+            block_times=block_times,
+            yaxis_title=ratio_yaxis_title,
+            yaxis_titles=ratio_axis_titles_by_cohort,
+            yaxis_type=ratio_plot_yaxis_type,
+            share_yaxes=bool(ratio_share_yaxes),
+            plot_medians=bool(plot_medians),
+            plot_95_interval=bool(plot_95_interval),
+            plot_means=bool(plot_means),
+        )
+        ratio_html_path = out_root / (
+            f"dLVR_over_dFees_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(runs)}.html"
+        )
+        ratio_png_path = out_root / (
+            f"dLVR_over_dFees_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(runs)}.png"
+        )
+
+    fig.write_html(html_path)
+    ratio_fig.write_html(ratio_html_path)
+
+    if not bool(skip_png):
+        try:
+            fig.write_image(png_path)
+        except Exception as exc:  # pragma: no cover
+            print(f"[warn] PNG export failed (is kaleido installed?): {exc}")
+        try:
+            ratio_fig.write_image(ratio_png_path)
+        except Exception as exc:  # pragma: no cover
+            print(f"[warn] PNG export failed (is kaleido installed?): {exc}")
+
+    if npz_path is not None:
+        print(f"[LVR_vs_blocksize] wrote: {npz_path}")
+    print(f"[LVR_vs_blocksize] wrote: {summary_csv}")
+    print(f"[LVR_vs_blocksize] wrote: {merged_csv}")
+    print(f"[LVR_vs_blocksize] wrote: {html_path}")
+    if not bool(skip_png) and png_path.exists():
+        print(f"[LVR_vs_blocksize] wrote: {png_path}")
+    print(f"[LVR_vs_blocksize] wrote: {ratio_summary_csv}")
+    print(f"[LVR_vs_blocksize] wrote: {ratio_html_path}")
+    if not bool(skip_png) and ratio_png_path.exists():
+        print(f"[LVR_vs_blocksize] wrote: {ratio_png_path}")
+    return out_root
+
+
 def _run_blocksize_sweep_for_fee_mode(
     *,
     args: argparse.Namespace,
@@ -1422,9 +1840,6 @@ def _run_blocksize_sweep_for_fee_mode(
     scenario_root = scenario_output_root(config_path)
     out_root_base = scenario_root / "lvr_vs_blocksize"
     out_root_base.mkdir(parents=True, exist_ok=True)
-    lvr_yaxis_title = ("ΔLVR (block)" if fee_def_label == "flow" else "ΔLVR") + yaxis_suffix
-    base_ratio_yaxis_title = "ΔLVR/ΔFees" if fee_def_label == "flow" else "ΔLVR/ΔFees (mtm)"
-    ratio_yaxis_title = base_ratio_yaxis_title
     seed0 = int(args.seed_base) if args.seed_base is not None else int(mode_params.get("seed", 1))
     block_times = list(range(int(args.block_min), int(args.block_max) + 1))
     seeds = [int(seed0 + i * int(args.seed_step)) for i in range(int(args.runs))]
@@ -1447,31 +1862,16 @@ def _run_blocksize_sweep_for_fee_mode(
             "seed_step": int(args.seed_step),
             "block_times": list(map(int, block_times)),
             "max_workers": int(args.max_workers),
+            "summary_only": bool(args.summary_only),
+            "skip_png": bool(args.skip_png),
         },
     )
 
     # Temp root for per-run artifacts (logs, etc.). Each worker uses a unique folder.
     run_tmp_root = make_unique_dir(out_root / "_tmp_runs")
 
-    # Expected Δ series length (used only for saving aligned 3D arrays).
     T = int(mode_params.get("T", 0))
     skip_step = int(mode_params.get("skip_step", 0))
-    expected_delta_len = max(0, (T - skip_step) - 1)
-
-    # Pre-allocate (B, seed, step) arrays per cohort for reproducible storage.
-    block_idx = {int(b): i for i, b in enumerate(block_times)}
-    seed_idx = {int(s): i for i, s in enumerate(seeds)}
-    delta_arrays: Dict[str, np.ndarray] = {
-        c.name: np.full((len(block_times), len(seeds), expected_delta_len), np.nan, dtype=float) for c in enabled_cohorts
-    }
-    ratio_arrays: Dict[str, np.ndarray] = {
-        c.name: np.full((len(block_times), len(seeds), expected_delta_len), np.nan, dtype=float) for c in enabled_cohorts
-    }
-    jit_success_arrays: Optional[np.ndarray]
-    if "jiter" in cohort_names:
-        jit_success_arrays = np.zeros((len(block_times), len(seeds), expected_delta_len), dtype=np.uint8)
-    else:
-        jit_success_arrays = None
 
     # Run all (B, seed) combinations in parallel.
     tasks: List[Tuple[int, int]] = [(b, s) for b in block_times for s in seeds]
@@ -1487,355 +1887,207 @@ def _run_blocksize_sweep_for_fee_mode(
     from concurrent.futures import ProcessPoolExecutor, as_completed
     from tqdm import tqdm
 
-    with ProcessPoolExecutor(max_workers=int(args.max_workers)) as executor:
-        futures = [
-            executor.submit(
-                _run_one,
-                seed,
-                block_time,
-                base_params=mode_params,
-                tmp_root=run_tmp_root,
-                keep_run_artifacts=bool(args.keep_run_artifacts),
-                cohort_names=cohort_names,
-                fee_definition=fee_def_label,
-            )
-            for (block_time, seed) in tasks
-        ]
-        with tqdm(total=len(futures), desc="Runs", unit="sim") as pbar:
-            for fut in as_completed(futures):
-                payload = fut.result()
-                # Stream each result directly into its `(B, seed)` slot to avoid
-                # holding a second full copy of all long time-series outputs.
-                _store_run_payload_inplace(
-                    payload,
-                    block_idx=block_idx,
-                    seed_idx=seed_idx,
-                    cohort_names=cohort_names,
-                    expected_delta_len=expected_delta_len,
-                    delta_arrays=delta_arrays,
-                    ratio_arrays=ratio_arrays,
-                    jit_success_arrays=jit_success_arrays,
-                )
-                pbar.update(1)
-
-    # Save arrays for reproducibility (time series per run).
-    npz_path = out_root / (
-        f"dLVR_arrays_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}"
-        f"_B{block_times[0]}to{block_times[-1]}.npz"
-    )
-    npz_payload: Dict[str, Any] = {
-        "block_times": np.array(block_times, dtype=int),
-        "seeds": np.array(seeds, dtype=int),
-        "T": np.array(T, dtype=int),
-        "skip_step": np.array(skip_step, dtype=int),
-        "fee_definition": np.array(fee_def_label),
-    }
-    for cohort in cohort_names:
-        npz_payload[f"dLVR_{cohort}"] = delta_arrays[cohort]
-        npz_payload[f"dLVR_over_dFees_{cohort}"] = ratio_arrays[cohort]
-    if jit_success_arrays is not None:
-        npz_payload["jit_success_mask"] = jit_success_arrays
-    np.savez_compressed(npz_path, **npz_payload)
-
-    # Build distributions per (cohort, B) by pooling across seeds and time.
     distributions: Dict[str, Dict[int, np.ndarray]] = {c: {} for c in cohort_names}
+    ratio_distributions: Dict[str, Dict[int, np.ndarray]] = {c: {} for c in cohort_names}
     summary_rows: List[Dict[str, Any]] = []
-    for cohort in cohort_names:
-        arr = delta_arrays[cohort]
-        for b in block_times:
-            bi = block_idx[int(b)]
-            flat = arr[bi, :, :].reshape(-1)
-            if cohort == "jiter" and jit_success_arrays is not None:
-                m = jit_success_arrays[bi, :, :].reshape(-1).astype(bool)
-                flat = flat[m]
-            flat = flat[np.isfinite(flat)]
-            if bool(plot_violin):
-                distributions[cohort][int(b)] = flat
-            if flat.size == 0:
-                stats = dict(
-                    n=0,
-                    mean=np.nan,
-                    std=np.nan,
-                    median=np.nan,
-                    p2_5=np.nan,
-                    p25=np.nan,
-                    p75=np.nan,
-                    p97_5=np.nan,
+    ratio_summary_rows: List[Dict[str, Any]] = []
+    npz_path: Optional[Path] = None
+    if bool(args.summary_only):
+        with ProcessPoolExecutor(max_workers=int(args.max_workers)) as executor:
+            with tqdm(total=len(tasks), desc="Runs", unit="sim") as pbar:
+                for block_time in block_times:
+                    futures = [
+                        executor.submit(
+                            _run_one,
+                            seed,
+                            block_time,
+                            base_params=mode_params,
+                            tmp_root=run_tmp_root,
+                            keep_run_artifacts=bool(args.keep_run_artifacts),
+                            cohort_names=cohort_names,
+                            fee_definition=fee_def_label,
+                        )
+                        for seed in seeds
+                    ]
+                    delta_parts: Dict[str, List[np.ndarray]] = {c: [] for c in cohort_names}
+                    ratio_parts: Dict[str, List[np.ndarray]] = {c: [] for c in cohort_names}
+                    for fut in as_completed(futures):
+                        payload = fut.result()
+                        for cohort in cohort_names:
+                            delta_vals = _extract_filtered_metric_from_payload(
+                                payload,
+                                cohort=cohort,
+                                metric_key=f"dLVR_{cohort}",
+                            )
+                            if delta_vals.size > 0:
+                                delta_parts[cohort].append(delta_vals)
+
+                            ratio_vals = _extract_filtered_metric_from_payload(
+                                payload,
+                                cohort=cohort,
+                                metric_key=f"dLVR_over_dFees_{cohort}",
+                            )
+                            if ratio_vals.size > 0:
+                                ratio_parts[cohort].append(ratio_vals)
+                        pbar.update(1)
+
+                    for cohort in cohort_names:
+                        if delta_parts[cohort]:
+                            flat_delta = np.concatenate(delta_parts[cohort])
+                        else:
+                            flat_delta = np.array([], dtype=float)
+                        if bool(plot_violin):
+                            distributions[cohort][int(block_time)] = flat_delta
+                        summary_rows.append(
+                            {
+                                "cohort": cohort,
+                                "block_time": int(block_time),
+                                **_summary_stats_from_values(flat_delta),
+                            }
+                        )
+
+                        if ratio_parts[cohort]:
+                            flat_ratio = np.concatenate(ratio_parts[cohort])
+                        else:
+                            flat_ratio = np.array([], dtype=float)
+                        if bool(plot_violin):
+                            ratio_distributions[cohort][int(block_time)] = flat_ratio
+                        ratio_summary_rows.append(
+                            {
+                                "cohort": cohort,
+                                "block_time": int(block_time),
+                                **_summary_stats_from_values(flat_ratio),
+                            }
+                        )
+    else:
+        expected_delta_len = max(0, (T - skip_step) - 1)
+        block_idx = {int(b): i for i, b in enumerate(block_times)}
+        seed_idx = {int(s): i for i, s in enumerate(seeds)}
+        delta_arrays: Dict[str, np.ndarray] = {
+            c.name: np.full((len(block_times), len(seeds), expected_delta_len), np.nan, dtype=float) for c in enabled_cohorts
+        }
+        ratio_arrays: Dict[str, np.ndarray] = {
+            c.name: np.full((len(block_times), len(seeds), expected_delta_len), np.nan, dtype=float) for c in enabled_cohorts
+        }
+        jit_success_arrays: Optional[np.ndarray]
+        if "jiter" in cohort_names:
+            jit_success_arrays = np.zeros((len(block_times), len(seeds), expected_delta_len), dtype=np.uint8)
+        else:
+            jit_success_arrays = None
+
+        with ProcessPoolExecutor(max_workers=int(args.max_workers)) as executor:
+            futures = [
+                executor.submit(
+                    _run_one,
+                    seed,
+                    block_time,
+                    base_params=mode_params,
+                    tmp_root=run_tmp_root,
+                    keep_run_artifacts=bool(args.keep_run_artifacts),
+                    cohort_names=cohort_names,
+                    fee_definition=fee_def_label,
                 )
-            else:
-                p2_5, p25, p75, p97_5 = [float(x) for x in np.percentile(flat, [2.5, 25.0, 75.0, 97.5])]
-                stats = dict(
-                    n=int(flat.size),
-                    mean=float(np.mean(flat)),
-                    std=float(np.std(flat)),
-                    median=float(np.median(flat)),
-                    p2_5=p2_5,
-                    p25=p25,
-                    p75=p75,
-                    p97_5=p97_5,
+                for (block_time, seed) in tasks
+            ]
+            with tqdm(total=len(futures), desc="Runs", unit="sim") as pbar:
+                for fut in as_completed(futures):
+                    payload = fut.result()
+                    _store_run_payload_inplace(
+                        payload,
+                        block_idx=block_idx,
+                        seed_idx=seed_idx,
+                        cohort_names=cohort_names,
+                        expected_delta_len=expected_delta_len,
+                        delta_arrays=delta_arrays,
+                        ratio_arrays=ratio_arrays,
+                        jit_success_arrays=jit_success_arrays,
+                    )
+                    pbar.update(1)
+
+        npz_path = out_root / (
+            f"dLVR_arrays_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}"
+            f"_B{block_times[0]}to{block_times[-1]}.npz"
+        )
+        npz_payload: Dict[str, Any] = {
+            "block_times": np.array(block_times, dtype=int),
+            "seeds": np.array(seeds, dtype=int),
+            "T": np.array(T, dtype=int),
+            "skip_step": np.array(skip_step, dtype=int),
+            "fee_definition": np.array(fee_def_label),
+        }
+        for cohort in cohort_names:
+            npz_payload[f"dLVR_{cohort}"] = delta_arrays[cohort]
+            npz_payload[f"dLVR_over_dFees_{cohort}"] = ratio_arrays[cohort]
+        if jit_success_arrays is not None:
+            npz_payload["jit_success_mask"] = jit_success_arrays
+        np.savez_compressed(npz_path, **npz_payload)
+
+        for cohort in cohort_names:
+            arr = delta_arrays[cohort]
+            for b in block_times:
+                bi = block_idx[int(b)]
+                flat = arr[bi, :, :].reshape(-1)
+                if cohort == "jiter" and jit_success_arrays is not None:
+                    m = jit_success_arrays[bi, :, :].reshape(-1).astype(bool)
+                    flat = flat[m]
+                flat = flat[np.isfinite(flat)]
+                if bool(plot_violin):
+                    distributions[cohort][int(b)] = flat
+                summary_rows.append(
+                    {
+                        "cohort": cohort,
+                        "block_time": int(b),
+                        **_summary_stats_from_values(flat),
+                    }
                 )
-            summary_rows.append(
-                {
-                    "cohort": cohort,
-                    "block_time": int(b),
-                    **stats,
-                }
-            )
+
+        for cohort in cohort_names:
+            arr = ratio_arrays[cohort]
+            for b in block_times:
+                bi = block_idx[int(b)]
+                flat = arr[bi, :, :].reshape(-1)
+                if cohort == "jiter" and jit_success_arrays is not None:
+                    m = jit_success_arrays[bi, :, :].reshape(-1).astype(bool)
+                    flat = flat[m]
+                flat = flat[np.isfinite(flat)]
+                if bool(plot_violin):
+                    ratio_distributions[cohort][int(b)] = flat
+                ratio_summary_rows.append(
+                    {
+                        "cohort": cohort,
+                        "block_time": int(b),
+                        **_summary_stats_from_values(flat),
+                    }
+                )
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_csv = out_root / "dLVR_summary.csv"
-    summary_df.to_csv(summary_csv, index=False)
-
-    # Build distributions/stats for ΔLVR/ΔFees ("fee coverage") ratio.
-    ratio_cohort_names = list(cohort_names)
-    ratio_use_log10 = str(yaxis_type) == "log"
-    ratio_can_log_by_cohort: Dict[str, bool] = {c: False for c in ratio_cohort_names}
-    ratio_plot_yaxis_type = "linear" if bool(ratio_use_log10) else str(yaxis_type)
-    ratio_share_yaxes = True
-    ratio_axis_titles_by_cohort: Optional[Dict[str, str]] = None
-    ratio_plot_cohort_specs: List[CohortSpec] = list(enabled_cohorts)
-
-    ratio_distributions: Dict[str, Dict[int, np.ndarray]] = {c: {} for c in cohort_names}
-    ratio_summary_rows: List[Dict[str, Any]] = []
-    for cohort in cohort_names:
-        arr = ratio_arrays[cohort]
-        for b in block_times:
-            bi = block_idx[int(b)]
-            flat = arr[bi, :, :].reshape(-1)
-            if cohort == "jiter" and jit_success_arrays is not None:
-                m = jit_success_arrays[bi, :, :].reshape(-1).astype(bool)
-                flat = flat[m]
-            flat = flat[np.isfinite(flat)]
-            if bool(plot_violin):
-                ratio_distributions[cohort][int(b)] = flat
-            if flat.size == 0:
-                stats = dict(
-                    n=0,
-                    mean=np.nan,
-                    std=np.nan,
-                    median=np.nan,
-                    p2_5=np.nan,
-                    p25=np.nan,
-                    p75=np.nan,
-                    p97_5=np.nan,
-                )
-            else:
-                p2_5, p25, p75, p97_5 = [float(x) for x in np.percentile(flat, [2.5, 25.0, 75.0, 97.5])]
-                stats = dict(
-                    n=int(flat.size),
-                    mean=float(np.mean(flat)),
-                    std=float(np.std(flat)),
-                    median=float(np.median(flat)),
-                    p2_5=p2_5,
-                    p25=p25,
-                    p75=p75,
-                    p97_5=p97_5,
-                )
-            ratio_summary_rows.append(
-                {
-                    "cohort": cohort,
-                    "block_time": int(b),
-                    **stats,
-                }
-            )
-
     ratio_summary_df = pd.DataFrame(ratio_summary_rows)
-    ratio_summary_csv = out_root / "dLVR_over_dFees_summary.csv"
-    ratio_summary_df.to_csv(ratio_summary_csv, index=False)
-
-    # Single merged summary table for comparisons (one CSV per invocation).
-    merged = summary_df.rename(columns={c: f"dLVR_{c}" for c in summary_df.columns if c not in {"cohort", "block_time"}}).merge(
-        ratio_summary_df.rename(columns={c: f"ratio_{c}" for c in ratio_summary_df.columns if c not in {"cohort", "block_time"}}),
-        on=["cohort", "block_time"],
-        how="outer",
-    )
-    merged_csv = out_root / "summary.csv"
-    merged.to_csv(merged_csv, index=False)
-
-    if bool(ratio_use_log10):
-        ratio_can_log_by_cohort = _ratio_log10_eligibility_from_summary(
-            ratio_summary_df,
-            cohort_names=ratio_cohort_names,
-            use_medians=bool(plot_medians),
-            use_means=bool(plot_means),
-        )
-        has_raw_fallback = any(not bool(ratio_can_log_by_cohort.get(c, False)) for c in ratio_cohort_names)
-        ratio_share_yaxes = not has_raw_fallback
-        if has_raw_fallback:
-            ratio_yaxis_title = base_ratio_yaxis_title
-            ratio_axis_titles_by_cohort = {
-                c: (f"log({base_ratio_yaxis_title})" if bool(ratio_can_log_by_cohort.get(c, False)) else base_ratio_yaxis_title)
-                for c in ratio_cohort_names
-            }
-            fallback_names = [c for c in ratio_cohort_names if not bool(ratio_can_log_by_cohort.get(c, False))]
-            if fallback_names:
-                print(
-                    "[LVR_vs_blocksize] log-transform fallback to raw ratio (based on selected summary points) for cohorts: "
-                    + ", ".join(fallback_names)
-                )
-        else:
-            ratio_yaxis_title = f"log({base_ratio_yaxis_title})"
-            ratio_axis_titles_by_cohort = None
-
-        for cohort in cohort_names:
-            apply_log = bool(ratio_can_log_by_cohort.get(cohort, False))
-            for b in block_times:
-                vals = np.asarray(ratio_distributions[cohort].get(int(b), np.array([], dtype=float)), dtype=float)
-                ratio_distributions[cohort][int(b)] = _transform_ratio_values_for_plot(
-                    vals,
-                    apply_log10=apply_log,
-                )
-
-    plot_label = "violin" if bool(plot_violin) else "medians"
-    if not bool(plot_violin):
-        medians_by_cohort: Dict[str, List[float]] = {}
-        means_by_cohort: Dict[str, List[float]] = {}
-        for cohort in cohort_names:
-            cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
-            medians_by_cohort[cohort] = [float(x) for x in cohort_df["median"].to_list()]
-            means_by_cohort[cohort] = [float(x) for x in cohort_df["mean"].to_list()]
-        p2_5_by_cohort = None
-        p97_5_by_cohort = None
-        if bool(plot_95_interval) and bool(plot_medians):
-            p2_5_by_cohort = {}
-            p97_5_by_cohort = {}
-            for cohort in cohort_names:
-                cohort_df = summary_df[summary_df["cohort"] == cohort].sort_values("block_time")
-                p2_5_by_cohort[cohort] = [float(x) for x in cohort_df["p2_5"].to_list()]
-                p97_5_by_cohort[cohort] = [float(x) for x in cohort_df["p97_5"].to_list()]
-        fig = _build_medians_only_figure(
-            medians_by_cohort,
-            means=means_by_cohort,
-            p2_5=p2_5_by_cohort,
-            p97_5=p97_5_by_cohort,
-            cohort_specs=enabled_cohorts,
-            block_times=block_times,
-            yaxis_title=lvr_yaxis_title,
-            yaxis_type=yaxis_type,
-            plot_medians=bool(plot_medians),
-            plot_95_interval=bool(plot_95_interval),
-            plot_means=bool(plot_means),
-        )
-        html_path = out_root / (
-            f"dLVR_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}.html"
-        )
-        png_path = out_root / (
-            f"dLVR_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}.png"
-        )
-
-        ratio_medians_by_cohort: Dict[str, List[float]] = {}
-        ratio_means_by_cohort: Dict[str, List[float]] = {}
-        for cohort in cohort_names:
-            cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
-            apply_log = bool(ratio_use_log10 and ratio_can_log_by_cohort.get(cohort, False))
-            ratio_medians_by_cohort[cohort] = _transform_summary_series_for_plot(
-                cohort_df["median"].to_list(),
-                apply_log10=apply_log,
-            )
-            ratio_means_by_cohort[cohort] = _transform_summary_series_for_plot(
-                cohort_df["mean"].to_list(),
-                apply_log10=apply_log,
-            )
-        ratio_p2_5_by_cohort = None
-        ratio_p97_5_by_cohort = None
-        if bool(plot_95_interval) and bool(plot_medians):
-            ratio_p2_5_by_cohort = {}
-            ratio_p97_5_by_cohort = {}
-            for cohort in cohort_names:
-                cohort_df = ratio_summary_df[ratio_summary_df["cohort"] == cohort].sort_values("block_time")
-                apply_log = bool(ratio_use_log10 and ratio_can_log_by_cohort.get(cohort, False))
-                ratio_p2_5_by_cohort[cohort] = _transform_summary_series_for_plot(
-                    cohort_df["p2_5"].to_list(),
-                    apply_log10=apply_log,
-                )
-                ratio_p97_5_by_cohort[cohort] = _transform_summary_series_for_plot(
-                    cohort_df["p97_5"].to_list(),
-                    apply_log10=apply_log,
-                )
-        ratio_fig = _build_medians_only_figure(
-            ratio_medians_by_cohort,
-            means=ratio_means_by_cohort,
-            p2_5=ratio_p2_5_by_cohort,
-            p97_5=ratio_p97_5_by_cohort,
-            cohort_specs=ratio_plot_cohort_specs,
-            block_times=block_times,
-            yaxis_title=ratio_yaxis_title,
-            yaxis_titles=ratio_axis_titles_by_cohort,
-            yaxis_type=ratio_plot_yaxis_type,
-            share_yaxes=bool(ratio_share_yaxes),
-            plot_medians=bool(plot_medians),
-            plot_95_interval=bool(plot_95_interval),
-            plot_means=bool(plot_means),
-        )
-        ratio_html_path = out_root / (
-            f"dLVR_over_dFees_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}.html"
-        )
-        ratio_png_path = out_root / (
-            f"dLVR_over_dFees_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}.png"
-        )
-    else:
-        fig = _build_violin_figure(
-            distributions,
-            cohort_specs=enabled_cohorts,
-            block_times=block_times,
-            yaxis_title=lvr_yaxis_title,
-            yaxis_type=yaxis_type,
-            plot_medians=bool(plot_medians),
-            plot_95_interval=bool(plot_95_interval),
-            plot_means=bool(plot_means),
-        )
-        html_path = out_root / (
-            f"dLVR_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}.html"
-        )
-        png_path = out_root / (
-            f"dLVR_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}.png"
-        )
-
-        ratio_fig = _build_violin_figure(
-            ratio_distributions,
-            cohort_specs=ratio_plot_cohort_specs,
-            block_times=block_times,
-            yaxis_title=ratio_yaxis_title,
-            yaxis_titles=ratio_axis_titles_by_cohort,
-            yaxis_type=ratio_plot_yaxis_type,
-            share_yaxes=bool(ratio_share_yaxes),
-            plot_medians=bool(plot_medians),
-            plot_95_interval=bool(plot_95_interval),
-            plot_means=bool(plot_means),
-        )
-        ratio_html_path = out_root / (
-            f"dLVR_over_dFees_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}.html"
-        )
-        ratio_png_path = out_root / (
-            f"dLVR_over_dFees_{plot_label}_vs_block_time_{fee_mode_label}_{fee_def_label}_{config_path.stem}_runs{int(args.runs)}.png"
-        )
-
-    fig.write_html(html_path)
-    ratio_fig.write_html(ratio_html_path)
-
-    try:
-        fig.write_image(png_path)
-    except Exception as exc:  # pragma: no cover
-        print(f"[warn] PNG export failed (is kaleido installed?): {exc}")
-    try:
-        ratio_fig.write_image(ratio_png_path)
-    except Exception as exc:  # pragma: no cover
-        print(f"[warn] PNG export failed (is kaleido installed?): {exc}")
 
     if not args.keep_run_artifacts:
         shutil.rmtree(run_tmp_root, ignore_errors=True)
 
-    print(f"[LVR_vs_blocksize] wrote: {npz_path}")
-    print(f"[LVR_vs_blocksize] wrote: {summary_csv}")
-    print(f"[LVR_vs_blocksize] wrote: {merged_csv}")
-    print(f"[LVR_vs_blocksize] wrote: {html_path}")
-    if png_path.exists():
-        print(f"[LVR_vs_blocksize] wrote: {png_path}")
-    print(f"[LVR_vs_blocksize] wrote: {ratio_summary_csv}")
-    print(f"[LVR_vs_blocksize] wrote: {ratio_html_path}")
-    if ratio_png_path.exists():
-        print(f"[LVR_vs_blocksize] wrote: {ratio_png_path}")
-    return out_root
+    return _write_blocksize_outputs(
+        out_root=out_root,
+        fee_mode_label=fee_mode_label,
+        fee_def_label=fee_def_label,
+        config_path=config_path,
+        runs=int(args.runs),
+        enabled_cohorts=enabled_cohorts,
+        cohort_names=cohort_names,
+        block_times=block_times,
+        summary_df=summary_df,
+        ratio_summary_df=ratio_summary_df,
+        distributions=distributions,
+        ratio_distributions=ratio_distributions,
+        yaxis_type=yaxis_type,
+        yaxis_suffix=yaxis_suffix,
+        plot_violin=bool(plot_violin),
+        plot_medians=bool(plot_medians),
+        plot_means=bool(plot_means),
+        plot_95_interval=bool(plot_95_interval),
+        skip_png=bool(args.skip_png),
+        npz_path=npz_path,
+    )
 
 
 def _regenerate_outputs_from_npz(
