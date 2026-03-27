@@ -9,21 +9,20 @@ import json
 import os
 import time
 from datetime import datetime, timezone, timedelta
+from multiprocessing import Event
 from pathlib import Path
 from typing import Any, Dict
 
 import pytest
+import yaml
 
 from abm_webapp.storage import (
     SCHEMA_VERSION,
     SQLiteLiveSink,
-    RunStatus,
     _connect_sqlite,
     _ensure_schema,
     _utc_now_iso,
     is_heartbeat_stale,
-    is_pid_alive,
-    mark_abandoned,
     read_metrics,
     read_schema_version,
     read_status,
@@ -373,6 +372,32 @@ class TestConfigValidation:
         assert not ok
         assert "below minimum" in err.lower()
 
+    def test_repo_scenarios_pass_full_webapp_validation(self) -> None:
+        from abm_webapp.app import _validate_config_against_simulate
+
+        for scenario_name in ("test.yml", "vol_conditioned_wide.yml"):
+            yaml_text = (Path("abm_results/scenarios") / scenario_name).read_text(encoding="utf-8")
+            ok, err = _validate_config_against_simulate(yaml_text)
+            assert ok, f"{scenario_name} should be runnable in the webapp, got: {err}"
+
+    def test_list_scenario_files_filters_non_runnable_yaml(self, tmp_path: Path) -> None:
+        from abm_webapp.app import _list_scenario_files, _partition_scenario_files
+
+        runnable_text = (Path("abm_results/scenarios") / "test.yml").read_text(encoding="utf-8")
+        (tmp_path / "valid.yml").write_text(runnable_text, encoding="utf-8")
+        (tmp_path / "sweep.yml").write_text(
+            "version: 1\nname: sweep\nfee_mode: static\nsweeps: {}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "broken.yml").write_text("simulate: [\n", encoding="utf-8")
+
+        scenario_files = _list_scenario_files(tmp_path)
+        assert [path.name for path in scenario_files] == ["valid.yml"]
+
+        _, rejected = _partition_scenario_files(tmp_path)
+        assert "sweep.yml" in rejected
+        assert "broken.yml" in rejected
+
 
 # ---------------------------------------------------------------------------
 # 4. Run metadata tests
@@ -463,6 +488,45 @@ class TestStatusTransitions:
         assert status.state == "error"
         assert status.stopped_at is not None
         assert status.stop_reason == "exception"
+
+    def test_worker_flushes_final_snapshot_when_live_every_skips_terminal_block(self, tmp_path: Path) -> None:
+        from abm_webapp.worker import run_simulation_process
+
+        base_config_path = Path("abm_results/scenarios/test.yml")
+        config = yaml.safe_load(base_config_path.read_text(encoding="utf-8"))
+        assert isinstance(config, dict)
+        simulate_block = dict(config["simulate"])
+        simulate_block.update(
+            {
+                "T": 6,
+                "skip_step": 0,
+                "visualize": False,
+                "verbose": False,
+                "N_LP": 10,
+                "p_jit": 0.0,
+                "initial_binom_N": 20,
+                "initial_total_L": 10_000.0,
+            }
+        )
+        config["simulate"] = simulate_block
+        config_yaml = yaml.safe_dump(config, sort_keys=False)
+
+        run_root = tmp_path / "web_runs" / "terminal_snapshot"
+        run_simulation_process(
+            run_id="terminal_snapshot",
+            run_root=str(run_root),
+            config_yaml=config_yaml,
+            stop_event=Event(),
+            live_every=4,
+            log_flush_every=50,
+        )
+
+        status = read_status(run_root / "live.db")
+        rows = read_metrics(run_root / "live.db")
+        assert status is not None
+        assert status.state == "finished"
+        assert status.t_last == 5
+        assert [row["t"] for row in rows] == [0, 4, 5]
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,9 @@ The worker also forces interactive-safe defaults before calling `simulate(...)`:
 - `light_mode=False`
 
 That combination avoids heavy static artifact generation while keeping the series needed for live panels.
+The simulation also emits a final live metrics row for the last completed block
+even when `live_every > 1`, so terminal plots and summary cards do not stop at
+the most recent checkpoint.
 
 ## Architecture
 
@@ -51,6 +54,11 @@ This keeps the UI process separate from the simulation process and makes failure
 
 ## Validation And Run Startup
 
+On startup, the app scans `abm_results/scenarios/` and only lists YAML files
+that validate against the current `scripts.run.simulate()` interface. Auxiliary
+sweep/dashboard YAMLs are ignored so the default dropdown always points at a
+runnable scenario.
+
 When the user clicks **Run**, `_RunController.start(...)` in `abm_webapp/app.py` performs two validation passes:
 
 1. strict webapp validation through `abm_webapp.config.validate_scenario_text(...)`
@@ -58,6 +66,7 @@ When the user clicks **Run**, `_RunController.start(...)` in `abm_webapp/app.py`
    - unknown-key rejection
    - type and bounds checks on critical parameters
    - resource caps via `ABM_MAX_T`, `ABM_MAX_N_LP`, and `ABM_MAX_BLOCK_TIME`
+     with defaults high enough for the bundled yearly scenarios
 2. compatibility validation against the real simulation signature
    - write the validated YAML to a temporary file
    - call `core.utils.load_simulation_parameters(...)` against `scripts.run.simulate`

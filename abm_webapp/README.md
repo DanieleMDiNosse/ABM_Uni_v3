@@ -57,14 +57,16 @@ amm-abm-web
 
 ## Scenario Configuration
 
-Place `.yml` scenario files under `abm_results/scenarios/`. The webapp will
-list them in a dropdown for quick loading. YAML configs are strictly validated
-before starting a run:
+Place runnable `.yml` scenario files under `abm_results/scenarios/`. The
+webapp only lists files that validate against the current `scripts.run.simulate()`
+contract; sweep/dashboard YAMLs that are not runnable scenarios are ignored.
+YAML configs are strictly validated before starting a run:
 
 - Unknown top-level keys are rejected
 - Critical parameters are type-checked and bounds-checked
 - Resource-heavy settings are capped (override via `ABM_MAX_T`, `ABM_MAX_N_LP`,
-  `ABM_MAX_BLOCK_TIME` environment variables)
+  `ABM_MAX_BLOCK_TIME` environment variables). The default `ABM_MAX_T` is
+  set high enough for the repository's bundled yearly scenarios.
 - YAML is always parsed with `yaml.safe_load` (no arbitrary object construction)
 
 ## Run Metadata & Reproducibility

@@ -1,18 +1,18 @@
 # Fdb version 4
-["bibtex ABM_paper"] 1772980166.31434 "ABM_paper.aux" "ABM_paper.bbl" "ABM_paper" 1772980167.7274 0
+["bibtex ABM_paper"] 1774533335.80385 "ABM_paper.aux" "ABM_paper.bbl" "ABM_paper" 1774544278.08361 0
   "./bibliography.bib" 1770027083.5091 6036 b4672b0c75eaa9bf482de8fe23308650 ""
   "/usr/share/texlive/texmf-dist/bibtex/bst/base/abbrv.bst" 1292289607 20329 b5fed53e10044d0f8112183785c759b1 ""
-  "ABM_paper.aux" 1772980167.62033 16942 b7f5193ea1b49cf662767e334c040ad8 "pdflatex"
+  "ABM_paper.aux" 1774544277.99507 18960 56e9820b57feb0ad6b77a88f437421ba "pdflatex"
   (generated)
   "ABM_paper.bbl"
   "ABM_paper.blg"
   (rewritten before read)
-["pdflatex"] 1772980166.33576 "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" "ABM_paper.pdf" "ABM_paper" 1772980167.72761 0
+["pdflatex"] 1774544276.19207 "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" "ABM_paper.pdf" "ABM_paper" 1774544278.08379 0
   "/etc/texmf/web2c/texmf.cnf" 1769361868.29643 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0800.600pk" 1769362290.78819 9268 87791122d3f27e491953217389a3fb03 ""
   "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0900.600pk" 1769362290.52355 10448 442ff10d92e20ec81e5ef5c19a9ccf0d ""
   "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk" 1769362290.2558 12644 6325a57144dd94f70514a8f8f8a8504e ""
-  "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" 1772980164.46889 137202 0bba8c4dfc00e12b40cc820d02c9eea8 ""
+  "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" 1774544275.8651 142379 78477204a7a8cf72fb75ae833094c061 ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm0800.tfm" 1136768653 1536 05df9db6aeccc4eea94fec15c9024f79 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm0900.tfm" 1136768653 1536 c4f439db76ef96a9c53bc437f35ffe20 ""
@@ -82,7 +82,6 @@
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb" 1248133631 37944 359e864bd06cde3b1cf57bb20757fb06 ""
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmtt10.pfb" 1248133631 31099 c85edf1dd5b9e826d67c9c7293b6786c ""
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmtt9.pfb" 1248133631 29078 718ea4567ceff944262b0f5b0800e1d9 ""
-  "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/symbols/msam10.pfb" 1248133631 31764 459c573c03a4949a528c2cc7f557e217 ""
   "/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/symbols/msbm10.pfb" 1248133631 34694 ad62b13721ee8eda1dcc8993c8bd7041 ""
   "/usr/share/texlive/texmf-dist/tex/context/base/mkii/supp-pdf.mkii" 1461363279 71627 94eb9990bed73c364d7f53f960cc8c5b ""
   "/usr/share/texlive/texmf-dist/tex/generic/atbegshi/atbegshi.sty" 1575674566 24708 5584a51a7101caf7e6bbf1fc27d8f7b1 ""
@@ -220,11 +219,11 @@
   "/usr/share/texmf/web2c/texmf.cnf" 1707919699 40399 f2c302f7d2af602abb742093540a5834 ""
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1770216664.3603 165012 f177baa1c39a3ebd62c3096a43521a0d ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1772126331 6831208 d2f0d249532bdb35075dfaab5e991280 ""
-  "ABM_paper.aux" 1772980167.62033 16942 b7f5193ea1b49cf662767e334c040ad8 "pdflatex"
-  "ABM_paper.bbl" 1772980166.33032 4060 4aaa15ce93922dc20d9e0cf119c7d153 "bibtex ABM_paper"
-  "ABM_paper.out" 1772980167.62133 5305 9a4e8597a146a012ca0bc86c403f546e "pdflatex"
-  "ABM_paper.tex" 1772980164.46889 137202 0bba8c4dfc00e12b40cc820d02c9eea8 ""
-  "ABM_paper.toc" 1772980167.62208 4398 49cf1a7fa9d98e1cd836dd685c1f1eda "pdflatex"
+  "ABM_paper.aux" 1774544277.99507 18960 56e9820b57feb0ad6b77a88f437421ba "pdflatex"
+  "ABM_paper.bbl" 1774533335.81589 4060 4aaa15ce93922dc20d9e0cf119c7d153 "bibtex ABM_paper"
+  "ABM_paper.out" 1774544277.99607 5305 9a4e8597a146a012ca0bc86c403f546e "pdflatex"
+  "ABM_paper.tex" 1774544275.8651 142379 78477204a7a8cf72fb75ae833094c061 ""
+  "ABM_paper.toc" 1774544277.99729 4398 75c5db7c1b1b78dbf90117caa93a7688 "pdflatex"
   "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png" 1769357730 253461 8c1740a90ec8441a2e9186857a35d6a9 ""
   "images/274418_static_LPpassiveshare0.5_pjit0.0_1c_dex_return_acf_steps10000.png" 1769357730 61365 a838f36935b6e9559c49115785bd0b00 ""
   "images/analysis/png/dex_share_barplot.png" 1772962916 102133 5f7fabf3f18a10fbc8ddb4657cd473b4 ""
@@ -232,8 +231,12 @@
   "images/analysis/png/mean_fee_barplot.png" 1772962921 78376 d761cbf5fc8f38b14a2d458ff0076a97 ""
   "images/analysis/png/pnl_heatmap.png" 1772962914 202409 b312b71b966fdea46e40a260ed9c69cb ""
   "images/cex_dex_band.pdf" 1769357730 168111 aa65f7bebec406cc7c2189e265df5280 ""
-  "images/dLVR_over_dFees_medians_vs_block_time_static_flow_test_runs100.png" 1772316791 61210 32c21fc44ba1699b70bfbb16837c431b ""
-  "images/dLVR_over_dFees_medians_vs_block_time_volatility_dex_flow_test_runs100.png" 1772343263 64358 3254b489cadaf1319b3bb84199d53325 ""
+  "images/dLVR_medians_vs_block_time_static_flow_model2_static_runs50_pid131672.png" 1774375786.26301 63091 f10c1a0801dcf5b4860706acc1c59437 ""
+  "images/dLVR_medians_vs_block_time_toxicity_flow_model2_tox_runs50_pid160361.png" 1774376061.21921 63211 36c08daee76529501f8c979963408cb6 ""
+  "images/dLVR_over_dFees_medians_vs_block_time_static_flow_model2_static_runs50_pid131672.png" 1774375786.30047 60225 81b951b584146a37067067d6adb58396 ""
+  "images/dLVR_over_dFees_medians_vs_block_time_toxicity_flow_model2_tox_runs50_pid160361.png" 1774376061.26601 64344 4aeb55db875fe7d5e1d9096d4e6acbca ""
+  "images/dLVR_over_dFees_medians_vs_block_time_volatility_cex_flow_model2_vol_cex_runs50_pid161169.png" 1774376079.31079 63035 39f3511620935944665d990f7a67ac8f ""
+  "images/dLVR_over_dFees_medians_vs_block_time_volatility_dex_flow_model2_vol_dex_runs50_pid161052.png" 1774376092.9861 64319 50e3099b05120093db2fc0e01f324956 ""
   "images/distributions_core_static.png" 1772979603.98602 173411 21b6b0a7798e67e245db8b9f416cb656 ""
   (generated)
   "ABM_paper.aux"

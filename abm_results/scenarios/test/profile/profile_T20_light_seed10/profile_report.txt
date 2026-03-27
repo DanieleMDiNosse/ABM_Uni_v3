@@ -1,0 +1,85 @@
+========================================================================
+  SIMULATION PROFILING REPORT
+========================================================================
+
+  T (steps)         : 20
+  block_time        : 5
+  light_mode        : True
+  micro steps/block : 4
+  total micro steps : ~80
+
+--- WALL CLOCK ---
+  Total             : 0.86s
+  Per step          : 43.017 ms/step
+  Extrapolated T=200: ~9s (0.1 min, 0.00 hr)
+
+--- MEMORY ---
+  Peak RSS          : 143.1 MiB
+  tracemalloc peak  : 478.1 KiB
+  tracemalloc live  : 218.8 KiB
+  Return dict keys  : 25
+  Return dict elems : 162
+  Est. return dict  : ~1.3 KiB (float64)
+  Extrapolated T=200: ~12.7 KiB return dict alone
+
+  KEY MEMORY CONCERN at T=200:
+    ~80 Python lists × 200 floats × 8 bytes ≈ 125.0 KiB
+    + micro_steps lists: ~4 × 200 × 3 lists × 8 bytes ≈ 18.8 KiB
+
+--- DISK I/O ---
+  Output dir size   : 7.1 KiB
+  Extrapolated T=200: ~71.2 KiB
+
+--- HOT FUNCTIONS (cumulative time) ---
+  scripts/run.py:1995:simulate  cum=0.859s self=0.211s calls=1 primitive_calls=1
+  scripts/run.py:3183:_rebalance_lp_to_target  cum=0.189s self=0.038s calls=2817 primitive_calls=2817
+  scripts/run.py:3205:_rebalance_all  cum=0.173s self=0.016s calls=41 primitive_calls=41
+  scripts/run.py:4083:execute_mempool_orders  cum=0.155s self=0.004s calls=20 primitive_calls=20
+  scripts/run.py:4093:_exec_one  cum=0.148s self=0.011s calls=108 primitive_calls=108
+
+--- HOT FUNCTIONS (self time) ---
+  scripts/run.py:1995:simulate  cum=0.859s self=0.211s calls=1 primitive_calls=1
+  ~:0:<built-in method math.comb>  cum=0.113s self=0.113s calls=451 primitive_calls=451
+  core/agents.py:129:lp_token0_exposure  cum=0.127s self=0.099s calls=2938 primitive_calls=2938
+  scripts/run.py:3183:_rebalance_lp_to_target  cum=0.189s self=0.038s calls=2817 primitive_calls=2817
+  core/numba_accel.py:25:_current_amounts_impl  cum=0.034s self=0.034s calls=5108 primitive_calls=5108
+
+--- TOP MEMORY ALLOCATORS (tracemalloc, by size) ---
+      48.2 KiB         2 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:1995
+      11.4 KiB         3 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:4093
+       6.7 KiB       142 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:2613
+       6.6 KiB       118 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:143
+       5.8 KiB       103 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:284
+       5.5 KiB       100 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:363
+       5.3 KiB        75 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:4730
+       2.6 KiB        46 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3236
+       2.2 KiB        21 blocks  <string>:2
+       2.0 KiB         3 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:299
+       2.0 KiB        36 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/agents.py:156
+       1.8 KiB         3 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3416
+       1.7 KiB         3 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3904
+       1.6 KiB         5 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/profile_simulation.py:198
+       1.5 KiB         3 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3648
+       1.4 KiB         3 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/core/utils.py:196
+       1.4 KiB         5 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3557
+       1.3 KiB         3 blocks  /home/danielemdn/Documents/repositories/ABM_Uni_v3/scripts/run.py:3325
+       1.3 KiB        16 blocks  <frozen abc>:123
+       1.3 KiB         3 blocks  /home/danielemdn/miniconda3/envs/main/lib/python3.11/random.py:284
+
+--- SCALING NOTES ---
+  Compare this report across multiple T values to detect superlinear growth.
+  Use `top_tottime.txt` to identify hot inner loops and `top_cumulative.txt`
+  to identify expensive call chains.
+
+  The profiled payload already retains about 1.3 KiB
+  of numeric series data; under linear growth that projects to
+  12.7 KiB at T=200.
+
+  The three core micro-step series alone project to about 18.8 KiB
+  at T=200.
+
+  This run used light mode, so plotting and most artifact generation were disabled. This is the better baseline for core-engine profiling.
+
+  If you need to profile plotting and export overhead explicitly, rerun the same configuration with `--full-mode` and compare the two reports.
+
+========================================================================

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
 import threading
 import traceback
 from pathlib import Path
@@ -147,13 +145,13 @@ def run_simulation_process(
         _write_text(run_root_path / "run_meta.json", meta_json)
 
     # Start the heartbeat thread
-    hb_thread = _start_heartbeat_thread(sink, stop_event)
+    _start_heartbeat_thread(sink, stop_event)
 
     try:
         from scripts.run import simulate
         from core.utils import load_simulation_parameters
 
-        scenario_label, params = load_simulation_parameters(config_path, simulate_func=simulate)
+        _, params = load_simulation_parameters(config_path, simulate_func=simulate)
         params = _normalize_params_for_webapp(params, run_root=run_root_path)
         # The YAML loader populates defaults for all simulate() parameters, including
         # the live-streaming hooks. Remove them here to avoid passing duplicates.
@@ -168,6 +166,12 @@ def run_simulation_process(
             stop_event=stop_event,
             log_flush_every=int(log_flush_every),
         )
+        # Flush pending metrics before transitioning to a terminal status so the
+        # UI never observes "finished" while still missing the final streamed row.
+        try:
+            sink.flush()
+        except Exception:
+            pass
         # If the UI requested a stop, prefer marking the run as stopped.
         stopped = False
         try:
@@ -181,6 +185,10 @@ def run_simulation_process(
             sink.set_status(state="finished", message="completed")
     except Exception as exc:
         tb = traceback.format_exc()
+        try:
+            sink.flush()
+        except Exception:
+            pass
         sink.set_status(state="error", message=f"{type(exc).__name__}: {exc}", stop_reason="exception")
         _write_text(run_root_path / "error.log", tb)
     finally:

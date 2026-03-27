@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 import yaml
 from plotly.subplots import make_subplots
 
-from abm_webapp.storage import RunStatus, read_metrics, read_status, tail_text_file, scan_and_recover, TERMINAL_STATES as _DB_TERMINAL_STATES
+from abm_webapp.storage import read_metrics, read_status, scan_and_recover
 from abm_webapp.worker import run_simulation_process
 
 PLOTLY_TEMPLATE = "plotly_dark"
@@ -375,12 +375,35 @@ def _format_status_line(status_dict: Dict[str, Any]) -> str:
 
 
 def _list_scenario_files(scenarios_dir: Path) -> List[Path]:
+    runnable, _rejected = _partition_scenario_files(scenarios_dir)
+    return runnable
+
+
+def _partition_scenario_files(scenarios_dir: Path) -> Tuple[List[Path], Dict[str, str]]:
+    """Return runnable scenario YAMLs and a name->reason map for rejected files."""
     if not scenarios_dir.exists():
-        return []
-    return sorted(
+        return [], {}
+
+    candidates = sorted(
         [p for p in scenarios_dir.glob("*.yml") if p.is_file()]
         + [p for p in scenarios_dir.glob("*.yaml") if p.is_file()]
     )
+    runnable: List[Path] = []
+    rejected: Dict[str, str] = {}
+    for path in candidates:
+        try:
+            text = _load_text(path)
+        except Exception as exc:
+            rejected[path.name] = f"Could not read scenario file: {type(exc).__name__}: {exc}"
+            continue
+
+        ok, err = _validate_config_against_simulate(text)
+        if ok:
+            runnable.append(path)
+        else:
+            rejected[path.name] = err
+
+    return runnable, rejected
 
 
 def _load_text(path: Path) -> str:
@@ -1493,9 +1516,15 @@ def _build_dash_app():
         print(f"[webapp] Warning: crash recovery scan failed: {exc}")
 
     scenarios_dir = Path("abm_results") / "scenarios"
-    scenario_files = _list_scenario_files(scenarios_dir)
+    scenario_files, rejected_scenarios = _partition_scenario_files(scenarios_dir)
+    for scenario_name, reason in rejected_scenarios.items():
+        first_line = reason.splitlines()[0] if reason else "Unknown validation error."
+        print(f"[webapp] Ignoring non-runnable scenario file {scenario_name}: {first_line}")
     scenario_options = [{"label": p.name, "value": str(p)} for p in scenario_files]
-    default_yaml = _load_text(scenario_files[0]) if scenario_files else ""
+    default_scenario = next((p for p in scenario_files if p.name == "test.yml"), None)
+    if default_scenario is None and scenario_files:
+        default_scenario = scenario_files[0]
+    default_yaml = _load_text(default_scenario) if default_scenario is not None else ""
 
     assets_dir = Path(__file__).with_name("assets")
     app = Dash(__name__, assets_folder=str(assets_dir), title="ABM Live Lab")
@@ -1635,7 +1664,7 @@ def _build_dash_app():
                             dcc.Dropdown(
                                 id="scenario-dropdown",
                                 options=scenario_options,
-                                value=str(scenario_files[0]) if scenario_files else None,
+                                value=str(default_scenario) if default_scenario is not None else None,
                                 placeholder="Select a scenario YAML...",
                             ),
                             html.Label("Edit YAML config", className="field-label"),

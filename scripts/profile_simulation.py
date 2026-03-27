@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import cProfile
 import io
-import os
 import pstats
 import resource
 import sys
@@ -56,6 +55,91 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} TiB"
 
 
+def _positive_int(value: str) -> int:
+    """Parse a strictly positive integer for CLI arguments."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    """Parse a non-negative integer for CLI arguments."""
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
+
+
+def _estimate_result_payload(result: Any) -> Tuple[int, int]:
+    """Estimate retained payload size from the simulation return mapping.
+
+    Parameters
+    ----------
+    result
+        Return value from ``scripts.run.simulate``.
+
+    Returns
+    -------
+    tuple[int, int]
+        Number of top-level keys and an approximate count of retained elements
+        across list-like and array-like outputs.
+
+    Notes
+    -----
+    - This intentionally focuses on horizon-scaling containers.
+    - Array-like objects contribute their numeric ``size`` when available.
+    """
+    if not isinstance(result, dict):
+        return 0, 0
+
+    element_count = 0
+    for value in result.values():
+        if isinstance(value, (list, tuple)):
+            element_count += len(value)
+            continue
+
+        size = getattr(value, "size", None)
+        if size is not None and not callable(size):
+            try:
+                element_count += int(size)
+                continue
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+        if isinstance(value, dict):
+            element_count += len(value)
+
+    return len(result), element_count
+
+
+def _format_profile_function(filename: str, lineno: int, func_name: str) -> str:
+    """Return a compact ``path:line:function`` label for profile summaries."""
+    try:
+        resolved = Path(filename).resolve()
+        display = resolved.relative_to(_REPO_ROOT)
+    except Exception:
+        display = Path(filename).name or filename
+    return f"{display}:{lineno}:{func_name}"
+
+
+def _top_profile_lines(profiler: cProfile.Profile, *, sort_key: str, top_n: int) -> List[str]:
+    """Render a compact top-N summary from ``pstats``."""
+    stats = pstats.Stats(profiler).sort_stats(sort_key)
+    rows: List[str] = []
+    for func in stats.fcn_list[:top_n]:
+        cc, nc, tt, ct, _ = stats.stats[func]
+        filename, lineno, func_name = func
+        rows.append(
+            "  "
+            f"{_format_profile_function(filename, lineno, func_name)}  "
+            f"cum={ct:.3f}s self={tt:.3f}s calls={nc} primitive_calls={cc}"
+        )
+    if not rows:
+        rows.append("  No cProfile rows were captured.")
+    return rows
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Profile a simulation run: CPU, memory, disk usage.",
@@ -72,17 +156,23 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=Path("abm_results/scenarios/test.yml"),
         help="Scenario YAML path (default: abm_results/scenarios/test.yml).",
     )
-    p.add_argument("--T", type=int, default=2_000, help="Override simulation horizon (blocks).")
-    p.add_argument("--skip-step", type=int, default=100, help="Override skip_step burn-in.")
+    p.add_argument("--T", type=_positive_int, default=2_000, help="Override simulation horizon (blocks).")
+    p.add_argument("--skip-step", type=_nonnegative_int, default=100, help="Override skip_step burn-in.")
     p.add_argument("--seed", type=int, default=None, help="Override RNG seed.")
-    p.add_argument("--top-n", type=int, default=50, help="Top N functions in cProfile tables.")
-    p.add_argument(
+    p.add_argument("--top-n", type=_positive_int, default=50, help="Top N functions in cProfile tables.")
+    mode_group = p.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--full-mode", action="store_true",
         help="Run with light_mode=False (verbose log + plots). "
              "Default is light_mode=True for faster profiling.",
     )
+    mode_group.add_argument(
+        "--light-mode",
+        action="store_true",
+        help="Explicitly force light_mode=True. This matches the default and helps scripted runs stay explicit.",
+    )
     p.add_argument(
-        "--extrapolate-to", type=int, default=500_000,
+        "--extrapolate-to", type=_positive_int, default=500_000,
         help="Target T for linear extrapolation (default: 500000).",
     )
     return p.parse_args(argv)
@@ -127,16 +217,10 @@ def _profile_simulation(
     for stat in top_mem_stats[:30]:
         mem_lines.append(f"  {_fmt_bytes(stat.size):>12s}  {stat.count:>8d} blocks  {stat.traceback}")
 
-    # Estimate return dict memory (sum of list/array element counts)
-    return_dict_elements = 0
-    return_dict_keys = 0
-    if isinstance(result, dict):
-        return_dict_keys = len(result)
-        for k, v in result.items():
-            if isinstance(v, list):
-                return_dict_elements += len(v)
-            elif hasattr(v, "__len__"):
-                return_dict_elements += len(v)
+    # Estimate retained payload size without keeping the full result alive longer
+    # than needed after the profiled section.
+    return_dict_keys, return_dict_elements = _estimate_result_payload(result)
+    del result
 
     metrics = {
         "wall_seconds": wall_seconds,
@@ -148,7 +232,6 @@ def _profile_simulation(
         "top_memory_lines": mem_lines,
         "return_dict_keys": return_dict_keys,
         "return_dict_elements": return_dict_elements,
-        "result": result,
     }
     return profiler, reports, metrics
 
@@ -166,11 +249,15 @@ def _build_report(
     return_dict_elements: int,
     disk_bytes: int,
     top_memory_lines: List[str],
+    top_cumulative_lines: List[str],
+    top_tottime_lines: List[str],
     extrapolate_to: int,
 ) -> str:
     """Build the human-readable profiling summary report."""
     ratio = extrapolate_to / max(T, 1)
     micro_steps_per_step = max(block_time - 1, 1)
+    projected_return_bytes = int(return_dict_elements * 8 * ratio)
+    projected_micro_bytes = int(micro_steps_per_step * extrapolate_to * 3 * 8)
 
     lines = [
         "=" * 72,
@@ -196,89 +283,64 @@ def _build_report(
         f"  Return dict keys  : {return_dict_keys}",
         f"  Return dict elems : {return_dict_elements:,}",
         f"  Est. return dict  : ~{_fmt_bytes(return_dict_elements * 8)} (float64)",
-        f"  Extrapolated T={extrapolate_to:,}: ~{_fmt_bytes(int(return_dict_elements * 8 * ratio))} return dict alone",
+        f"  Extrapolated T={extrapolate_to:,}: ~{_fmt_bytes(projected_return_bytes)} return dict alone",
         "",
-        "  KEY MEMORY CONCERN at 500k steps:",
-        f"    ~{80} Python lists × {extrapolate_to:,} floats × 8 bytes ≈ "
+        f"  KEY MEMORY CONCERN at T={extrapolate_to:,}:",
+        f"    ~80 Python lists × {extrapolate_to:,} floats × 8 bytes ≈ "
         f"{_fmt_bytes(80 * extrapolate_to * 8)}",
         f"    + micro_steps lists: ~{micro_steps_per_step} × {extrapolate_to:,} × 3 lists × 8 bytes ≈ "
-        f"{_fmt_bytes(micro_steps_per_step * extrapolate_to * 3 * 8)}",
+        f"{_fmt_bytes(projected_micro_bytes)}",
         "",
         "--- DISK I/O ---",
         f"  Output dir size   : {_fmt_bytes(disk_bytes)}",
         f"  Extrapolated T={extrapolate_to:,}: ~{_fmt_bytes(int(disk_bytes * ratio))}",
         "",
-        "  DISK CONCERN: In full (non-light) mode, the verbose log file and",
-        "  15+ Plotly HTML files with 500k datapoints each can consume",
-        "  several GB. The verbose log alone can exceed 500 MB.",
+        "--- HOT FUNCTIONS (cumulative time) ---",
+    ]
+    lines.extend(top_cumulative_lines)
+    lines.extend([
+        "",
+        "--- HOT FUNCTIONS (self time) ---",
+    ])
+    lines.extend(top_tottime_lines)
+    lines.extend([
         "",
         "--- TOP MEMORY ALLOCATORS (tracemalloc, by size) ---",
-    ]
+    ])
     lines.extend(top_memory_lines[:20])
-    lines.append("")
-
-    # Specific bottleneck analysis
     lines.extend([
-        "--- IDENTIFIED BOTTLENECKS FOR 500k SCALING ---",
         "",
-        "  *** CRITICAL: SUPERLINEAR (O(T²)) SCALING ***",
-        "  The dominant bottleneck is lp_token0_exposure() and",
-        "  lp_principal_amounts() in core/agents.py. These iterate over",
-        "  ALL positions for each LP, and positions accumulate over time",
-        "  (mints without corresponding burns). This makes per-step cost",
-        "  grow linearly with T → total cost is O(T²).",
+        "--- SCALING NOTES ---",
+        "  Compare this report across multiple T values to detect superlinear growth.",
+        "  Use `top_tottime.txt` to identify hot inner loops and `top_cumulative.txt`",
+        "  to identify expensive call chains.",
         "",
-        "  Evidence: T=2k → 42.9ms/step, T=10k → 176ms/step (4.1× per step).",
-        "  At 500k steps, per-step cost would be ~4400ms → total ~25 days.",
+        f"  The profiled payload already retains about {_fmt_bytes(return_dict_elements * 8)}",
+        f"  of numeric series data; under linear growth that projects to",
+        f"  {_fmt_bytes(projected_return_bytes)} at T={extrapolate_to:,}.",
         "",
-        "  Functions affected (by tottime):",
-        "    - lp_token0_exposure (agents.py:129): iterates all positions",
-        "    - lp_principal_amounts (agents.py:148): iterates all positions",
-        "    - _current_amounts_impl (numba): called per position per LP",
-        "    - allocate_fees (run.py:2915): iterates positions per tick",
+        f"  The three core micro-step series alone project to about {_fmt_bytes(projected_micro_bytes)}",
+        f"  at T={extrapolate_to:,}.",
         "",
-        "  FIX: Cap or garbage-collect old positions; aggregate exposure at",
-        "  LP level instead of re-summing per position each step; or merge",
-        "  overlapping positions into a single aggregate position.",
+        (
+            "  This run used full mode, so wall-clock time includes plotting and file"
+            " generation overhead in addition to core simulation cost."
+        )
+        if not light_mode
+        else (
+            "  This run used light mode, so plotting and most artifact generation were"
+            " disabled. This is the better baseline for core-engine profiling."
+        ),
         "",
-        "  1. LIST APPENDS IN MAIN LOOP (~80+ lists × T appends)",
-        "     At 500k: ~40M+ list.append() calls, ~320 MB+ RAM for time series.",
-        "     FIX: Pre-allocate numpy arrays; write to index instead of append.",
-        "",
-        "  2. MICRO-STEP TRACKING (P_micro, M_micro, micro_steps)",
-        f"     {micro_steps_per_step} entries/step × 3 lists × T steps.",
-        f"     At 500k: ~{micro_steps_per_step * 500_000 * 3:,} entries → "
-        f"~{_fmt_bytes(micro_steps_per_step * 500_000 * 3 * 8)}.",
-        "     FIX: Downsample or disable micro tracking for large T.",
-        "",
-        "  3. VERBOSE LOG (non-light mode)",
-        "     ~1 log line per step + per event (arb, swap, mint, burn).",
-        "     At 500k: can easily exceed 500 MB on disk.",
-        "     FIX: Already mitigated by light_mode=True; ensure it's used.",
-        "",
-        "  4. PLOTLY HTML/PNG (non-light mode, visualize=True)",
-        "     15+ plots, each embedding 500k datapoints in HTML.",
-        "     HTML files: ~10-50 MB each → 150-750 MB total.",
-        "     FIX: Downsample plot data; skip HTML for large T; use light_mode.",
-        "",
-        "  5. RETURN DICT .tolist() CONVERSION (lines 5216-5329)",
-        "     40+ numpy arrays converted to Python lists → doubles peak memory.",
-        "     At 500k: adds ~640 MB transient allocation.",
-        "     FIX: Return numpy arrays directly (skip .tolist()).",
-        "",
-        "  6. POST-LOOP list→numpy CONVERSION (lines 5024-5088)",
-        "     40+ lists re-allocated as numpy arrays → transient 2x memory.",
-        "     FIX: Pre-allocate arrays from the start.",
-        "",
-        "  7. liq_history (liquidity_for_gif=True)",
-        "     dict(pool.liquidity_net) copied every step → unbounded growth.",
-        "     At 500k: could be many GB depending on tick count.",
-        "     FIX: Already off by default; never enable for large T.",
-        "",
-        "  8. np.save AT END (5 files: dex_price, micro_price, spreads)",
-        f"     At 500k: ~{_fmt_bytes(500_000 * 8 * 5)} for block-level +",
-        f"     ~{_fmt_bytes(500_000 * micro_steps_per_step * 8)} for micro prices.",
-        "     Manageable but contributes to disk pressure.",
+        (
+            "  If output size is already large in full mode, keep `--light-mode` for"
+            " scaling studies and reserve `--full-mode` for artifact-heavy diagnostics."
+        )
+        if not light_mode
+        else (
+            "  If you need to profile plotting and export overhead explicitly, rerun"
+            " the same configuration with `--full-mode` and compare the two reports."
+        ),
         "",
         "=" * 72,
     ])
@@ -299,7 +361,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     T = int(args.T)
     params["T"] = T
     params["skip_step"] = int(args.skip_step)
-    light_mode = not args.full_mode
+    light_mode = True
+    if args.full_mode:
+        light_mode = False
+    if args.light_mode:
+        light_mode = True
     params["light_mode"] = light_mode
     params["visualize"] = not light_mode  # only visualize in full mode
     params["verbose"] = False  # always silence tqdm/prints during profiling
@@ -347,6 +413,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     profiler.dump_stats(str(prof_path))
     (out_root / "top_cumulative.txt").write_text(reports["cumulative"], encoding="utf-8")
     (out_root / "top_tottime.txt").write_text(reports["tottime"], encoding="utf-8")
+    top_cumulative_lines = _top_profile_lines(
+        profiler,
+        sort_key="cumulative",
+        top_n=min(int(args.top_n), 10),
+    )
+    top_tottime_lines = _top_profile_lines(
+        profiler,
+        sort_key="tottime",
+        top_n=min(int(args.top_n), 10),
+    )
 
     # --- Build and save the comprehensive report ---
     report = _build_report(
@@ -361,6 +437,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return_dict_elements=metrics["return_dict_elements"],
         disk_bytes=disk_bytes,
         top_memory_lines=metrics["top_memory_lines"],
+        top_cumulative_lines=top_cumulative_lines,
+        top_tottime_lines=top_tottime_lines,
         extrapolate_to=int(args.extrapolate_to),
     )
     (out_root / "profile_report.txt").write_text(report, encoding="utf-8")
@@ -398,7 +476,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"[profile] Artifacts saved to: {out_root}")
     print(f"[profile]   profile.prof          – load with snakeviz or pstats")
-    print(f"[profile]   profile_report.txt    – full bottleneck analysis")
+    print(f"[profile]   profile_report.txt    – profile summary with scaling notes")
     print(f"[profile]   top_cumulative.txt    – cProfile top {args.top_n} (cumtime)")
     print(f"[profile]   top_tottime.txt       – cProfile top {args.top_n} (tottime)")
     return 0

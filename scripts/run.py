@@ -3776,6 +3776,60 @@ def simulate(
     # ------------------ Main loop ------------------
     # tqdm is convenient for interactive runs but adds overhead and emits output
     # even when `verbose=False`; disable it in that case.
+    try:
+        live_every_i = int(live_every)
+    except (TypeError, ValueError):
+        live_every_i = 0
+    live_stream_enabled = live_sink is not None and live_every_i > 0
+    last_live_recorded_t = -1
+    last_completed_t = -1
+
+    def _record_live_step(t_step: int) -> None:
+        """Stream one compact live row without letting UI I/O break the simulation."""
+        nonlocal last_live_recorded_t
+        if not live_stream_enabled:
+            return
+        _record_step = getattr(live_sink, "record_step", None)
+        if not callable(_record_step):
+            return
+        try:
+            _record_step(
+                dict(
+                    t=int(t_step),
+                    dex_price=float(pool.price),
+                    cex_price=float(ref.m),
+                    cex_sigma=float(ref.sigma),
+                    band_lo=float(band_lo_target[-1]) if band_lo_target else None,
+                    band_hi=float(band_hi_target[-1]) if band_hi_target else None,
+                    sr_pnl_step=float(sr_acc.pnl),
+                    noise_pnl_step=float(noise_acc.pnl),
+                    arb_pnl_step=float(arb_pnl_this),
+                    lp_pnl_active=float(lp_total_active),
+                    lp_pnl_passive=float(lp_total_passive),
+                    lp_unhedged_active=float(lp_unhedged_active),
+                    lp_unhedged_passive=float(lp_unhedged_passive),
+                    lp_fee_value_total=float(lp_fee_value_total),
+                    lp_lvr_total=float(lp_lvr_total),
+                    jiter_pnl=float(jiter_pnl_now),
+                    dex_notional_y=float(dex_notional_y_this),
+                    d_lvr_total=float(delta_lvr_total),
+                    d_fee_value_total=float(delta_fee_value_total),
+                    trader_exec_count=int(_trader_execs),
+                    arb_exec_count=int(_arb_execs),
+                    sr_exec_count=int(sr_acc.execs),
+                    noise_exec_count=int(noise_acc.execs),
+                    sr_cex_exec_count=int(sr_cex_execs_this),
+                    sr_dex_exec_count=int(sr_dex_execs_this),
+                    fee=float(pool.f),
+                    fee_sigma=float(fee_sigma_series[-1]) if fee_sigma_series else None,
+                    fee_basis_ticks=float(fee_basis_ticks_series[-1]) if fee_basis_ticks_series else None,
+                    fee_signal=float(fee_signal_series[-1]) if fee_signal_series else None,
+                )
+            )
+            last_live_recorded_t = int(t_step)
+        except Exception:
+            pass
+
     stopped_early = False
     for t in tqdm(range(T), desc="Simulating ABM", unit=" step", disable=not verbose):
         # Allow external callers (e.g., a web UI) to request early termination.
@@ -5208,50 +5262,8 @@ def simulate(
                     pass
 
         # Stream a compact row of metrics for live dashboards (duck-typed sink).
-        if live_sink is not None:
-            try:
-                live_every_i = int(live_every)
-            except (TypeError, ValueError):
-                live_every_i = 0
-            if live_every_i > 0 and (t % live_every_i == 0):
-                _record_step = getattr(live_sink, "record_step", None)
-                if callable(_record_step):
-                    try:
-                        _record_step(
-                            dict(
-                                t=int(t),
-                                dex_price=float(pool.price),
-                                cex_price=float(ref.m),
-                                cex_sigma=float(ref.sigma),
-                                band_lo=float(band_lo_target[-1]) if band_lo_target else None,
-                                band_hi=float(band_hi_target[-1]) if band_hi_target else None,
-                                sr_pnl_step=float(sr_acc.pnl),
-                                noise_pnl_step=float(noise_acc.pnl),
-                                arb_pnl_step=float(arb_pnl_this),
-                                lp_pnl_active=float(lp_total_active),
-                                lp_pnl_passive=float(lp_total_passive),
-                                lp_unhedged_active=float(lp_unhedged_active),
-                                lp_unhedged_passive=float(lp_unhedged_passive),
-                                lp_fee_value_total=float(lp_fee_value_total),
-                                lp_lvr_total=float(lp_lvr_total),
-                                jiter_pnl=float(jiter_pnl_now),
-                                dex_notional_y=float(dex_notional_y_this),
-                                d_lvr_total=float(delta_lvr_total),
-                                d_fee_value_total=float(delta_fee_value_total),
-                                trader_exec_count=int(_trader_execs),
-                                arb_exec_count=int(_arb_execs),
-                                sr_exec_count=int(sr_acc.execs),
-                                noise_exec_count=int(noise_acc.execs),
-                                sr_cex_exec_count=int(sr_cex_execs_this),
-                                sr_dex_exec_count=int(sr_dex_execs_this),
-                                fee=float(pool.f),
-                                fee_sigma=float(fee_sigma_series[-1]) if fee_sigma_series else None,
-                                fee_basis_ticks=float(fee_basis_ticks_series[-1]) if fee_basis_ticks_series else None,
-                                fee_signal=float(fee_signal_series[-1]) if fee_signal_series else None,
-                            )
-                        )
-                    except Exception:
-                        pass
+        if live_stream_enabled and (t % live_every_i == 0):
+            _record_live_step(int(t))
         # --- end live hooks ---
 
         if liquidity_for_gif:
@@ -5261,6 +5273,11 @@ def simulate(
         validated_S = pool.S
         validated_tick = pool.tick
         validated_cex = ref.m
+        last_completed_t = int(t)
+
+    # Always persist the final completed block, even when live_every skips it.
+    if live_stream_enabled and last_completed_t >= 0 and last_live_recorded_t != last_completed_t:
+        _record_live_step(last_completed_t)
 
     # Close any trailing smart-router window so partial final windows are treated
     # exactly like the historical post-processing path.
