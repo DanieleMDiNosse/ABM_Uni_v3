@@ -29,3 +29,26 @@ def test_price_figure_trace_length_is_capped() -> None:
     # The band and price traces should use downsampled time-series points.
     lengths = [len(trace.x) for trace in fig.data]
     assert all(length <= webapp_app.MAX_TIMESERIES_POINTS for length in lengths)
+
+
+def test_live_metrics_cache_keeps_full_history_by_default() -> None:
+    webapp_app._clear_metrics_cache()
+    rows = [dict(t=t, dex_price=1.0 + 1e-5 * t) for t in range(13_000)]
+
+    stored_rows, _version = webapp_app._set_cached_metrics("full-history-run", rows)
+
+    assert len(stored_rows) == 13_000
+    assert stored_rows[0]["t"] == 0
+    assert stored_rows[-1]["t"] == 12_999
+
+
+def test_live_metrics_cache_limit_is_applied_when_configured(monkeypatch) -> None:
+    webapp_app._clear_metrics_cache()
+    monkeypatch.setattr(webapp_app, "LIVE_METRICS_LIMIT", 100)
+    rows = [dict(t=t, dex_price=1.0 + 1e-5 * t) for t in range(250)]
+
+    stored_rows, _version = webapp_app._set_cached_metrics("bounded-run", rows)
+
+    assert len(stored_rows) == 100
+    assert stored_rows[0]["t"] == 150
+    assert stored_rows[-1]["t"] == 249

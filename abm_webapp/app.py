@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 import threading
 import time
@@ -23,16 +24,34 @@ from abm_webapp.worker import run_simulation_process
 PLOTLY_TEMPLATE = "plotly_dark"
 MAX_TIMESERIES_POINTS = 1800
 MAX_DISTRIBUTION_POINTS = 6000
-LIVE_METRICS_LIMIT = 12_000
 LIVE_TRANSITION_MS = 180
 SSE_LOOP_SLEEP_SECONDS = 0.80
 SSE_HEARTBEAT_SECONDS = 12.0
+DEFAULT_LIVE_EVERY = 1
+DEFAULT_LOG_FLUSH_EVERY = 200
 LOG_TAIL_MAX_BYTES = 120_000
 LOG_DELTA_MAX_BYTES = 65_536
 LOG_TEXT_MAX_CHARS = 120_000
 MEDIUM_FIG_UPDATE_EVERY = 2
 HEAVY_FIG_UPDATE_EVERY = 5
 TERMINAL_RUN_STATES = {"finished", "stopped", "error", "abandoned"}
+
+
+def _env_optional_positive_int(name: str, default: Optional[int]) -> Optional[int]:
+    """Read an optional positive integer from the environment."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else None
+
+
+# Keep full live history by default so line plots always retain the run from
+# t=0. Users can re-enable trimming explicitly if they need a hard memory cap.
+LIVE_METRICS_LIMIT: Optional[int] = _env_optional_positive_int("ABM_WEBAPP_LIVE_METRICS_LIMIT", None)
 
 # Dark-theme palette (high contrast on low-luminance backgrounds).
 CLR_DEX = "#2DD4BF"
@@ -153,7 +172,10 @@ def _set_cached_metrics(run_root_key: str, rows: List[Dict[str, Any]]) -> Tuple[
         ``_get_cached_metrics`` still returns ``None`` and the next callback
         invocation treats it as the initial load (avoiding frozen empty figures).
     """
-    trimmed = list(rows[-LIVE_METRICS_LIMIT:]) if rows else []
+    if rows:
+        trimmed = list(rows[-LIVE_METRICS_LIMIT:]) if LIVE_METRICS_LIMIT is not None else list(rows)
+    else:
+        trimmed = []
     if not trimmed:
         return [], 0
     last_t = int(trimmed[-1]["t"])
@@ -200,7 +222,8 @@ def _append_cached_metrics(run_root_key: str, new_rows: List[Dict[str, Any]]) ->
                 if t_val > last_t_seen:
                     merged.append(row)
                     last_t_seen = t_val
-        merged = merged[-LIVE_METRICS_LIMIT:]
+        if LIVE_METRICS_LIMIT is not None:
+            merged = merged[-LIVE_METRICS_LIMIT:]
         last_t = int(merged[-1]["t"]) if merged else -1
         new_ver = prev_ver + 1
         _METRICS_CACHE[run_root_key] = _MetricsCacheEntry(rows=merged, last_t=last_t, data_version=new_ver)
@@ -1684,22 +1707,6 @@ def _build_dash_app():
                                     ),
                                 ],
                             ),
-                            html.Div(
-                                className="controls-row compact",
-                                children=[
-                                    html.Label("live_every", className="field-label inline"),
-                                    dcc.Input(id="live-every", type="number", value=1, min=1, step=1, className="num-input"),
-                                    html.Label("log_flush_every", className="field-label inline"),
-                                    dcc.Input(
-                                        id="log-flush-every",
-                                        type="number",
-                                        value=30,
-                                        min=1,
-                                        step=1,
-                                        className="num-input",
-                                    ),
-                                ],
-                            ),
                             html.Div(id="run-message", className="run-message"),
                             html.Div(id="run-status", className="run-status"),
                             dcc.Store(id="run-root-store"),
@@ -1747,12 +1754,6 @@ def _build_dash_app():
                                         children=[
                                             dcc.Graph(id="activity-graph", className="graph-large"),
                                             dcc.Graph(id="routing-graph", className="graph-medium"),
-                                        ],
-                                    ),
-                                    dcc.Tab(
-                                        label="Logs",
-                                        children=[
-                                            html.Pre(id="logs-pre", className="logs-pre"),
                                         ],
                                     ),
                                 ],
@@ -1856,8 +1857,6 @@ def _build_dash_app():
         Input("stop-btn", "n_clicks"),
         Input("reset-confirm", "submit_n_clicks"),
         State("yaml-editor", "value"),
-        State("live-every", "value"),
-        State("log-flush-every", "value"),
         prevent_initial_call=True,
     )
     def _handle_run_stop(
@@ -1865,8 +1864,6 @@ def _build_dash_app():
         stop_clicks: int,
         reset_clicks: int,
         yaml_text: str,
-        live_every: Any,
-        log_flush_every: Any,
     ) -> Tuple[str, Optional[str], str]:
         from dash import callback_context
 
@@ -1885,19 +1882,10 @@ def _build_dash_app():
             _ok, message = _CTRL.reset_all()
             return message, None, ""
 
-        try:
-            live_every_i = max(1, int(live_every))
-        except Exception:
-            live_every_i = 1
-        try:
-            log_flush_i = max(1, int(log_flush_every))
-        except Exception:
-            log_flush_i = 200
-
         _ok, message = _CTRL.start(
             config_yaml=yaml_text or "",
-            live_every=live_every_i,
-            log_flush_every=log_flush_i,
+            live_every=DEFAULT_LIVE_EVERY,
+            log_flush_every=DEFAULT_LOG_FLUSH_EVERY,
         )
         run_root = str(_CTRL.run_root) if _CTRL.run_root is not None else None
         run_id = str(_CTRL.run_id) if _CTRL.run_id is not None else ""
@@ -2075,45 +2063,6 @@ def _build_dash_app():
         # No transition for histogram / distribution figures — bin positions
         # shift between updates causing distracting morph artifacts.
         return fig_price_dist, fig_step_dist, fig_lvr
-
-    # ── Logs callback (fires every tick, independent of figure tiers)
-    @app.callback(
-        Output("logs-pre", "children"),
-        Input("data-seq-store", "data"),
-        prevent_initial_call=True,
-    )
-    def _on_stream_logs(store_data: Optional[Dict[str, Any]]):
-        if not store_data or not store_data.get("run_id"):
-            return ""
-
-        run_id = store_data["run_id"]
-        run_root_key = store_data["run_root_key"]
-        status_dict = store_data.get("status_dict", {})
-
-        run_root = _run_root_for(run_id)
-        log_path = _resolve_log_path(run_root, status_dict)
-
-        if log_path is not None and log_path.exists():
-            cached_path, cached_offset = _get_log_offset_cache(run_root_key)
-            current_path = str(log_path)
-            if cached_path != current_path:
-                cached_offset = 0
-            delta_text, next_offset = _read_text_delta(
-                log_path, offset=int(cached_offset), max_bytes=LOG_DELTA_MAX_BYTES,
-            )
-            _set_log_offset_cache(run_root_key, current_path, int(next_offset))
-            if delta_text:
-                return _append_log_cache(run_root_key, delta_text)
-            cached_log = _get_log_cache(run_root_key)
-            if cached_log is not None:
-                return no_update
-            return _set_log_cache(run_root_key, "")
-
-        _set_log_offset_cache(run_root_key, "", 0)
-        cached_log = _get_log_cache(run_root_key)
-        if cached_log is None:
-            return _set_log_cache(run_root_key, "")
-        return no_update
 
     return app
 

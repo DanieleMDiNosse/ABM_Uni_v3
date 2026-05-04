@@ -12,16 +12,19 @@ This repository ships a single-user Dash webapp that runs `scripts.run.simulate(
 - fee-controller telemetry
 - LP hedged vs unhedged decomposition and cumulative LVR
 - execution counts and smart-router DEX share
-- live tail of the simulation log
 
 The design target is pragmatic local research use: one user, one active run at a time, with strong reproducibility and easy crash recovery.
 
-## User-Facing Runtime Controls
+## Live Sampling
 
-The UI exposes two cadence knobs that directly affect streaming behavior:
+The webapp writes live metrics rows to SQLite on an internal cadence during a
+run. This is not a user-facing control anymore; the interface is intentionally
+kept focused on scenario selection and execution rather than transport-level
+streaming knobs.
 
-- `live_every`: write one metrics row to SQLite every `N` simulation blocks. Lower values improve plot responsiveness but increase write and redraw overhead.
-- `log_flush_every`: flush the buffered simulation log every `N` blocks. Lower values reduce log-tail latency but increase I/O.
+By default the webapp records one live metrics row per simulation block. The
+in-memory cache keeps the full run history unless
+`ABM_WEBAPP_LIVE_METRICS_LIMIT` is set to a positive integer.
 
 The worker also forces interactive-safe defaults before calling `simulate(...)`:
 
@@ -30,10 +33,11 @@ The worker also forces interactive-safe defaults before calling `simulate(...)`:
 - `verbose=False`
 - `light_mode=False`
 
-That combination avoids heavy static artifact generation while keeping the series needed for live panels.
-The simulation also emits a final live metrics row for the last completed block
-even when `live_every > 1`, so terminal plots and summary cards do not stop at
-the most recent checkpoint.
+That combination avoids heavy static artifact generation while keeping the
+series needed for live panels. The simulation also emits a final live metrics
+row for the last completed block, so terminal plots and summary cards do not
+stop at the most recent checkpoint even if the internal sampling cadence is
+ever relaxed above one row per block.
 
 ## Architecture
 
@@ -84,11 +88,10 @@ Its responsibilities are:
 - open `live.db` via `SQLiteLiveSink`
 - start a heartbeat thread that periodically updates the DB
 - normalize parameters for interactive runs
-- call `scripts.run.simulate(...)` with:
+- call `scripts.run.simulate(...)` with webapp-owned streaming hooks:
   - `live_sink`
-  - `live_every`
+  - a fixed internal `live_every`
   - `stop_event`
-  - `log_flush_every`
 - mark the final state as:
   - `finished`
   - `stopped`
@@ -138,7 +141,7 @@ The storage layer currently uses:
 The webapp uses Server-Sent Events rather than polling-only Dash intervals.
 
 1. Browser opens `EventSource` on `/stream/run/<run_id>`
-2. The SSE loop polls SQLite and log files
+2. The SSE loop polls SQLite
 3. It emits:
    - `snapshot`
    - `metrics_delta`
@@ -146,12 +149,11 @@ The webapp uses Server-Sent Events rather than polling-only Dash intervals.
    - `heartbeat`
    - `end`
 4. `abm_webapp/assets/stream_sse.js` increments a hidden Dash input
-5. Dash callbacks rehydrate figures from SQLite and the log tail
+5. Dash callbacks rehydrate figures from SQLite
 
 To keep the UI usable on longer runs, `app.py` also uses:
 
 - in-memory metrics caches
-- in-memory log caches
 - per-tier render throttling
 - point caps such as `MAX_TIMESERIES_POINTS` and `LIVE_METRICS_LIMIT`
 
@@ -168,7 +170,7 @@ Main files:
 - `scenario.yml`: canonical validated scenario snapshot
 - `live.db`: SQLite status + metrics + metadata
 - `run_meta.json`: environment fingerprint and run metadata
-- `logs/*.txt`: simulation logs
+- `logs/*.txt`: simulation logs kept on disk for debugging and reproducibility
 - `error.log`: traceback on worker failure
 
 `run_meta.json` is intentionally redundant with `run_meta.meta_json` in SQLite so metadata is easy to inspect without opening the DB.

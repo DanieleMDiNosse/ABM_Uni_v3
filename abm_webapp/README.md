@@ -1,7 +1,7 @@
 # `abm_webapp` – ABM Live Lab
 
-Single-user Dash webapp for running ABM_Uni_v3 simulations with live plots,
-diagnostics, and log tailing. Designed for colleagues to install and run on
+Single-user Dash webapp for running ABM_Uni_v3 simulations with live plots and
+diagnostics. Designed for colleagues to install and run on
 their personal PCs (Windows / macOS / Linux).
 
 ## Quick Start (end user)
@@ -53,7 +53,6 @@ amm-abm-web
 | **Fees** | Fee and controller signal alignment + fee distribution |
 | **LP & LVR** | Hedged vs unhedged LP decomposition, cumulative fee value/LVR, normalized LVR diagnostics |
 | **Activity & Routing** | Execution counts and smart-router DEX routing share |
-| **Logs** | Live tail of the simulation verbose log |
 
 ## Scenario Configuration
 
@@ -67,6 +66,8 @@ YAML configs are strictly validated before starting a run:
 - Resource-heavy settings are capped (override via `ABM_MAX_T`, `ABM_MAX_N_LP`,
   `ABM_MAX_BLOCK_TIME` environment variables). The default `ABM_MAX_T` is
   set high enough for the repository's bundled yearly scenarios.
+- Live plots keep the full run history by default. Set `ABM_WEBAPP_LIVE_METRICS_LIMIT`
+  to a positive integer only if you explicitly want to cap in-memory live history.
 - YAML is always parsed with `yaml.safe_load` (no arbitrary object construction)
 
 ## Run Metadata & Reproducibility
