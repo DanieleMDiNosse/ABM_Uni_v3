@@ -1307,12 +1307,16 @@ latency generates transient CEX--DEX deviations that are harvested by priority a
 
 Figure~\ref{fig:microstructure_prices} compares the reference (CEX) price with the AMM (DEX) price and the implied 
 no-arbitrage band. The DEX series exhibits pronounced spikes because the CEX price evolves within each block while 
-on-chain swaps are executed at the block boundary. Mispricings are then corrected by arbitrage at the beginning of 
-the next block, generating the spike-and-reversion dynamics documented empirically in \cite{dinosse_gatta}. 
-However, this behaviour disappears when we move to dynamic fees, as the fee level adjusts to offset the stale-quote and 
-prevent huge arbitrage opportunities from materializing. 
-The apparent lag between the CEX series and the shaded band is structural: the band is computed from the lagged 
-snapshot \(m_{t-1}\), whereas the plotted \(m_t\) is the contemporaneous end-of-block reference price after intra-block diffusion.
+on-chain swaps are executed at the block boundary. Under static fees, mispricings are then corrected by arbitrage at 
+the beginning of the next block, generating the spike-and-reversion dynamics documented empirically in \cite{dinosse_gatta}. 
+Under toxicity-based fees, the same stale-quote gaps are often absorbed by a wider no-arbitrage band, so fewer 
+economically sensible arbitrage swaps are executed and the visible pull of the DEX price back toward the CEX price is attenuated. 
+In the representative Model~0 seed used for the zoom, executed arbitrage swaps fall from 9,725 under static fees to 
+6,571 under toxicity fees, while in-band arbitrage no-ops rise from 3,275 to 6,428. Sparse or low-liquidity tick regions 
+can also stop an arbitrage swap before its unconstrained target; this liquidity-friction mechanism is present under both 
+fee schedules, whereas the comparative attenuation in panel (b) is driven by the wider dynamic-fee no-arbitrage wedge. 
+The apparent lag between the CEX series and the shaded band is structural: the band is computed from the lagged snapshot 
+\(m_{t-1}\), whereas the plotted \(m_t\) is the contemporaneous end-of-block reference price after intra-block diffusion.
 
 
 \begin{figure}[t]
@@ -1327,25 +1331,29 @@ snapshot \(m_{t-1}\), whereas the plotted \(m_t\) is the contemporaneous end-of-
 
   \begin{subfigure}{0.95\linewidth}
     \centering
-    \includegraphics[width=0.75\linewidth]{images/cex_dex_band.pdf}
-    \caption{Zoomed-in view highlighting the lag induced by block-time execution.}
+    \includegraphics[width=\linewidth]{images/microstructure_price_static_vs_toxicity.pdf}
+    \caption{Zoomed comparison of the same Model~0 seed and parameters under static fees (left) and toxicity-based fees (right).}
   \end{subfigure}
-  \caption{Microstructure illustration under static fees (Model~0). Block-time latency and priority arbitrage induce 
-  transient deviations between the AMM price and the reference market, which are then corrected at the next block.}
+  \caption{Microstructure illustration in Model~0. Panel (a) shows the static-fee CEX and DEX prices with the no-arbitrage band. 
+  Panel (b) shows that toxicity-based fees widen the no-arbitrage band during stale-quote episodes, reducing executed arbitrage 
+  and attenuating the next-block correction of the DEX price toward the CEX price.}
   \label{fig:microstructure_prices}
 \end{figure}
 
 Another informative diagnostic is the autocorrelation function (ACF) of end-of-block DEX returns. 
-Figure~\ref{fig:microstructure_acf} shows a pronounced negative spike at lag 1, indicating short-horizon mean reversion 
-across consecutive blocks. A qualitatively similar lag-1 anticorrelation has been documented in \cite{dinosse_gatta} and
-is often linked to arbitrage dynamics; our simulations show that block-time non-atomic CEX--DEX arbitrage alone can 
-generate this signature. Also in this case, the negative lag-1 spike disappears under dynamic fees.
+Figure~\ref{fig:microstructure_acf} contrasts the static-fee baseline with the toxicity controller. Under static fees, 
+the ACF shows a pronounced negative spike at lag 1, indicating short-horizon mean reversion across consecutive blocks. 
+A qualitatively similar lag-1 anticorrelation has been documented in \cite{dinosse_gatta} and is often linked to arbitrage dynamics; 
+our simulations show that block-time non-atomic CEX--DEX arbitrage alone can generate this signature. Under toxicity-based fees, 
+the lag-1 spike is strongly attenuated in the same representative seed, consistent with the lower rate of economically 
+sensible arbitrage corrections documented in Figure~\ref{fig:microstructure_prices}.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.55\linewidth]{images/274418_static_LPpassiveshare0.5_pjit0.0_1c_dex_return_acf_steps10000.png}
-  \caption{Autocorrelation function of end-of-block DEX returns (representative static-fee run), exhibiting a pronounced 
-  lag-1 negative spike.}
+  \includegraphics[width=0.95\linewidth]{images/microstructure_acf_static_vs_toxicity.pdf}
+  \caption{Autocorrelation function of end-of-block DEX log returns in the representative Model~0 seed used in Figure~\ref{fig:microstructure_prices}. 
+  Static fees generate a pronounced lag-1 negative spike (\(-0.450\)); toxicity-based fees attenuate the lag-1 autocorrelation 
+  to \(-0.049\), consistent with fewer next-block arbitrage corrections.}
   \label{fig:microstructure_acf}
 \end{figure}
 
@@ -1358,25 +1366,25 @@ the answer changes once liquidity provision becomes more strategic.
 
 \paragraph{Hedged PnL across models and fee modes.}
 Figure~\ref{fig:pnl_heatmap} reports the final hedged PnL by cohort (token-1 numéraire). The static-fee benchmark remains 
-unfavorable for standing liquidity in every model. Passive LP hedged PnL is negative in Model~0, Model~1, and Model~2 
-(\(-578.6\pm 4.7\), \(-660.3\pm 3.8\), and \(-666.7\pm 3.5\), respectively), while active LPs are much more exposed 
-(\(-5558.1\pm 50.6\) in Model~1 and \(-5501.7\pm 45.5\) in Model~2). This establishes the baseline microstructure result 
+unfavorable for standing liquidity in every model. Passive LP hedged PnL is negative in Model 0 (\(-578.6\pm 4.7\)), 
+Model 1 (\(-660.3\pm 3.8\)), and Model 2 (\(-666.7\pm 3.5\)), with active LPs being much more exposed to adverse selection
+in Model 1 (\(-5558.1\pm 50.6\)) and in Model 2 (\(-5501.7\pm 45.5\)). This establishes the baseline microstructure result 
 at the aggregate level: a fixed fee does not compensate stale-quote losses, and concentration amplifies that exposure.
 
 Dynamic fees materially change this ranking, but only when the fee signal is sufficiently aligned with adverse selection. 
-In Model~0, all dynamic controllers turn passive LP PnL positive, with a clear ordering 
-\texttt{toxicity} \(>\) \texttt{volatility\_dex} \(>\) \texttt{volatility\_cex}: \(+26698.4\pm 45.3\), 
-\(+18356.9\pm 42.9\), and \(+5431.0\pm 7.8\), respectively. Once active liquidity is introduced (Model~1), 
+In Model~0, all dynamic controllers turn passive LP PnL positive, with the toxicity schedule showing the highest improvement
+(\(26698.4\pm 45.3\)), followed by the DEX-volatility (\(18356.9\pm 42.9\)) and CEX-volatility rules (\(5431.0\pm 7.8\)).
+Once active liquidity is introduced (Model~1), 
 the toxicity controller remains the only specification that protects both LP cohorts simultaneously, delivering 
-\(+1356.0\pm 11.2\) for passive LPs and \(+5704.9\pm 103.4\) for active LPs. By contrast, the two volatility-based 
+\(1356.0\pm 11.2\) for passive LPs and \(5704.9\pm 103.4\) for active LPs. By contrast, the two volatility-based 
 rules still leave active LPs substantially negative (\(-3439.6\pm 76.0\) and \(-2658.4\pm 91.3\)), even though passive 
 LPs become mildly positive.
 
 The same ordering persists in Model~2, but with a sharper incidence pattern. Toxicity-driven fees keep both passive and 
-active LPs positive (\(+496.6\pm 6.4\) and \(+1853.1\pm 66.4\)), whereas the volatility-based rules keep passive LPs 
+active LPs positive (\(496.6\pm 6.4\) and \(1853.1\pm 66.4\)), whereas the volatility-based rules keep passive LPs 
 positive but leave active LPs deeply negative. At the same time, the Jiter is essentially inactive under static fees 
-(\(+5.8\pm 0.3\)) but becomes strongly profitable under every dynamic schedule, especially under toxicity (\(+4086.7\pm 21.9\), 
-versus \(+2913.3\pm 10.1\) and \(+2138.6\pm 11.8\) for the two volatility rules). The updated figure therefore sharpens the 
+(\(5.8\pm 0.3\)) but becomes strongly profitable under every dynamic schedule, especially under toxicity (\(4086.7\pm 21.9\), 
+versus \(2913.3\pm 10.1\) and \(2138.6\pm 11.8\) for the two volatility rules). The updated figure therefore sharpens the 
 paper's main trade-off: dynamic fees can mitigate LVR for standing liquidity, but they also enlarge the rent pool available 
 to fast, event-contingent liquidity. In this comparison, the toxicity controller is the only rule that robustly restores 
 positive hedged profitability for both passive and active LPs once strategic liquidity is present.
@@ -1409,7 +1417,7 @@ simply as a part of a bigger strategy that involves on-chain interactions.
 \paragraph{Fee levels and fee incidence across cohorts.}
 The remaining columns of Table~\ref{tab:routing_fee_summary} report the time-averaged taker fee and the corresponding 
 fee-incidence decomposition across passive and active standing LP cohorts. Toxicity is systematically the highest-fee 
-dynamic regime, reaching \(14.48\) bps in Model~0 and about \(11\)--\(12\) bps in Models~1--2. The DEX-volatility controller 
+dynamic regime, reaching \(14.48\) bps in Model~0 and about \(11\)--\(12\) bps in Models 1 and Model 2. The DEX-volatility controller 
 is intermediate, at \(7.25\) bps in Model~0 and about \(4.40\)--\(5.22\) bps thereafter, while the CEX-volatility controller 
 remains close to \(5.3\) bps across all models. In Model~0, where all standing liquidity is passive, higher fees map almost 
 one-for-one into passive fee income: cumulative standing-LP fee value rises from \(54.7\pm0.2\) under static fees to 
