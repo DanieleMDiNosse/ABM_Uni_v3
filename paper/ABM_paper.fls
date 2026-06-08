@@ -3,7 +3,7 @@ INPUT /etc/texmf/web2c/texmf.cnf
 INPUT /usr/share/texmf/web2c/texmf.cnf
 INPUT /usr/share/texlive/texmf-dist/web2c/texmf.cnf
 INPUT /var/lib/texmf/web2c/pdftex/pdflatex.fmt
-INPUT /home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex
+INPUT ABM_paper.tex
 OUTPUT ABM_paper.log
 INPUT /usr/share/texlive/texmf-dist/tex/latex/base/article.cls
 INPUT /usr/share/texlive/texmf-dist/tex/latex/base/article.cls
@@ -383,9 +383,9 @@ INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmtt10.tfm
 INPUT ABM_paper.aux
 INPUT ./ABM_paper.out
 INPUT ./ABM_paper.out
-INPUT /home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk
-INPUT /home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0900.600pk
-INPUT /home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0800.600pk
+INPUT /home/danielemdn/.hermes/profiles/faraday/home/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk
+INPUT /home/danielemdn/.hermes/profiles/faraday/home/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0900.600pk
+INPUT /home/danielemdn/.hermes/profiles/faraday/home/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0800.600pk
 INPUT /usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb
 INPUT /usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb
 INPUT /usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx8.pfb

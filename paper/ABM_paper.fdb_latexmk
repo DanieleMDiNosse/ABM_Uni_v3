@@ -1,18 +1,17 @@
 # Fdb version 4
-["bibtex ABM_paper"] 1780924041.859 "ABM_paper.aux" "ABM_paper.bbl" "ABM_paper" 1780925482.68126 0
-  "./bibliography.bib" 1780910796.00834 7091 db68dd3a30ce0ffa65d81d789abd9cd2 ""
+["bibtex ABM_paper"] 1780949633.47616 "ABM_paper.aux" "ABM_paper.bbl" "ABM_paper" 1780949634.68631 0
+  "./bibliography.bib" 1780949626.03226 12840 2eabd409af7bffb01954cc789feadb3b ""
   "/usr/share/texlive/texmf-dist/bibtex/bst/base/abbrv.bst" 1292289607 20329 b5fed53e10044d0f8112183785c759b1 ""
-  "ABM_paper.aux" 1780925482.59338 19492 8fc800ca6e25e1e0c3c6bc91f336bedc "pdflatex"
+  "ABM_paper.aux" 1780949634.58023 21941 92946be82ff2f2820e7989e29bbf1df0 "pdflatex"
   (generated)
   "ABM_paper.bbl"
   "ABM_paper.blg"
   (rewritten before read)
-["pdflatex"] 1780925481.25494 "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" "ABM_paper.pdf" "ABM_paper" 1780925482.68151 0
+["pdflatex"] 1780949633.5046 "ABM_paper.tex" "ABM_paper.pdf" "ABM_paper" 1780949634.68647 0
   "/etc/texmf/web2c/texmf.cnf" 1769361868.29643 475 c0e671620eb5563b2130f56340a5fde8 ""
-  "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0800.600pk" 1769362290.78819 9268 87791122d3f27e491953217389a3fb03 ""
-  "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0900.600pk" 1769362290.52355 10448 442ff10d92e20ec81e5ef5c19a9ccf0d ""
-  "/home/danielemdn/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk" 1769362290.2558 12644 6325a57144dd94f70514a8f8f8a8504e ""
-  "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" 1780925480.98637 147604 28f239d8d9b9835952bba471545672db ""
+  "/home/danielemdn/.hermes/profiles/faraday/home/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0800.600pk" 1778075644.18546 9268 07714174060ef6f60ebb97041dc8374d ""
+  "/home/danielemdn/.hermes/profiles/faraday/home/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm0900.600pk" 1778075643.63839 10448 0c8375c5c1a806beb53fab2487299f78 ""
+  "/home/danielemdn/.hermes/profiles/faraday/home/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk" 1778170107.54277 12644 3a9bec337de0399a23b92c99a7146885 ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm0800.tfm" 1136768653 1536 05df9db6aeccc4eea94fec15c9024f79 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm0900.tfm" 1136768653 1536 c4f439db76ef96a9c53bc437f35ffe20 ""
@@ -220,11 +219,11 @@
   "/usr/share/texmf/web2c/texmf.cnf" 1707919699 40399 f2c302f7d2af602abb742093540a5834 ""
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1770216664.3603 165012 f177baa1c39a3ebd62c3096a43521a0d ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1772126331 6831208 d2f0d249532bdb35075dfaab5e991280 ""
-  "ABM_paper.aux" 1780925482.59338 19492 8fc800ca6e25e1e0c3c6bc91f336bedc "pdflatex"
-  "ABM_paper.bbl" 1780924041.87026 4598 5af5b863b4b13182c0ee712df3d5f2b0 "bibtex ABM_paper"
-  "ABM_paper.out" 1780925482.59538 5305 9a4e8597a146a012ca0bc86c403f546e "pdflatex"
-  "ABM_paper.tex" 1780925480.98637 147604 28f239d8d9b9835952bba471545672db ""
-  "ABM_paper.toc" 1780925482.59538 4400 3b0cc6d92ce39c354fc2eb6f5b0b6ab5 "pdflatex"
+  "ABM_paper.aux" 1780949634.58023 21941 92946be82ff2f2820e7989e29bbf1df0 "pdflatex"
+  "ABM_paper.bbl" 1780949633.49763 8906 f4849f810e68b84dcff48f1085714ec3 "bibtex ABM_paper"
+  "ABM_paper.out" 1780949634.58123 5641 2675d9f68d7acd4aff36a44155babec3 "pdflatex"
+  "ABM_paper.tex" 1780949554.77882 152949 1bb93acf2113869bce9e80457953f5e4 ""
+  "ABM_paper.toc" 1780949634.58288 4519 859523ee1304a2d22e27869f8142d382 "pdflatex"
   "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png" 1769357730 253461 8c1740a90ec8441a2e9186857a35d6a9 ""
   "images/analysis/png/pnl_heatmap.png" 1772962914 202409 b312b71b966fdea46e40a260ed9c69cb ""
   "images/dLVR_medians_vs_block_time_static_flow_model2_static_runs50_pid131672.png" 1774375786.26301 63091 f10c1a0801dcf5b4860706acc1c59437 ""

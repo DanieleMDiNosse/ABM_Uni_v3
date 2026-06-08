@@ -2,8 +2,7 @@
 
 \bibitem{Adams2020UniswapVC}
 H.~Adams, N.~Zinsmeister, and D.~H. Robinson.
-\newblock Uniswap v2 core.
-\newblock 2020.
+\newblock Uniswap v2 core, 2020.
 
 \bibitem{adams2021}
 H.~Adams, N.~Zinsmeister, M.~Salem, R.~Keefer, and D.~Robinson.
@@ -13,13 +12,17 @@ H.~Adams, N.~Zinsmeister, M.~Salem, R.~Keefer, and D.~Robinson.
 \bibitem{algebra_adaptive_fee_docs}
 {Algebra Finance}.
 \newblock {Algebra Integral: Adaptive Fee Technical Reference}.
-\newblock \url{https://docs.algebra.finance/algebra-integral-technical-reference/adaptive-fee}, 2026.
+\newblock
+  \url{https://docs.algebra.finance/algebra-integral-technical-reference/adaptive-fee},
+  2026.
 \newblock Accessed 2026-01-09.
 
 \bibitem{algebra_tech_paper}
 {Algebra Protocol}.
 \newblock {Algebra Protocol Tech Paper}.
-\newblock \url{https://docs.algebra.finance/Algebra%20Protocol%20Tech%20paper.pdf}, 2026.
+\newblock
+  \url{https://docs.algebra.finance/Algebra%20Protocol%20Tech%20paper.pdf},
+  2026.
 \newblock Accessed 2026-01-09.
 
 \bibitem{angeris2020}
@@ -27,19 +30,56 @@ G.~Angeris, H.-T. Kao, R.~Chiang, C.~Noyes, and T.~Chitra.
 \newblock An analysis of uniswap markets.
 \newblock {\em arXiv preprint arXiv:1911.03380}, 2020.
 
+\bibitem{avellaneda2008}
+M.~Avellaneda and S.~Stoikov.
+\newblock High-frequency trading in a limit order book.
+\newblock {\em Quantitative Finance}, 8(3):217--224, 2008.
+
+\bibitem{brock2009}
+W.~A. Brock, C.~H. Hommes, and F.~O.~O. Wagener.
+\newblock More hedging instruments may destabilize markets.
+\newblock {\em Journal of Economic Dynamics and Control}, 33(11):1912--1928,
+  2009.
+
 \bibitem{canidio2025}
 A.~Canidio and R.~Fritsch.
-\newblock Arbitrageurs' profits, lvr, and sandwich attacks: batch trading as an amm design response.
+\newblock Arbitrageurs' profits, lvr, and sandwich attacks: batch trading as an
+  amm design response.
 \newblock {\em arXiv preprint arXiv:2307.02074}, 2025.
+
+\bibitem{carro2015}
+A.~Carro, R.~Toral, and M.~San~Miguel.
+\newblock Markets, herding and response to external information.
+\newblock {\em PLoS ONE}, 10(7):e0133287, 2015.
+
+\bibitem{cartea2022execution}
+{\'A}.~Cartea, F.~Drissi, and M.~Monga.
+\newblock Decentralised finance and automated market making: Execution and
+  speculation.
+\newblock {\em SSRN Electronic Journal}, 2022.
+\newblock Working paper.
 
 \bibitem{cartea2023}
 {\'A}.~Cartea, F.~Drissi, and M.~Monga.
-\newblock Decentralised finance and automated market making: Predictable loss and optimal liquidity provision.
-\newblock {\em arXiv preprint arXiv:2309.08431}, 2023.
+\newblock Decentralised finance and automated market making: Predictable loss
+  and optimal liquidity provision.
+\newblock {\em SSRN Electronic Journal}, 2023.
+\newblock Working paper.
+
+\bibitem{cartea2015book}
+{\'A}.~Cartea, S.~Jaimungal, and J.~Penalva.
+\newblock {\em Algorithmic and High-Frequency Trading}.
+\newblock Cambridge University Press, Cambridge, 2015.
+
+\bibitem{chakraborti2011}
+A.~Chakraborti, I.~M. Toke, M.~Patriarca, and F.~Abergel.
+\newblock Econophysics review: Ii. agent-based models.
+\newblock {\em Quantitative Finance}, 11(7):1013--1041, 2011.
 
 \bibitem{cohen2023}
 S.~N. Cohen, M.~Sabate-Vidales, D.~Siska, and L.~Szpruch.
-\newblock Inefficiency of cfms: Hedging perspective and agent-based simulations, 2023.
+\newblock Inefficiency of cfms: Hedging perspective and agent-based
+  simulations, 2023.
 \newblock SSRN Working Paper \url{https://ssrn.com/abstract=4352120}.
 
 \bibitem{curve_cryptoswap_whitepaper}
@@ -51,28 +91,73 @@ S.~N. Cohen, M.~Sabate-Vidales, D.~Siska, and L.~Szpruch.
 \bibitem{curve_stableswap_ng}
 {Curve Finance}.
 \newblock {Stableswap-NG Pools: Dynamic Fee Formula}.
-\newblock \url{https://docs.curve.finance/stableswap-exchange/stableswap-ng/pools/overview/}, 2026.
+\newblock
+  \url{https://docs.curve.finance/stableswap-exchange/stableswap-ng/pools/overview/},
+  2026.
 \newblock Accessed 2026-01-09.
 
+\bibitem{flashboys}
+P.~Daian, S.~Goldfeder, T.~Kell, Y.~Li, X.~Zhao, I.~Bentov, L.~Breidenbach, and
+  A.~Juels.
+\newblock Flash boys 2.0: Frontrunning in decentralized exchanges, miner
+  extractable value, and consensus instability.
+\newblock In {\em 2020 IEEE Symposium on Security and Privacy (SP)}, pages
+  910--927, 2020.
+
 \bibitem{fan2023}
-Z.~Fan, F.~Marmolejo-Cossio, D.~Moroz, M.~Neuder, R.~Rao, and D.~C. Parkes.
+Z.~Fan, F.~Marmolejo-Coss{\'i}o, D.~J. Moroz, M.~Neuder, R.~Rao, and D.~C.
+  Parkes.
 \newblock Strategic liquidity provision in uniswap v3.
-\newblock In {\em Proc. of the 5th ACM Conference on Advances in Financial Technologies (AFT '23)}, 2023.
+\newblock In {\em 5th Conference on Advances in Financial Technologies (AFT
+  2023)}, 2023.
 
 \bibitem{fritsch2024}
 R.~Fritsch and A.~Canidio.
 \newblock Measuring arbitrage losses and profitability of amm liquidity.
-\newblock {\em arXiv preprint arXiv:2404.05803}, 2024.
+\newblock In {\em Companion Proceedings of the ACM Web Conference 2024}, pages
+  1761--1767, 2024.
+
+\bibitem{gao2024}
+K.~Gao, P.~Vytelingum, S.~Weston, W.~Luk, and C.~Guo.
+\newblock High-frequency financial market simulation and flash crash scenarios
+  analysis: An agent-based modelling approach.
+\newblock {\em Journal of Artificial Societies and Social Simulation}, 27(2):8,
+  2024.
+
+\bibitem{gueant2016book}
+O.~Gu{\'e}ant.
+\newblock {\em The Financial Mathematics of Market Liquidity: From Optimal
+  Execution to Market Making}.
+\newblock CRC Press, Boca Raton, FL, 2016.
 
 \bibitem{hafner2024}
 M.~Hafner and H.~Dietl.
-\newblock Impermanent loss conditions: An analysis of decentralized exchange platforms.
+\newblock Impermanent loss conditions: An analysis of decentralized exchange
+  platforms.
 \newblock {\em arXiv preprint arXiv:2401.07689}, 2024.
 
 \bibitem{heimbach2022}
 L.~Heimbach, E.~Schertenleib, and R.~Wattenhofer.
 \newblock Risks and returns of uniswap v3 liquidity providers.
-\newblock In {\em Proceedings of the 4th ACM Conference on Advances in Financial Technologies (AFT '22)}, 2022.
+\newblock In {\em Proceedings of the 4th ACM Conference on Advances in
+  Financial Technologies (AFT '22)}, 2022.
+
+\bibitem{heston1993}
+S.~L. Heston.
+\newblock A closed-form solution for options with stochastic volatility with
+  applications to bond and currency options.
+\newblock {\em The Review of Financial Studies}, 6(2):327--343, 1993.
+
+\bibitem{ho1983}
+T.~Ho and H.~R. Stoll.
+\newblock The dynamics of dealer markets under competition.
+\newblock {\em The Journal of Finance}, 38(4):1053--1074, 1983.
+
+\bibitem{leal2016}
+S.~J. Leal, M.~Napoletano, A.~Roventini, and G.~Fagiolo.
+\newblock Rock around the clock: An agent-based model of low- and
+  high-frequency trading.
+\newblock {\em Journal of Evolutionary Economics}, 26(1):49--76, 2016.
 
 \bibitem{lfj_fees}
 {LFJ (Trader Joe)}.
@@ -87,13 +172,22 @@ B.~Maire and M.~Wunsch.
 
 \bibitem{Maitrier03042026}
 G.~Maitrier, G.~Loeper, K.~Kanazawa, and J.-P. Bouchaud.
-\newblock The `double' square-root law: evidence for the mechanical origin of market impact using tokyo stock exchange data.
+\newblock The `double' square-root law: evidence for the mechanical origin of
+  market impact using tokyo stock exchange data.
 \newblock {\em Quantitative Finance}, 26(4):491--503, 2026.
+
+\bibitem{mannaro2008}
+K.~Mannaro, M.~Marchesi, and A.~Setzu.
+\newblock Using an artificial financial market for assessing the impact of
+  tobin-like transaction taxes.
+\newblock {\em Journal of Economic Behavior \& Organization}, 67(2):445--462,
+  2008.
 
 \bibitem{meteora_dlmm_docs}
 {Meteora}.
 \newblock {DLMM Formulas: Fee Calculation Formulas}.
-\newblock \url{https://docs.meteora.ag/overview/products/dlmm/dlmm-formulas}, 2026.
+\newblock \url{https://docs.meteora.ag/overview/products/dlmm/dlmm-formulas},
+  2026.
 \newblock Accessed 2026-01-09.
 
 \bibitem{milionis2023}
@@ -101,18 +195,59 @@ J.~Milionis, C.~C. Moallemi, T.~Roughgarden, and A.~L. Zhang.
 \newblock Automated market making and loss-versus-rebalancing.
 \newblock {\em arXiv preprint arXiv:2208.06046}, 2023.
 
+\bibitem{mizuta2020}
+T.~Mizuta.
+\newblock An agent-based model for designing a financial market that works
+  well.
+\newblock In {\em 2020 IEEE Symposium Series on Computational Intelligence
+  (SSCI)}, pages 400--406, 2020.
+
 \bibitem{dinosse_gatta}
 D.~M.~D. Nosse, F.~Gatta, F.~Lillo, and S.~Jaimungal.
 \newblock Deviations from tradition: Stylized facts in the era of defi, 2025.
 
+\bibitem{pellizzari2009}
+P.~Pellizzari and F.~Westerhoff.
+\newblock Some effects of transaction taxes under different microstructures.
+\newblock {\em Journal of Economic Behavior \& Organization}, 72(3):850--863,
+  2009.
+
+\bibitem{raberto2001}
+M.~Raberto, S.~Cincotti, S.~M. Focardi, and M.~Marchesi.
+\newblock Agent-based simulation of a financial market.
+\newblock {\em Physica A: Statistical Mechanics and its Applications},
+  299(1--2):319--327, 2001.
+
 \bibitem{PhysRevX.1.021006}
-B.~T\'oth, Y.~Lemp\'eri\`ere, C.~Deremble, J.~de~Lataillade, J.~Kockelkoren, and J.-P. Bouchaud.
-\newblock Anomalous price impact and the critical nature of liquidity in financial markets.
+B.~T\'oth, Y.~Lemp\'eri\`ere, C.~Deremble, J.~de~Lataillade, J.~Kockelkoren,
+  and J.-P. Bouchaud.
+\newblock Anomalous price impact and the critical nature of liquidity in
+  financial markets.
 \newblock {\em Phys. Rev. X}, 1:021006, Oct 2011.
+
+\bibitem{wan2022just}
+X.~Wan and A.~Adams.
+\newblock Just-in-time liquidity on the uniswap protocol.
+\newblock {\em Available at SSRN 4382303}, 2022.
+
+\bibitem{westerhoff2006}
+F.~Westerhoff and R.~Dieci.
+\newblock The effectiveness of keynes--tobin transaction taxes when
+  heterogeneous agents can trade in different markets: A behavioral finance
+  approach.
+\newblock {\em Journal of Economic Dynamics and Control}, 30(2):293--322, 2006.
+
+\bibitem{yagi2020}
+I.~Yagi, Y.~Masuda, and T.~Mizuta.
+\newblock Analysis of the impact of high-frequency trading on artificial market
+  liquidity.
+\newblock {\em IEEE Transactions on Computational Social Systems},
+  7(6):1324--1334, 2020.
 
 \bibitem{zhang2023}
 H.~Zhang, X.~Chen, and L.~F. Yang.
-\newblock Adaptive liquidity provision in uniswap v3 with deep reinforcement learning.
+\newblock Adaptive liquidity provision in uniswap v3 with deep reinforcement
+  learning.
 \newblock {\em arXiv preprint arXiv:2309.10129}, 2023.
 
 \end{thebibliography}

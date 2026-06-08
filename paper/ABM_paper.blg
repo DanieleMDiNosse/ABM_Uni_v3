@@ -3,48 +3,44 @@ Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
 The top-level auxiliary file: ABM_paper.aux
 The style file: abbrv.bst
 Database file #1: bibliography.bib
-Warning--I didn't find a database entry for "aqsha2025"
-Warning--I didn't find a database entry for "bayraktar2024"
-Warning--empty booktitle in Adams2020UniswapVC
-You've used 22 entries,
+You've used 41 entries,
             2118 wiz_defined-function locations,
-            604 strings with 7503 characters,
-and the built_in function-call counts, 6300 in all, are:
-= -- 575
-> -- 380
-< -- 0
-+ -- 152
-- -- 128
-* -- 377
-:= -- 1119
-add.period$ -- 71
-call.type$ -- 22
-change.case$ -- 130
+            711 strings with 10796 characters,
+and the built_in function-call counts, 13283 in all, are:
+= -- 1270
+> -- 714
+< -- 3
++ -- 288
+- -- 240
+* -- 906
+:= -- 2259
+add.period$ -- 129
+call.type$ -- 41
+change.case$ -- 241
 chr.to.int$ -- 0
-cite$ -- 23
-duplicate$ -- 207
-empty$ -- 478
-format.name$ -- 128
-if$ -- 1282
+cite$ -- 41
+duplicate$ -- 449
+empty$ -- 1013
+format.name$ -- 240
+if$ -- 2730
 int.to.chr$ -- 0
-int.to.str$ -- 22
-missing$ -- 13
-newline$ -- 118
-num.names$ -- 44
-pop$ -- 175
+int.to.str$ -- 41
+missing$ -- 33
+newline$ -- 214
+num.names$ -- 82
+pop$ -- 275
 preamble$ -- 1
-purify$ -- 108
+purify$ -- 202
 quote$ -- 0
-skip$ -- 152
+skip$ -- 331
 stack$ -- 0
-substring$ -- 176
-swap$ -- 24
-text.length$ -- 0
+substring$ -- 696
+swap$ -- 75
+text.length$ -- 3
 text.prefix$ -- 0
 top$ -- 0
-type$ -- 88
-warning$ -- 1
-while$ -- 48
-width$ -- 24
-write$ -- 234
-(There were 3 warnings)
+type$ -- 160
+warning$ -- 0
+while$ -- 118
+width$ -- 43
+write$ -- 445
