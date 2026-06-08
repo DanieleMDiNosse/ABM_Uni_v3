@@ -41,34 +41,105 @@
 \end{center}
 
 \begin{abstract}
-Automated Market Makers (AMMs) utilizing concentrated liquidity, such as Uniswap v3, significantly improve capital efficiency but expose Liquidity Providers (LPs) to adverse selection costs, formalized as Loss-Versus-Rebalancing (LVR). While theoretical literature quantifies these costs, the interplay between realistic blockchain microstructure and endogenous pricing mechanisms remains under-explored. This paper develops a granular Agent-Based Model (ABM) of a Uniswap v3 pool interacting with a stochastic reference market governed by Heston volatility dynamics. The framework incorporates discrete block propagation, mempool latency, and a heterogeneous population of agents, including latency-sensitive arbitrageurs, smart routers, MEV searchers (JIT liquidity), and active LPs benchmarked against a frictionless rebalancing strategy. We introduce and evaluate dynamic fee schedules driven by volatility and order-flow toxicity proxies intended to internalize the cost of adverse selection. Our simulations investigate the conditions under which LPs can achieve positive hedged PnL (fees minus LVR). The analysis suggests that dynamic fee adjustments can successfully mitigate arbitrage losses during high-volatility regimes, indicating that adaptive pricing is essential for the long-term economic sustainability of passive liquidity provision.
+Automated Market Makers (AMMs) based on concentrated liquidity, such as Uniswap v3, significantly improve capital 
+efficiency but expose Liquidity Providers (LPs) to adverse selection costs, formalized as Loss-Versus-Rebalancing 
+(LVR). While theoretical literature quantifies these costs, the interplay between realistic blockchain 
+microstructure and endogenous pricing mechanisms remains under-explored. This paper develops a granular 
+Agent-Based Model (ABM) of a Uniswap v3 pool interacting with a stochastic reference market governed by 
+Heston volatility dynamics. The framework incorporates discrete block propagation, mempool latency, and a 
+heterogeneous population of agents, including latency-sensitive arbitrageurs, smart routers, Maximal Extractable Value
+(MEV) searchers, and active LPs benchmarked against a frictionless rebalancing strategy. We propose and 
+evaluate dynamic fee schedules driven by volatility and order-flow toxicity proxies intended to internalize 
+the cost of adverse selection. Our simulations investigate the conditions under which LPs can achieve positive 
+hedged PnL (fees minus LVR). The analysis suggests that dynamic fee adjustments can successfully mitigate 
+arbitrage losses during high-volatility regimes, indicating that adaptive pricing is essential for the 
+long-term economic sustainability of passive liquidity provision.
 \end{abstract}
 
 \tableofcontents
 
 \section{Introduction}
 
-Automated market makers (AMMs) have emerged as a key innovation in decentralized finance, allowing users to trade assets through liquidity pools instead of traditional order books. In AMMs like Uniswap, traders swap against pooled assets and pay fees to liquidity providers (LPs) who supply those assets. Uniswap v3 introduced concentrated liquidity, enabling LPs to allocate capital within specified price ranges to improve fee earnings and capital efficiency \cite{adams2021}. This advancement comes with increased exposure to market risk: if the price moves outside an LP’s range, the position can become effectively inactive and fully converted to one asset. Thus, while concentrated liquidity boosts potential fee revenue, it also exacerbates the impermanent loss risk that can be expressed as the opportunity cost or loss an LP incurs compared to simply holding the assets. A central question is whether the fees earned by providing liquidity are sufficient to compensate for these risks, i.e. whether liquidity provision is profitable net of hedging costs.
+Automated market makers (AMMs) have emerged as a key innovation in Decentralized Finance (DeFi), allowing users to trade assets 
+through liquidity pools instead of traditional order books. In AMMs like Uniswap, traders swap against pooled assets and 
+pay fees to liquidity providers (LPs) who supply those assets. Uniswap v3 introduced concentrated liquidity, enabling LPs 
+to allocate capital within specified price ranges to improve fee earnings and capital efficiency \cite{adams2021}. This 
+advancement comes with increased exposure to market risk: if the price moves outside an LP’s range, the position can 
+become effectively inactive and fully converted to one asset. Thus, while concentrated liquidity boosts potential fee 
+revenue, it also exacerbates the impermanent loss risk that can be expressed as the opportunity cost or loss an LP 
+incurs compared to simply holding the assets. A central question is whether the fees earned by providing liquidity 
+are sufficient to compensate for these risks, i.e. whether liquidity provision is profitable net of hedging costs.
 
-Recent research \cite{milionis2023} has formalized the notion of LP profitability by introducing the concept of “hedged PnL”, which isolates the profit-and-loss of an LP from the market risk. In particular, Milionis et al. (2023) define the delta-hedged LP return as the difference between the so-called \textit{loss-versus-rebalancing} (LVR) cost and the trading fees earned \cite{milionis2023}. LVR is the loss an LP suffers due to adverse selection: because AMMs execute trades at stale prices, informed arbitrageurs extract value when prices move, leaving LPs worse off than if they had continuously rebalanced their portfolio at market prices. In effect, LVR measures the gap between the LP’s value and a benchmark rebalancing strategy’s value (analogous to a mark-to-market loss). The hedged PnL, given by fees earned minus LVR, represents the LP’s real economic profit after accounting for the cost of maintaining a market-neutral position (i.e. after hedging out pure price exposure) \cite{milionis2023}. This metric has become a preferred indicator of true profitability because an LP’s unhedged returns are largely driven by overall asset price movements (which could be obtained without providing liquidity by simply holding the assets). By contrast, a delta-hedged LP’s returns reflect only the value added (or lost) by liquidity provision, separating out market risk.
+Recent research \cite{milionis2023} has formalized the notion of LP profitability by introducing the concept of “hedged 
+PnL”, which isolates the profit-and-loss of an LP from the market risk. In particular, Milionis et al. (2023) define the 
+delta-hedged LP return as the difference between the so-called \textit{loss-versus-rebalancing} (LVR) cost and the trading 
+fees earned \cite{milionis2023}. LVR is the loss an LP suffers due to adverse selection: because AMMs execute trades at 
+stale prices, informed arbitrageurs extract value when prices move, leaving LPs worse off than if they had continuously 
+rebalanced their portfolio at market prices. In effect, LVR measures the gap between the LP’s value and a benchmark 
+rebalancing strategy’s value (analogous to a mark-to-market loss). The hedged PnL, given by fees earned minus LVR, 
+represents the LP’s real economic profit after accounting for the cost of maintaining a market-neutral position (i.e. 
+after hedging out pure price exposure) \cite{milionis2023}. This metric has become a preferred indicator of true 
+profitability because an LP’s unhedged returns are largely driven by overall asset price movements (which could be 
+obtained without providing liquidity by simply holding the assets). By contrast, a delta-hedged LP’s returns reflect 
+only the value added (or lost) by liquidity provision, separating out market risk.
 
-The profitability of liquidity provision in concentrated AMMs is not merely a theoretical concern. It has significant practical implications for traders, investors, and protocol designers. Empirical evidence has raised concerns that, for many volatile asset pools, LPs on Uniswap v3 underperform a basic hold strategy. In other words, the combination of impermanent loss and LVR can outweigh the fees earned. For example, an in-depth analysis of Uniswap v3 by Heimbach et al. \cite{heimbach2022} found that across major volatile pools (like ETH-USD or BTC-ETH pairs), LPs on average earned negative returns relative to holding, especially when they provided very narrow (concentrated) ranges. The mean daily returns of LP positions in such pools were below zero, indicating that fees did not fully offset the losses from adverse price movements and arbitrage. Only in low-volatility stablecoin-stablecoin pools did LPs consistently earn small positive returns, as impermanent loss was negligible in those cases. Likewise, a comprehensive empirical study by Fritsch and Canidio \cite{fritsch2024} examined many large pools and concluded that losses to arbitrageurs (LVR) exceeded fee revenues in most cases, resulting in negative hedged PnL for LPs on those pools. Notably, they report that Uniswap v3’s concentrated liquidity pools were less profitable for passive LPs than the earlier Uniswap v2 pools, despite the higher fee potential, due to the greater arbitrage losses in v3. These findings underscore that liquidity provision, particularly in volatile markets, can be an adverse trade for uninformed or passive providers. It also highlights the importance of active management or hedging strategies to improve outcomes.
+The profitability of liquidity provision in concentrated AMMs is not merely a theoretical concern. It has significant 
+practical implications for traders, investors, and protocol designers. Empirical evidence has raised concerns that, for 
+many volatile asset pools, LPs on Uniswap v3 underperform a buy and hold strategy. In other words, the combination of 
+impermanent loss and LVR can outweigh the fees earned. For example, an in-depth analysis of Uniswap v3 by Heimbach et 
+al. \cite{heimbach2022} found that across major volatile pools (like ETH-USD or BTC-ETH pairs), LPs on average earned 
+negative returns relative to holding, especially when they provided very narrow (concentrated) ranges. The mean daily 
+returns of LP positions in such pools were below zero, indicating that fees did not fully offset the losses from adverse 
+price movements and arbitrage. Only in low-volatility stablecoin-stablecoin pools did LPs consistently earn small 
+positive returns, as impermanent loss was negligible in those cases. Likewise, a comprehensive empirical study by 
+Fritsch and Canidio \cite{fritsch2024} examined many large pools and concluded that losses to arbitrageurs (LVR) 
+exceeded fee revenues in most cases, resulting in negative hedged PnL for LPs on those pools. Notably, they report 
+that Uniswap v3’s concentrated liquidity pools were less profitable for passive LPs than the earlier Uniswap v2 
+pools, despite the higher fee potential, due to the greater arbitrage losses in v3. These findings underscore that 
+liquidity provision, particularly in volatile markets, can be an adverse trade for uninformed or passive providers. 
+It also highlights the importance of active management or hedging strategies to improve outcomes.
 
-Against this backdrop, understanding the drivers of LP profitability and exploring methods to enhance it has become a multidisciplinary endeavor. On one hand, analytical models from finance can quantify the expected costs and returns of liquidity provision under various conditions. On the other hand, Agent-Based Models (ABMs) and simulations, tools popular in econophysics and computational finance, offer a way to study complex interactions in AMM ecosystems between various kinds of agents that are difficult to capture with closed-form theory. The benefit of ABMs is their description of complex systems from the bottom up by specifying the behaviour (often very simple) of individual agents and letting aggregate properties emerge from their interactions. The main drawback, however, lies in the large number of parameters on which these models typically rely, whose calibration is often nontrivial. Broadly speaking, ABM can be interpreted in two distinct ways. They can be viewed either as data-generating mechanisms designed to reproduce as many stylized facts as possible (for example, as synthetic market generators useful for testing trading strategies) or they can serve as controlled and realistic laboratories in which the researcher studies the qualitative response of the system to variations in specific parameters (for instance, how a change in tick size affects the price dynamics of a financial asset). In this paper, we adopt the latter perspective. Our goal is to investigate whether, and in what way, dynamically adjusted fee schedules influence the economics of liquidity provision in a Uniswap v3–like AMMs.
+Against this backdrop, understanding the drivers of LP profitability and exploring methods to enhance it has become a 
+multidisciplinary endeavor. On one hand, analytical models from finance can quantify the expected costs and returns of 
+liquidity provision under various conditions. On the other hand, Agent-Based Models (ABMs) and simulations offer a way 
+to study complex interactions in AMM ecosystems between various kinds of agents that are difficult to capture with 
+closed-form theory. The benefit of ABMs is their description of complex systems from the bottom up by specifying the 
+behaviour (often very simple) of individual agents and letting aggregate properties emerge from their interactions. 
+The main drawback, however, lies in the large number of parameters on which these models typically rely, whose 
+calibration is often nontrivial. Broadly speaking, ABM can be interpreted in two distinct ways. They can be viewed 
+either as data-generating mechanisms designed to reproduce as many stylized facts as possible (for example, as 
+synthetic market generators useful for testing trading strategies) or they can serve as controlled and realistic 
+laboratories in which the researcher studies the qualitative response of the system to variations in specific 
+parameters (for instance, how a change in tick size affects the price dynamics of a financial asset). In this paper, 
+we adopt the latter perspective. Our goal is to investigate whether, and in what way, dynamically adjusted fee schedules 
+influence the economics of liquidity provision in a Uniswap v3–like AMMs.
 
 
-This paper presents an ABM for a Uniswap v3-style pool that allows agents to interact each other, making decisions based on the state of the pool and a reference market, a Centralized Exchange (CEX). Specifically, the model incorporates:
+This paper presents an ABM for a Uniswap v3-style pool that allows agents to interact each other, making decisions based 
+on the state of the pool and a reference market, a Centralized Exchange (CEX). Specifically, the model incorporates:
 \begin{itemize}[leftmargin=*]
   \item tick-based concentrated liquidity;
-  \item a reference CEX price evolving according to a Heston volatility dynamics with permanent price impact due to arbitrageurs;
+  \item a reference CEX price evolving according to a Heston volatility dynamics with permanent price impact due 
+  to arbitrageurs;
   \item a mempool-based execution;
-  \item heterogeneous agents: arbitrageurs, noise traders, liquidity providers and MEV searchers;
+  \item heterogeneous agents: arbitrageurs, noise traders, liquidity providers and Maximal Extractable Value (MEV) searchers;
   \item passive and active LPs with budgets, review clocks, and risk management;
   \item dynamic taker fees driven by volatility or order flow toxicity;
-  \item a rebalancing benchmark for each LP that enforces wealth conservation and allow for a clean hedged-vs-unhedged PnL decomposition;
+  \item a rebalancing benchmark for each LP that enforces wealth conservation and allow for a clean hedged-vs-unhedged 
+  PnL decomposition;
 \end{itemize}
 
-The primary objective is to understand how (and if) dynamical liquidity taker fees can be beneficial for liquidity provision, reducing LVR and/or increasing fee revenue for the LPs.
+The primary objective is to understand how (and if) dynamical liquidity taker fees can be beneficial for liquidity provision, 
+reducing LVR and/or increasing fee revenue for the LPs.
+
+The simulations deliver three main findings. First, under block-time execution, static fees are insufficient to compensate 
+standing LPs for stale-quote adverse selection, especially when liquidity is concentrated. Second, dynamic fees can improve 
+hedged LP profitability, but their effectiveness depends on the information used to adjust the fee: rules that react to 
+the contemporaneous gap between the AMM price and the external reference price perform better in our experiments than rules 
+based only on recent price volatility. Third, fee adaptivity creates an endogenous trade-off: it protects standing liquidity 
+by widening the fee wedge, but it also reduces smart-router DEX share and, when very short-lived liquidity provision is 
+allowed, can redirect part of the enlarged fee pool toward latency-sensitive liquidity providers.
+
 The paper is organized as follows. Section \ref{sec:literature_review} provides a brief literature review on liquidity provision in AMMs, with particular attention to LP profitability, adverse selection, and dynamic fee mechanisms. Section \ref{sec:model} presents the agent-based model, describing the Uniswap v3 market mechanism, the reference market, the LP PnL accounting framework, the agent population, and the dynamic fee schedules considered in the analysis. Section \ref{sec:results} reports the main simulation results, including the microstructure diagnostics and the comparison across fee policies and model specifications. Finally, Section 5 concludes and discusses possible directions for future research.
 
 \section{Literature Review}
@@ -105,8 +176,8 @@ In summary, the literature on liquidity provision profitability spans analytical
 
 Beyond academic proposals, several large AMM families already deploy fee schedules that adapt endogenously to risk or imbalance conditions. These implementations are useful reference points because they reveal which signals are considered sufficiently robust to run ``on-chain'' and which functional forms are preferred to keep fees bounded, smooth, and hard to game.
 
-A first design pattern is off-peg / imbalance-based fees, common in stable-asset designs. In Curve's Stableswap-NG, the fee increases as the pool moves away from balance, using a compact balance metric
-$K(x,y)=\frac{4xy}{(x+y)^2}\in(0,1]$ (equal to $1$ at $x=y$). The dynamic fee is a rational function that equals the baseline fee at the peg and approaches a capped multiple of it as imbalance grows \cite{curve_stableswap_ng}. Curve v2 (CryptoSwap) implements a closely related idea: the fee interpolates between a ``mid'' fee (near balance) and an ``out-of-range'' fee (far from balance) through a smooth imbalance coefficient, often expressed via a geometric-vs-arithmetic-mean ratio and a reduction factor that shrinks under imbalance \cite{curve_cryptoswap_whitepaper}. For modeling purposes, both mechanisms can be read as: measure imbalance with a scalar statistic, then map it monotonically into a higher effective fee, with a hard ceiling.
+A first design pattern is off-peg / imbalance-based fees, common in stable-asset designs. The basic idea is that, for assets that should trade close to a target relative price, the pool's reserve composition is itself an informative risk signal. When the pool is close to its target balance, trades are likely to be ordinary liquidity-taking flow and can be charged a low baseline fee. When trades push the pool away from balance---for example, leaving it with too much of one asset and too little of the other---the pool is effectively absorbing inventory and de-peg risk. The fee is therefore increased to discourage trades that further worsen the imbalance and to compensate LPs for taking the other side of stressed flow. In Curve's Stableswap-NG, this idea is implemented with a compact balance metric
+$K(x,y)=\frac{4xy}{(x+y)^2}\in(0,1]$, where $x$ and $y$ denote normalized reserves and $K=1$ at perfect balance ($x=y$). As the pool becomes more imbalanced, $K$ falls below one and the dynamic fee rises through a rational function that equals the baseline fee at the peg and approaches a capped multiple of it as imbalance grows \cite{curve_stableswap_ng}. Curve v2 (CryptoSwap) implements a closely related idea: the fee interpolates between a ``mid'' fee (near balance) and an ``out-of-range'' fee (far from balance) through a smooth imbalance coefficient, often expressed via a geometric-vs-arithmetic-mean ratio and a reduction factor that shrinks under imbalance \cite{curve_cryptoswap_whitepaper}. For modeling purposes, both mechanisms can be read as: measure how far the pool state is from its target composition with a scalar statistic, then map that statistic monotonically into a higher effective fee, with a hard ceiling.
 
 A second pattern is activity/volatility-accumulator fees, prevalent in ``bin'' AMMs. Trader Joe's Liquidity Book computes fees as the sum of a base term proportional to the bin step and a quadratic variable term driven by a volatility accumulator that grows when swaps traverse bins and decays when activity slows \cite{lfj_fees}. Meteora's DLMM follows the same blueprint (base plus a capped quadratic variable component) with explicit scaling constants and a maximum fee rate \cite{meteora_dlmm_docs}. Conceptually, these designs make fees respond quickly to short-lived bursts of toxicity (rapid price moves and frequent bin crossings), while ensuring mean reversion through time-decay.
 
@@ -134,7 +205,8 @@ The price associated with tick $i$ is
 \begin{equation}
   p(i) = \gamma^{i}, \qquad \gamma = 1.0001,
 \end{equation}
-and Uniswap v3 uses the square-root price
+and Uniswap v3 uses the square-root price because, under constant liquidity, token amounts vary linearly with 
+changes in \(s=\sqrt{p}\), which makes swap and position accounting algebraically and computationally simple:
 \begin{equation}
   s(i) = \sqrt{p(i)} = \gamma^{i/2}.
 \end{equation}
@@ -143,7 +215,7 @@ At any time $t$, the pool is at an active tick $i_t$ and active square-root pric
 \subsubsection{Liquidity positions and active liquidity}
 
 An LP does not provide liquidity over the entire price axis. Instead, an LP position is specified by
-a tick interval $[i_a,i_b]$ (with $i_a < i_b$) and a liquidity amount $L^{\mathrm{pos}}>0$.
+a tick interval $[i_a,i_b]$ and a liquidity amount $L^{\mathrm{pos}}>0$.
 Define the corresponding boundary square-root prices
 \begin{equation}
   s_a := s(i_a), \qquad s_b := s(i_b).
@@ -309,7 +381,9 @@ The long-run variance has been calibrated using data from Binance regarding the 
 \subsubsection{Market Impact}
 \label{subsubsec:impact}
 Trades performed on the CEX are assumed to have zero costs but permanent price impact on the CEX price.
-Let $\Delta a_\tau$ denote the net signed volume in token 0/token 1 executed on the CEX during microstep $\tau$. The impact function is specified as
+Let $\Delta a_\tau$ denote the net signed volume in token 0/token 1 executed on the CEX during microstep $\tau$. Empirically, 
+large trades tend to move prices in a concave way, consistent with the square-root law observed in market-impact 
+studies \cite{PhysRevX.1.021006,Maitrier03042026}, Inspired by these findings, the impact function is specified as
 \begin{equation}
   \mathrm{Impact}_\tau =
   \eta_{\text{imp}} \cdot \mathrm{sign}(\Delta a_\tau)\,\sqrt{\bigl|\Delta a_\tau\bigr|},
@@ -317,15 +391,22 @@ Let $\Delta a_\tau$ denote the net signed volume in token 0/token 1 executed on 
 \end{equation}
 with $\eta_{\text{imp}}>0$ and $\xi \geq 0$.
 
-From the point of view of the arbitrageur, this ensures that large trades move the CEX against the arbitrageur, providing a natural feedback that reduces future mispricing.
+From the point of view of the arbitrageur, this ensures that large trades move the CEX against the arbitrageur, 
+providing a natural feedback that reduces future mispricing.
 
 \subsection{LVR and PnL Accounting}
 \label{sec:lvr}
 
-As we already stated, LVR quantifies the structural cost borne by liquidity providers due to the passive nature of Automated Market Makers. It was firstly introduced by Millions et al. \cite{milionis2023}. Unlike active market makers on Centralized Exchanges (CEX) who can update quotes in real-time, AMM positions offer stale prices that are "picked off" by arbitrageurs whenever the external market moves. LVR measures the cumulative value extracted by these arbitrageurs---or equivalently, the opportunity cost of providing liquidity compared to a specific benchmark strategy.
+As we already stated, LVR quantifies the structural cost borne by liquidity providers due to the passive nature of 
+Automated Market Makers. It was firstly introduced by Millions et al. \cite{milionis2023}. Unlike active market 
+makers on Centralized Exchanges (CEX) who can update quotes in real-time, AMM positions offer stale prices that 
+are "picked off" by arbitrageurs whenever the external market moves. LVR measures the cumulative value extracted 
+by these arbitrageurs---or equivalently, the opportunity cost of providing liquidity compared to a specific benchmark 
+strategy.
 
 
-To isolate the cost of liquidity provision from market risk, the authors in \cite{milionis2023} compare the LP's wealth to a theoretical Rebalancing Strategy. This benchmark strategy is defined by two key properties:
+To isolate the cost of liquidity provision from market risk, the authors in \cite{milionis2023} compare the LP's wealth 
+to a theoretical rebalancing strategy. This benchmark strategy is defined by two key properties:
 \begin{enumerate}
     \item Inventory Matching: At every instant $t$, the rebalancing strategy holds the exact same quantity of the risky asset (token 0), denoted by $x_t$, as the actual LP position in the AMM.
     \item Frictionless Execution: Whenever the inventory $x_t$ changes (due to trading activity in the pool), the rebalancing strategy executes the corresponding trade at the fresh, external reference market price $m_t$, rather than at the stale AMM price $P^{DEX}_t$.
@@ -336,18 +417,22 @@ Because the rebalancing strategy executes the same sequence of trades as the AMM
 \end{equation}
 
 
-Milionis et al. \cite{milionis2023} show that if the external reference price $m_t$ follows a diffusion process with instantaneous volatility $\sigma_t$, LVR accumulates as a function of the price volatility and the AMM's marginal liquidity. The cumulative LVR over a period $[0, T]$ is given by:
+Milionis et al. \cite{milionis2023} show that if the external reference price $m_t$ follows a diffusion process with 
+instantaneous volatility $\sigma_t$, LVR accumulates as a function of the price volatility and the AMM's marginal liquidity. 
+The cumulative LVR over a period $[0, T]$ is given by:
 \begin{equation}
     LVR_{[0, T]} = \int_0^T \frac{\sigma_t^2 m_t^2}{2} |x^{*\prime}(m_t)| \, dt,
     \label{eq:lvr_general}
 \end{equation}
 where $x^*(p)$ is the AMM's demand curve (the inventory of token 0 held by the pool at price $p$), and $|x^{*\prime}(p)| = |\frac{dx}{dp}|$ is the marginal liquidity, representing how aggressively the AMM trades against price changes.
 
-In the specific context of Uniswap v3 , the inventory function is determined by the active concentrated liquidity $L_t$. Within a specific tick range, the relationship between token 0 inventory and square-root price $s = \sqrt{p}$ is given by Equation (7):
+In the specific context of Uniswap v3 , the inventory function is determined by the active concentrated liquidity $L_t$. 
+Within a specific tick range, the relationship between token 0 inventory and square-root price $s = \sqrt{p}$ is 
+given by Equation (7):
 \begin{equation}
     x(s) = L_t \left( \frac{1}{s} - \frac{1}{s_b} \right).
 \end{equation}
-To apply the general LVR formula \ref{eq:lvr_general}, we compute the marginal liquidity with respect to the price $p = s^2$. Using the chain rule:
+To apply the general LVR Equation \ref{eq:lvr_general}, we compute the marginal liquidity with respect to the price $p = s^2$. Using the chain rule:
 \begin{equation}
     \left| \frac{dx}{dp} \right| = \left| \frac{dx}{ds} \frac{ds}{dp} \right| = \left| \left( -\frac{L_t}{s^2} \right) \left( \frac{1}{2\sqrt{p}} \right) \right| = \frac{L_t}{2 p \sqrt{p}}.
 \end{equation}
@@ -564,7 +649,7 @@ Each (non-JIT) LP $j$ maintains:
 \begin{itemize}[leftmargin=*]
   \item a cash wallet $\mathcal{W}^1_{j,t}$ held entirely in token~1;
   \item a set of open positions composed by the lower tick $i_a$, upper tick $i_b$, liquidity deposited $L^{\mathrm{pos}}$ in $[i_a, i_b] \implies \mathcal{P}_{j,t}=\{(i_a,i_b,L^{\mathrm{pos}})_t\}$;
-  \item internal review and cooldown clocks governing when the LP can revise positions;
+  \item internal review and cooldown clocks governing when the LP can revise positions; the review clock determines when the LP next reconsiders its range, while the cooldown clock enforces a waiting period after a burn before a new mint can be submitted;
   \item an associated rebalancing benchmark used for LVR accounting.
 \end{itemize}
 LPs are \emph{cash-budgeted}: between actions they do not carry token~0 in their wallet. When minting a new
@@ -641,7 +726,7 @@ The cash wallet is debited by the token~1 value of this deposit:
   \label{eq:lp-wallet-debit-cash}
 \end{equation}
 and the position $(i_a,i_b,\Delta L^{\text{exec}}_{j,t})$ is added to $\mathcal{P}_{j,t}$. Any unspent budget
-remains in token~1; in particular, the LP does not retain a residual token~0 inventory..
+remains in token~1; in particular, the LP does not retain a residual token~0 inventory.
 
 \paragraph{Burning a position}
 When LP $j$ burns a position $p=(i_a,i_b,L^{\mathrm{pos}})\in\mathcal{P}_{j,t}$ at state $s_t$, the LP receives
@@ -684,7 +769,7 @@ from passive LPs along several dimensions:
   \item Adaptive width: The width $w_t$ (in ticks) of each active position is determined from an
   EWMA of a signal related to recent volatility, plus a binomial noise term to introduce heterogeneity:
   \begin{equation}
-    w_t = \mathrm{clip}(\tilde w_t + \eta_t,\; w_{\min},\; w_{\max}),
+    w_t = \mathrm{min}\left(\mathrm{max}(\tilde w_t + \eta_t,w_{\min}),w_{\max}\right),
     \label{eq:active-width}
   \end{equation}
   where $\tilde w_t$ is a deterministic function of the chosen signal, $\eta_t$ is a random width
@@ -695,7 +780,7 @@ from passive LPs along several dimensions:
   burn the old position and mint a new one centered at the current reference, with width $w_t$.
   The new mint is executed subject to token feasibility \eqref{eq:lp-Lmax}--\eqref{eq:lp-mint-executed}.
   \item Take-profit / stop-loss: Active LPs monitor the PnL of each position relative to a HODL
-  benchmark of the initial tokens. If the position's PnL exceeds a take-profit threshold
+  benchmark of the initial tokens, meaning the value the LP would obtain by simply holding the two tokens that were initially required to mint the position and marking them to the external reference price. If the position's PnL exceeds a take-profit threshold
   $\theta_{\mathrm{TP}}$ or falls below a stop-loss threshold $-\theta_{\mathrm{SL}}$, the LP exits by burning
   the position.
 \end{itemize}
@@ -889,11 +974,11 @@ fee increases or liquidity thins, a larger fraction of smart-router volume migra
 
 The noise trader represents uninformed or urgency-driven flow:
 \begin{itemize}[leftmargin=*]
-  \item His trade sizes are drawn from a log-normal distribution in notional units of
+  \item Her trade sizes are drawn from a log-normal distribution in notional units of
         token 1, with parameters $(\mu_{\mathrm{trade}},\sigma_{\mathrm{trade}})$.
   \item Trade direction (buy vs.\ sell) is chosen at random with equal probability.
   \item Noise trader ignores the CEX price $m_t$ and thus have no valuation discipline.
-  \item He enforces a slippage constraint: if the implied execution price on the DEX deviates
+  \item She enforces a slippage constraint: if the implied execution price on the DEX deviates
         from their reference quote by more than a tolerance (relative to the reference),
         the trade is aborted \footnote{This behaviour mimics the default slippage tolerance set using the Uniswap v3 web interface.}.
 \end{itemize}
@@ -925,7 +1010,7 @@ Each realized event is instantiated as an intent and assigned to an eligible age
 A central feature of the model is a time-varying taker fee $f_t \in [0,1)$, representing the fraction of notional charged to traders and paid to LPs.
 At each step, a raw fee proposal $f^{\mathrm{raw}}_t$ is computed from a chosen signal and then passed through a common controller that enforces bounds, hysteresis, rate limits, and cooldown.
 
-We consider four modes, based on:
+We consider three modes, based on:
 \begin{enumerate}[label=\roman*), leftmargin=*]
   \item static
   \item volatility
@@ -993,7 +1078,7 @@ The raw fee is:
   f^{\mathrm{raw}}_t = k_{\mathrm{tox}}\, \tilde{B}_t ,
   \label{eq:tox-fee}
 \end{equation}
-with gain $k_{\mathrm{tox}}>0$.
+with $k_{\mathrm{tox}}>0$.
 
 % \paragraph{LVR-gap based fee}
 % This controller uses feedback from the per-step gap between LVR and fees, normalized by executed DEX notional.
@@ -1083,7 +1168,7 @@ are chosen to be consistent with the empirical calibration in \cite{dinosse_gatt
 section in which we shows that even without a proper empirical calibration, the model is able to generate realistic 
 price and trade dynamics, see Section \ref{sec:stylized}.
 
-Unless otherwise stated, summary figures report mean \(\pm\) standard error across \textbf{100 independent seeds} per 
+Unless otherwise stated, summary figures report mean \(\pm\) standard error across 100 independent seeds per 
 \((\text{model},\text{fee schedule})\) configuration.
 
 The main metrics of interest are:
@@ -1220,24 +1305,15 @@ The main metrics of interest are:
 Before comparing fee policies, we validate that the ABM reproduces the expected microstructure channel: block-time 
 latency generates transient CEX--DEX deviations that are harvested by priority arbitrage, implying adverse selection (LVR) for LPs.
 
-Figure \ref{fig:distributions} shows the distribution from which the ABM samples the different
-values (amounts, width, LP internal clocks, LP utilization factor etc.) used during the simulations.
-
 Figure~\ref{fig:microstructure_prices} compares the reference (CEX) price with the AMM (DEX) price and the implied 
 no-arbitrage band. The DEX series exhibits pronounced spikes because the CEX price evolves within each block while 
 on-chain swaps are executed at the block boundary. Mispricings are then corrected by arbitrage at the beginning of 
 the next block, generating the spike-and-reversion dynamics documented empirically in \cite{dinosse_gatta}. 
-However, this behaviour disappears when we move to dynamic fees, as the fee level adjusts to offset the stale-quote r
-isk and prevent huge arbitrage opportunities from materializing. 
+However, this behaviour disappears when we move to dynamic fees, as the fee level adjusts to offset the stale-quote and 
+prevent huge arbitrage opportunities from materializing. 
 The apparent lag between the CEX series and the shaded band is structural: the band is computed from the lagged 
 snapshot \(m_{t-1}\), whereas the plotted \(m_t\) is the contemporaneous end-of-block reference price after intra-block diffusion.
 
-\begin{figure}
-  \centering
-  \includegraphics[width=0.85\linewidth]{images/distributions_core_static.png}
-  \caption{Distributions of key variables (trade sizes, LP widths, review times, mint sizes, etc.) used in the ABM.}
-  \label{fig:distributions}
-\end{figure}
 
 \begin{figure}[t]
   \centering
@@ -1315,60 +1391,71 @@ positive hedged profitability for both passive and active LPs once strategic liq
 
 \paragraph{Competitiveness: DEX share.}
 The smart router trades off execution quality against fees, so higher endogenous fees can reduce AMM competitiveness. 
-Figure~\ref{fig:dex_share_barplot} shows a systematic competitiveness cost: static fees yield the highest DEX share 
-in every model (about \(30\%\) in Model~0 and about \(34\%\) in Models~1--2), whereas dynamic controllers lower routed 
-DEX share to roughly \(21\%\)--\(27\%\). The toxicity rule produces the largest decline in routed flow, especially in 
-Model~0, consistent with its much higher average fee level. The volatility-based rules preserve slightly more order 
-flow than toxicity, but they still remain well below the static benchmark. Importantly, the AMM remains economically 
-relevant in all configurations; dynamic fees reduce DEX share rather than eliminating routed flow. The improvement in 
-LP protection documented in Figure~\ref{fig:pnl_heatmap} is therefore achieved through a measurable, but partial, loss 
-of competitiveness rather than through a collapse in trading activity. It is worth noting, however, that the tracked
-DEX share should be seen as a lower bound for the AMM's competitiveness, since the smart router is a simplified proxy 
-for real-world routing logic and may not capture all the nuances of how traders choose between venues in practice.
-For instance, a trader can choose to swap on the DEX for other reasons beyond pure price and fee considerations, such as
- privacy, censorship resistance, or simply as a part of a bigger strategy that involves on-chain interactions.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.95\linewidth]{images/analysis/png/dex_share_barplot.png}
-  \caption{Mean smart-router DEX share across scenarios (mean \(\pm\) standard error across 100 seeds).}
-  \label{fig:dex_share_barplot}
-\end{figure}
+Table~\ref{tab:routing_fee_summary} reports three routing-and-fee diagnostics used to evaluate this trade-off: 
+the smart-router DEX share, the cumulative fee value earned by standing LP cohorts, and the time-averaged taker fee. 
+The first diagnostic shows a systematic competitiveness cost. Static fees yield the highest DEX share in every model 
+(\(35.50\%\) in Model~0, \(39.11\%\) in Model~1, and \(38.53\%\) in Model~2), whereas dynamic controllers lower routed 
+DEX share to roughly \(22.77\%\)--\(27.94\%\). The toxicity rule produces the largest decline in routed flow, especially 
+in Model~0, consistent with its higher average fee level. The volatility-based rules preserve slightly more order flow 
+than toxicity, but they still remain well below the static benchmark. Importantly, the AMM remains economically relevant 
+in all configurations; dynamic fees reduce DEX share rather than eliminating routed flow. The improvement in LP protection 
+documented in Figure~\ref{fig:pnl_heatmap} is therefore achieved through a measurable, but partial, loss of competitiveness 
+rather than through a collapse in trading activity. It is worth noting, however, that the tracked DEX share should be seen 
+as a lower bound for the AMM's competitiveness, since the smart router is a simplified proxy for real-world routing logic 
+and may not capture all the nuances of how traders choose between venues in practice. For instance, a trader can choose to 
+swap on the DEX for other reasons beyond pure price and fee considerations, such as privacy, censorship resistance, or 
+simply as a part of a bigger strategy that involves on-chain interactions.
 
 \paragraph{Fee levels and fee incidence across cohorts.}
-Figure~\ref{fig:mean_fee_barplot} reports the time-averaged fee level for the dynamic modes. Toxicity is systematically 
-the highest-fee regime, reaching about \(19\) bps in Model~0 and about \(11\)--\(12\) bps in Models~1--2. The DEX-volatility 
-controller is intermediate, around \(12\) bps in Model~0 and around \(6\) bps thereafter, while the CEX-volatility 
-controller remains close to \(5\) bps across all models. Figure~\ref{fig:fee_value_barplot} shows the associated 
-fee-incidence decomposition. In Model~0, where all standing liquidity is passive, higher fees map almost one-for-one 
-into passive fee income: total fee value rises from only about \(1.5\times 10^3\) under static fees to more than 
-\(3\times 10^4\) under toxicity.
+The remaining columns of Table~\ref{tab:routing_fee_summary} report the time-averaged taker fee and the corresponding 
+fee-incidence decomposition across passive and active standing LP cohorts. Toxicity is systematically the highest-fee 
+dynamic regime, reaching \(14.48\) bps in Model~0 and about \(11\)--\(12\) bps in Models~1--2. The DEX-volatility controller 
+is intermediate, at \(7.25\) bps in Model~0 and about \(4.40\)--\(5.22\) bps thereafter, while the CEX-volatility controller 
+remains close to \(5.3\) bps across all models. In Model~0, where all standing liquidity is passive, higher fees map almost 
+one-for-one into passive fee income: cumulative standing-LP fee value rises from \(54.7\pm0.2\) under static fees to 
+\(532.0\pm4.1\) under toxicity.
 
 Once passive and active liquidity coexist, the fee distribution becomes highly asymmetric. In Models~1 and~2, the active 
-cohort receives the dominant share of dynamic fee income, especially under toxicity, where total cumulative fee value 
-rises to roughly \(7.6\times 10^4\) in Model~1 and \(5.5\times 10^4\) in Model~2. This comparison is important because 
-it shows that large fee revenues do not, by themselves, guarantee protection against adverse selection. Under both 
-volatility-based rules, active LPs collect substantial fees yet remain strongly negative in hedged PnL terms (Figure 
-\ref{fig:pnl_heatmap}). What matters is not only charging more, but charging more precisely in the states in which 
-stale-quote risk is highest. The toxicity controller is the only specification that simultaneously raises the fee wedge 
-and moves active LP hedged PnL into positive territory. Once JIT liquidity is admitted, part of the enlarged rent pool 
-is still diverted to the fast liquidity provider, as evidenced by the large positive JIT PnL in Figure~\ref{fig:pnl_heatmap}. 
-The aggregate message is therefore two-sided: dynamic fees can mitigate LVR, but the signal design determines whether the 
-additional fee income compensates standing LPs or is shared with strategic, latency-sensitive liquidity.
+cohort receives the dominant share of dynamic fee income, especially under toxicity, where cumulative standing-LP fee value 
+rises to \(1524.1\pm92.2\) in Model~1 and \(1303.8\pm9.2\) in Model~2. This comparison is important because it shows that 
+large fee revenues do not, by themselves, guarantee protection against adverse selection. Under both volatility-based rules, 
+active LPs collect substantial fees yet remain strongly negative in hedged PnL terms (Figure~\ref{fig:pnl_heatmap}). What 
+matters is not only charging more, but charging more precisely in the states in which stale-quote risk is highest. The 
+toxicity controller is the only specification that simultaneously raises the fee wedge and moves active LP hedged PnL into 
+positive territory. Once JIT liquidity is admitted, part of the enlarged rent pool is still diverted to the fast liquidity 
+provider, as evidenced by the large positive JIT PnL in Figure~\ref{fig:pnl_heatmap}. The aggregate message is therefore 
+two-sided: dynamic fees can mitigate LVR, but the signal design determines whether the additional fee income compensates 
+standing LPs or is shared with strategic, latency-sensitive liquidity.
 
-\begin{figure}[t]
+\begin{table}[t]
   \centering
-  \includegraphics[width=\linewidth]{images/analysis/png/fee_value_barplot.png}
-  \caption{Final cumulative fee value (token-1) by LP cohort across scenarios (mean \(\pm\) standard error across 100 seeds).}
-  \label{fig:fee_value_barplot}
-\end{figure}
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.95\linewidth]{images/analysis/png/mean_fee_barplot.png}
-  \caption{Time-averaged taker fee under dynamic fee modes (static excluded), mean \(\pm\) standard error across 100 seeds.}
-  \label{fig:mean_fee_barplot}
-\end{figure}
+  \scriptsize
+  \renewcommand{\arraystretch}{1.12}
+  \caption{Routing and fee outcomes across model specifications and fee schedules. The reported diagnostics are the smart-router DEX share, cumulative fee value, and time-averaged taker fee. Entries are means \(\pm\) standard errors across 100 independent seeds. DEX share is measured as the percentage of smart-router trades routed to the AMM; passive, active, and total fee values are cumulative token-1 fee revenues for the displayed standing LP cohorts, with total equal to passive plus active fees; average taker fees are reported in basis points. Static rows use the fixed baseline fee \(f_0=1\) bp.}
+  \label{tab:routing_fee_summary}
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{llccccc}
+    \toprule
+    \textbf{Model} & \textbf{Fee mode} & \textbf{DEX share (\%)} & \textbf{Passive fees} & \textbf{Active fees} & \textbf{Total fees} & \textbf{Avg. fee (bps)} \\
+    \midrule
+    Model~0 & Static & \(35.50\pm 0.30\) & \(54.71\pm 0.19\) & \multicolumn{1}{c}{--} & \(54.71\pm 0.19\) & \(1.00\) (fixed) \\
+    Model~0 & Toxicity & \(22.77\pm 0.19\) & \(531.99\pm 4.06\) & \multicolumn{1}{c}{--} & \(531.99\pm 4.06\) & \(14.48\pm 0.08\) \\
+    Model~0 & Volatility (DEX) & \(23.85\pm 0.42\) & \(325.14\pm 11.96\) & \multicolumn{1}{c}{--} & \(325.14\pm 11.96\) & \(7.25\pm 0.16\) \\
+    Model~0 & Volatility (CEX) & \(25.05\pm 0.46\) & \(247.47\pm 0.59\) & \multicolumn{1}{c}{--} & \(247.47\pm 0.59\) & \(5.33\pm 0.02\) \\
+    \midrule
+    Model~1 & Static & \(39.11\pm 0.16\) & \(19.55\pm 0.03\) & \(208.99\pm 2.92\) & \(228.53\pm 2.89\) & \(1.00\) (fixed) \\
+    Model~1 & Toxicity & \(26.11\pm 0.57\) & \(176.04\pm 8.09\) & \(1348.07\pm 84.13\) & \(1524.11\pm 92.22\) & \(11.72\pm 0.15\) \\
+    Model~1 & Volatility (DEX) & \(27.87\pm 0.67\) & \(97.49\pm 0.75\) & \(570.81\pm 9.73\) & \(668.30\pm 10.48\) & \(5.22\pm 0.14\) \\
+    Model~1 & Volatility (CEX) & \(27.25\pm 0.61\) & \(94.16\pm 5.23\) & \(950.92\pm 10.97\) & \(1045.09\pm 16.20\) & \(5.36\pm 0.01\) \\
+    \midrule
+    Model~2 & Static & \(38.53\pm 0.39\) & \(20.63\pm 1.83\) & \(196.85\pm 1.12\) & \(217.47\pm 0.71\) & \(1.00\) (fixed) \\
+    Model~2 & Toxicity & \(26.45\pm 1.04\) & \(103.05\pm 4.70\) & \(1200.77\pm 4.53\) & \(1303.82\pm 9.23\) & \(11.01\pm 0.07\) \\
+    Model~2 & Volatility (DEX) & \(27.94\pm 0.23\) & \(66.54\pm 4.11\) & \(495.62\pm 1.88\) & \(562.16\pm 2.23\) & \(4.40\pm 0.12\) \\
+    Model~2 & Volatility (CEX) & \(26.53\pm 0.27\) & \(82.41\pm 0.25\) & \(854.24\pm 11.71\) & \(936.65\pm 11.97\) & \(5.31\pm 0.02\) \\
+    \bottomrule
+  \end{tabular}%
+  }
+\end{table}
 
 % -------------------------------------------------------------------------
 % Legacy per-scenario plots (kept for reference, not shown in the paper)
@@ -1754,17 +1841,66 @@ not as a guarantee that cumulative hedged PnL over the entire run is positive. T
 
 \section{Conclusions}
 
-This paper introduced a granular agent-based laboratory for studying the economics of Uniswap v3 liquidity provision under realistic blockchain frictions and heterogeneous strategic behavior. The model couples a concentrated-liquidity AMM to a reference CEX whose mid-price follows a stochastic-volatility Heston dynamics with permanent impact induced by trades, and embeds a block-based settlement layer with mempool latency and stochastic transaction ordering. Within this environment, arbitrageurs enforce a no-arbitrage band shaped by taker fees and flash-loan costs, while liquidity takers split across an uninformed noise-trader component and a best-execution smart router that endogenizes the DEX share as fees and liquidity conditions change. Liquidity providers are modeled as cash-budgeted agents who mint/burn positions with heterogeneous review clocks, range-selection rules, and risk-management triggers. The framework implements a discrete-time rebalancing benchmark that preserves self-financing and inventory matching, enabling a clean decomposition of outcomes into fees versus Loss-Versus-Rebalancing (LVR) and thus a direct measurement of “hedged PnL” as the economically relevant profitability metric for liquidity provision. 
+This paper introduced a granular agent-based model for studying the economics of Uniswap v3 liquidity provision under 
+realistic blockchain frictions and heterogeneous strategic behavior. The model couples a concentrated-liquidity AMM to 
+a reference CEX whose mid-price follows a stochastic-volatility Heston dynamics with permanent impact induced by trades, 
+and embeds a block-based settlement layer with mempool latency and stochastic transaction ordering. Within this 
+environment, arbitrageurs enforce a no-arbitrage band shaped by taker fees and flash-loan costs, while liquidity takers 
+split across an uninformed noise-trader component and a best-execution smart router that endogenizes the DEX share as 
+fees and liquidity conditions change. Liquidity providers are modeled as cash-budgeted agents who mint/burn positions 
+with heterogeneous review clocks, range-selection rules, and risk-management triggers. The framework implements a 
+discrete-time rebalancing benchmark that preserves self-financing and inventory matching, enabling a clean decomposition 
+of outcomes into fees versus Loss-Versus-Rebalancing (LVR) and thus a direct measurement of “hedged PnL” as the 
+economically relevant profitability metric for liquidity provision. 
 
-Across the baseline configurations, the simulations confirm a central microstructure mechanism: in a block-based system, transient within-block deviations between DEX and CEX prices generate systematic arbitrage opportunities that translate into LVR, especially when liquidity is concentrated near the current price and the AMM effectively posts stale quotes. In Model 0, a static fee produces persistently negative hedged PnL for passive LPs, despite a non-trivial fraction of flow routed to the DEX by the smart router. Allowing the taker fee to adapt according to an underlying signal changes the balance between fee income and adverse selection. Among the tested controllers, the toxicity-based schedule, constructed from an excess-basis proxy measuring how much the DEX price gap exceeds the contemporaneous fee band, post effectively internalizes arbitrage intensity: it raises fees specifically in regimes where stale-price risk is highest, leading to positive hedged PnL for passive LPs while maintaining a stable (though reduced) DEX market share. Volatility-based schedules also improve LP outcomes relative to the static benchmark, but generally deliver weaker gains, consistent with volatility being a noisier and less targeted proxy for the realized adverse selection channel driving LVR in this microstructure.
+Across the baseline configurations, the simulations confirm a central microstructure mechanism: in a block-based system, 
+transient within-block deviations between DEX and CEX prices generate systematic arbitrage opportunities that translate 
+into LVR, especially when liquidity is concentrated near the current price and the AMM effectively posts stale quotes. 
+In Model 0, a static fee produces persistently negative hedged PnL for passive LPs, despite a non-trivial fraction of 
+flow routed to the DEX by the smart router. Allowing the taker fee to adapt according to an underlying signal changes 
+the balance between fee income and adverse selection. Among the tested controllers, the toxicity-based schedule, 
+constructed from an excess-basis proxy measuring how much the DEX price gap exceeds the contemporaneous fee band, post 
+effectively internalizes arbitrage intensity: it raises fees specifically in regimes where stale-price risk is highest, 
+leading to positive hedged PnL for passive LPs while maintaining a stable (slightly reduced) DEX market share. 
+Volatility-based schedules also improve LP outcomes relative to the static benchmark, but generally deliver weaker 
+gains, consistent with volatility being a noisier and less targeted proxy for the realized adverse selection channel 
+driving LVR in this microstructure.
 
-Model 1 highlights a core trade-off created by concentrated liquidity. Introducing active LPs increases depth near the prevailing price, improving DEX competitiveness and raising the router’s DEX share; however, the same concentration amplifies exposure to LVR, pushing active LP hedged PnL below that of passive LPs under most fee regimes. Notably, the toxicity-driven controller is the only specification in which both passive and active LP cohorts achieve positive hedged profits, underscoring that where and when fees respond matters more than simply charging higher fees on average. In other words, adaptive pricing can be beneficial, but only if the control signal is aligned with the microstructural source of adverse selection rather than with broad market variability alone.
+Model 1 highlights a core trade-off created by concentrated liquidity. Introducing active LPs increases depth near 
+the prevailing price, improving DEX competitiveness and raising the router’s DEX share; however, the same concentration 
+amplifies exposure to LVR, pushing active LP hedged PnL below that of passive LPs under most fee regimes. Notably, 
+the toxicity-driven controller is the only specification in which both passive and active LP cohorts achieve positive 
+hedged profits, underscoring that where and when fees respond matters more than simply charging higher fees on average. 
+In other words, adaptive pricing can be beneficial, but only if the control signal is aligned with the microstructural 
+source of adverse selection rather than with broad market variability alone.
 
-Model 2 introduces an MEV searcher performing Just-In-Time (JIT) liquidity. The results emphasize a second, protocol-design-relevant tension: mechanisms that protect LPs from arbitrage (dynamic fees) can simultaneously increase the returns to latency/priority strategies that appropriate fee flow. In the static-fee setting, the JIT agent is approximately break-even, while other LP cohorts remain negative on a hedged basis. Under dynamic fees, the JIT strategy becomes profitable, because it can time liquidity to capture elevated fees while keeping inventory exposure short-lived, yet passive and active LPs fail to attain positive hedged PnL under any of the tested schedules. This outcome is economically coherent: when large swaps are systematically wrapped by JIT liquidity, the fee stream that would otherwise compensate longer-horizon LPs is diverted to the searcher precisely during the most lucrative blocks, leaving residual LPs to bear LVR without sufficient fee income.
+Model 2 introduces an MEV searcher performing Just-In-Time (JIT) liquidity. The results emphasize a second, 
+protocol-design-relevant tension: mechanisms that protect LPs from arbitrage (dynamic fees) can simultaneously increase 
+the returns to latency/priority strategies that appropriate fee flow. In the static-fee setting, the JIT agent is 
+approximately break-even, while other LP cohorts remain negative on a hedged basis. Under dynamic fees, the JIT strategy 
+becomes profitable, because it can time liquidity to capture elevated fees while keeping inventory exposure short-lived, 
+yet passive and active LPs fail to attain positive hedged PnL under any of the tested schedules. This outcome is 
+economically coherent: when large swaps are systematically wrapped by JIT liquidity, the fee stream that would otherwise 
+compensate longer-horizon LPs is diverted to the searcher precisely during the most lucrative blocks, leaving residual 
+LPs to bear LVR without sufficient fee income.
 
-Overall, the experiments support three broad conclusions. First, LVR is fundamentally a microstructure cost, magnified by discrete-time execution and latency, and it is better evaluated through modeling the execution layer and not just via continuous-time diffusion intuition. Second, dynamic fees can improve the sustainability of liquidity provision, but effectiveness depends on using signals that are tightly linked to adverse selection (e.g., excess basis/toxicity) and on managing the endogenous response of order routing. Third, MEV/JIT dynamics can dominate the distribution of fee revenue, potentially negating the benefits of adaptive fees for ordinary LPs unless fee mechanisms and execution rules are co-designed with MEV-resilience in mind.
+Overall, the experiments support three broad conclusions. First, LVR is fundamentally a microstructure cost, magnified 
+by discrete-time execution and latency, and it is better evaluated through modeling the execution layer and not just 
+via continuous-time diffusion intuition. Second, dynamic fees can improve the sustainability of liquidity provision, 
+but effectiveness depends on using signals that are tightly linked to adverse selection (e.g., excess basis/toxicity) 
+and on managing the endogenous response of order routing. Third, MEV/JIT dynamics can dominate the distribution of 
+fee revenue, potentially negating the benefits of adaptive fees for ordinary LPs unless fee mechanisms and execution 
+rules are co-designed with MEV-resilience in mind.
 
-These findings suggest several directions for future work within the same ABM framework: (i) calibrating agent intensities and parameter regimes to specific pools and chains to connect qualitative insights to empirical magnitudes; (ii) incorporating explicit gas costs, priority fees, and auction-style ordering to model the full MEV supply chain; (iii) extending fee controllers to include anti-JIT features (e.g., time-weighted fee attribution, liquidity “stickiness” requirements, or penalties for ultra-short-lived liquidity) while quantifying welfare impacts on takers and routers; and (iv) studying multi-pool routing and cross-pool arbitrage, where dynamic fees in one venue propagate strategically to others. Taken together, the ABM developed here provides a controlled, interpretable testbed showing that adaptive pricing is a promising—but not standalone—tool for improving LP economics in concentrated-liquidity AMMs operating under realistic blockchain microstructure. 
+These findings suggest several directions for future work within the same ABM framework: (i) calibrating agent 
+intensities and parameter regimes to specific pools and chains to connect qualitative insights to empirical magnitudes; 
+(ii) incorporating explicit gas costs, priority fees, and auction-style ordering to model the full MEV supply chain; 
+(iii) extending fee controllers to include anti-JIT features (e.g., time-weighted fee attribution, liquidity “stickiness” 
+requirements, or penalties for ultra-short-lived liquidity) while quantifying welfare impacts on takers and routers; 
+and (iv) studying multi-pool routing and cross-pool arbitrage, where dynamic fees in one venue propagate strategically 
+to others. Taken together, the ABM developed here provides a controlled, interpretable testbed showing that adaptive 
+pricing is a promising—but not standalone—tool for improving LP economics in concentrated-liquidity AMMs operating under 
+realistic blockchain microstructure. 
 
 
 \bibliographystyle{abbrv}

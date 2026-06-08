@@ -2,53 +2,53 @@
 \contentsline {section}{\numberline {2}Literature Review}{4}{section.2}%
 \contentsline {subsection}{\numberline {2.1}Analytical and Theoretical Approaches}{4}{subsection.2.1}%
 \contentsline {subsection}{\numberline {2.2}Empirical Studies}{5}{subsection.2.2}%
-\contentsline {subsection}{\numberline {2.3}Agent-Based Modeling and Simulations}{5}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.3}Agent-Based Modeling and Simulations}{6}{subsection.2.3}%
 \contentsline {subsection}{\numberline {2.4}Dynamic fees in deployed AMMs}{7}{subsection.2.4}%
 \contentsline {section}{\numberline {3}Model}{8}{section.3}%
 \contentsline {subsection}{\numberline {3.1}Uniswap v3 Market Mechanism}{8}{subsection.3.1}%
-\contentsline {subsubsection}{\numberline {3.1.1}Discrete price grid, ticks, and square-root price}{8}{subsubsection.3.1.1}%
+\contentsline {subsubsection}{\numberline {3.1.1}Discrete price grid, ticks, and square-root price}{9}{subsubsection.3.1.1}%
 \contentsline {subsubsection}{\numberline {3.1.2}Liquidity positions and active liquidity}{9}{subsubsection.3.1.2}%
-\contentsline {paragraph}{Token composition of a position.}{9}{section*.2}%
-\contentsline {subsubsection}{\numberline {3.1.3}Swap dynamics within a tick}{9}{subsubsection.3.1.3}%
+\contentsline {paragraph}{Token composition of a position.}{10}{section*.2}%
+\contentsline {subsubsection}{\numberline {3.1.3}Swap dynamics within a tick}{10}{subsubsection.3.1.3}%
 \contentsline {subsubsection}{\numberline {3.1.4}Tick crossing and pathwise execution of large swaps}{10}{subsubsection.3.1.4}%
-\contentsline {subsubsection}{\numberline {3.1.5}Mempool}{10}{subsubsection.3.1.5}%
-\contentsline {subsection}{\numberline {3.2}Reference Market (CEX)}{11}{subsection.3.2}%
-\contentsline {subsubsection}{\numberline {3.2.1}Heston Volatility Model}{11}{subsubsection.3.2.1}%
-\contentsline {subsubsection}{\numberline {3.2.2}Market Impact}{12}{subsubsection.3.2.2}%
-\contentsline {subsection}{\numberline {3.3}LVR and PnL Accounting}{12}{subsection.3.3}%
-\contentsline {subsubsection}{\numberline {3.3.1}Rebalancing Benchmark in Discrete Time}{13}{subsubsection.3.3.1}%
+\contentsline {subsubsection}{\numberline {3.1.5}Mempool}{11}{subsubsection.3.1.5}%
+\contentsline {subsection}{\numberline {3.2}Reference Market (CEX)}{12}{subsection.3.2}%
+\contentsline {subsubsection}{\numberline {3.2.1}Heston Volatility Model}{12}{subsubsection.3.2.1}%
+\contentsline {subsubsection}{\numberline {3.2.2}Market Impact}{13}{subsubsection.3.2.2}%
+\contentsline {subsection}{\numberline {3.3}LVR and PnL Accounting}{13}{subsection.3.3}%
+\contentsline {subsubsection}{\numberline {3.3.1}Rebalancing Benchmark in Discrete Time}{14}{subsubsection.3.3.1}%
 \contentsline {paragraph}{Price moves (passive holding).}{14}{section*.3}%
-\contentsline {paragraph}{Rebalancing trades (active adjustments).}{14}{section*.4}%
-\contentsline {subsection}{\numberline {3.4}Agents}{14}{subsection.3.4}%
-\contentsline {subsubsection}{\numberline {3.4.1}Arbitrageurs}{14}{subsubsection.3.4.1}%
+\contentsline {paragraph}{Rebalancing trades (active adjustments).}{15}{section*.4}%
+\contentsline {subsection}{\numberline {3.4}Agents}{15}{subsection.3.4}%
+\contentsline {subsubsection}{\numberline {3.4.1}Arbitrageurs}{15}{subsubsection.3.4.1}%
 \contentsline {paragraph}{DEX overpriced: token 0 in.}{15}{section*.5}%
-\contentsline {paragraph}{DEX underpriced: token 1 in.}{15}{section*.6}%
+\contentsline {paragraph}{DEX underpriced: token 1 in.}{16}{section*.6}%
 \contentsline {paragraph}{No-arbitrage band and execution rule}{16}{section*.7}%
 \contentsline {paragraph}{Execution and Impact}{16}{section*.8}%
-\contentsline {subsubsection}{\numberline {3.4.2}Liquidity Providers}{16}{subsubsection.3.4.2}%
-\contentsline {paragraph}{LP state}{16}{section*.9}%
+\contentsline {subsubsection}{\numberline {3.4.2}Liquidity Providers}{17}{subsubsection.3.4.2}%
+\contentsline {paragraph}{LP state}{17}{section*.9}%
 \contentsline {paragraph}{Minting a position}{17}{section*.10}%
 \contentsline {paragraph}{Burning a position}{18}{section*.11}%
 \contentsline {paragraph}{Passive LPs}{18}{section*.12}%
-\contentsline {paragraph}{Active LPs}{18}{section*.13}%
-\contentsline {paragraph}{Review clocks and cooldowns}{18}{section*.14}%
+\contentsline {paragraph}{Active LPs}{19}{section*.13}%
+\contentsline {paragraph}{Review clocks and cooldowns}{19}{section*.14}%
 \contentsline {paragraph}{JIT LP (Jiter)}{19}{section*.15}%
-\contentsline {paragraph}{PnL Decomposition}{19}{section*.16}%
-\contentsline {subsubsection}{\numberline {3.4.3}Smart router}{19}{subsubsection.3.4.3}%
-\contentsline {subsubsection}{\numberline {3.4.4}Noise Trader}{20}{subsubsection.3.4.4}%
+\contentsline {paragraph}{PnL Decomposition}{20}{section*.16}%
+\contentsline {subsubsection}{\numberline {3.4.3}Smart router}{20}{subsubsection.3.4.3}%
+\contentsline {subsubsection}{\numberline {3.4.4}Noise Trader}{21}{subsubsection.3.4.4}%
 \contentsline {paragraph}{Micro-step event probabilities.}{21}{section*.17}%
-\contentsline {subsection}{\numberline {3.5}Dynamic Fee Schedules}{21}{subsection.3.5}%
-\contentsline {paragraph}{EWMA smoothing}{21}{section*.18}%
-\contentsline {paragraph}{Static fee}{21}{section*.19}%
+\contentsline {subsection}{\numberline {3.5}Dynamic Fee Schedules}{22}{subsection.3.5}%
+\contentsline {paragraph}{EWMA smoothing}{22}{section*.18}%
+\contentsline {paragraph}{Static fee}{22}{section*.19}%
 \contentsline {paragraph}{Volatility based fee}{22}{section*.20}%
-\contentsline {paragraph}{Toxicity based fee}{22}{section*.21}%
-\contentsline {paragraph}{Shared fee update controller}{22}{section*.22}%
-\contentsline {subsection}{\numberline {3.6}Initialization}{23}{subsection.3.6}%
-\contentsline {section}{\numberline {4}Results}{23}{section.4}%
-\contentsline {subsection}{\numberline {4.1}Microstructure diagnostics}{24}{subsection.4.1}%
-\contentsline {subsection}{\numberline {4.2}Cross-scenario outcome summary}{24}{subsection.4.2}%
-\contentsline {paragraph}{Hedged PnL across models and fee modes.}{25}{section*.27}%
-\contentsline {paragraph}{Competitiveness: DEX share.}{26}{section*.29}%
-\contentsline {paragraph}{Fee levels and fee incidence across cohorts.}{26}{section*.31}%
-\contentsline {subsection}{\numberline {4.3}LVR vs fees vs block size}{26}{subsection.4.3}%
+\contentsline {paragraph}{Toxicity based fee}{23}{section*.21}%
+\contentsline {paragraph}{Shared fee update controller}{23}{section*.22}%
+\contentsline {subsection}{\numberline {3.6}Initialization}{24}{subsection.3.6}%
+\contentsline {section}{\numberline {4}Results}{24}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Microstructure diagnostics}{25}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Cross-scenario outcome summary}{25}{subsection.4.2}%
+\contentsline {paragraph}{Hedged PnL across models and fee modes.}{25}{section*.26}%
+\contentsline {paragraph}{Competitiveness: DEX share.}{26}{section*.28}%
+\contentsline {paragraph}{Fee levels and fee incidence across cohorts.}{26}{section*.29}%
+\contentsline {subsection}{\numberline {4.3}LVR vs fees vs block size}{27}{subsection.4.3}%
 \contentsline {section}{\numberline {5}Conclusions}{28}{section.5}%

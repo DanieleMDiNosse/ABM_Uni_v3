@@ -1,0 +1,13 @@
+model,fee_mode,passive_fees_mean,passive_fees_se,active_fees_mean,active_fees_se,total_fees_mean,total_fees_se,mean_fee_bps,mean_fee_bps_se
+Model0,static,54.7,0.2,,,54.7,0.2,1.00,
+Model0,toxicity,532.0,4.1,,,532.0,4.1,14.48,0.08
+Model0,volatility_dex,325.1,12.0,,,325.1,12.0,7.25,0.16
+Model0,volatility_cex,247.5,0.6,,,247.5,0.6,5.33,0.02
+Model1,static,19.5,0.0,209.0,2.9,228.5,2.9,1.00,
+Model1,toxicity,176.0,8.1,1348.1,84.1,1524.1,92.2,11.72,0.15
+Model1,volatility_dex,97.5,0.7,570.8,9.7,668.3,10.5,5.22,0.14
+Model1,volatility_cex,94.2,5.2,950.9,11.0,1045.1,16.2,5.36,0.01
+Model2,static,20.6,1.8,196.8,1.1,217.5,0.7,1.00,
+Model2,toxicity,103.0,4.7,1200.8,4.5,1303.8,9.2,11.01,0.07
+Model2,volatility_dex,66.5,4.1,495.6,1.9,562.2,2.2,4.40,0.12
+Model2,volatility_cex,82.4,0.3,854.2,11.7,936.7,12.0,5.31,0.02

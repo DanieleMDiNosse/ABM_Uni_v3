@@ -6,45 +6,45 @@ Database file #1: bibliography.bib
 Warning--I didn't find a database entry for "aqsha2025"
 Warning--I didn't find a database entry for "bayraktar2024"
 Warning--empty booktitle in Adams2020UniswapVC
-You've used 20 entries,
+You've used 22 entries,
             2118 wiz_defined-function locations,
-            587 strings with 6955 characters,
-and the built_in function-call counts, 5471 in all, are:
-= -- 498
-> -- 324
+            604 strings with 7503 characters,
+and the built_in function-call counts, 6300 in all, are:
+= -- 575
+> -- 380
 < -- 0
-+ -- 129
-- -- 108
-* -- 302
-:= -- 975
-add.period$ -- 65
-call.type$ -- 20
-change.case$ -- 114
++ -- 152
+- -- 128
+* -- 377
+:= -- 1119
+add.period$ -- 71
+call.type$ -- 22
+change.case$ -- 130
 chr.to.int$ -- 0
-cite$ -- 21
-duplicate$ -- 185
-empty$ -- 426
-format.name$ -- 108
-if$ -- 1121
+cite$ -- 23
+duplicate$ -- 207
+empty$ -- 478
+format.name$ -- 128
+if$ -- 1282
 int.to.chr$ -- 0
-int.to.str$ -- 20
-missing$ -- 11
-newline$ -- 108
-num.names$ -- 40
-pop$ -- 163
+int.to.str$ -- 22
+missing$ -- 13
+newline$ -- 118
+num.names$ -- 44
+pop$ -- 175
 preamble$ -- 1
-purify$ -- 94
+purify$ -- 108
 quote$ -- 0
-skip$ -- 138
+skip$ -- 152
 stack$ -- 0
-substring$ -- 122
-swap$ -- 22
+substring$ -- 176
+swap$ -- 24
 text.length$ -- 0
 text.prefix$ -- 0
 top$ -- 0
-type$ -- 80
+type$ -- 88
 warning$ -- 1
-while$ -- 41
-width$ -- 22
-write$ -- 212
+while$ -- 48
+width$ -- 24
+write$ -- 234
 (There were 3 warnings)
