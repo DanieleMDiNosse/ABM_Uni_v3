@@ -1,0 +1,245 @@
+# Paper figure style configuration for scripts.analysis.regenerate_paper_figures.
+# Data inputs remain cache-first and are discovered from the script's --source-root
+# argument, whose default includes /mnt/external/scenarios.
+#
+# Schema:
+#   paper_figure_style: global defaults shared by all generators.
+#   figures.<figure_key>: per-figure overrides for size, fonts, legends, colors,
+#     grids, and line/bar/heatmap settings.
+
+paper_figure_style:
+  template: plotly_white
+  width: 1500
+  height: 680
+  scale: 1
+  font:
+    family: "Arial, sans-serif"
+    base_size: 28
+    axis_title_size: 30
+    tick_size: 25
+    legend_size: 25
+    subplot_title_size: 30
+  line:
+    width: 4.5
+    marker_size: 10
+  margins:
+    l: 115
+    r: 40
+    t: 125
+    b: 110
+  legend:
+    show: true
+    orientation: h
+    yanchor: bottom
+    y: 1.08
+    xanchor: center
+    x: 0.5
+  panel:
+    horizontal_spacing: 0.08
+  grid:
+    show: true
+    color: "#e1e1e1"
+    width: 1.0
+  fee_schedules:
+    static:
+      label: Static
+      color: "#000000"
+      dash: solid
+    toxicity:
+      label: Toxicity
+      color: "#D55E00"
+      dash: dash
+    volatility_cex:
+      label: "Volatility (CEX)"
+      color: "#0072B2"
+      dash: dot
+    volatility_dex:
+      label: "Volatility (DEX)"
+      color: "#009E73"
+      dash: dashdot
+
+figures:
+  representative_static_price:
+    width: 1400
+    height: 900
+    scale: 1
+    title: "CEX vs DEX Price"
+    skip_blocks: 3000
+    font:
+      base_size: 18
+      axis_title_size: 20
+      tick_size: 16
+      legend_size: 16
+      subplot_title_size: 18
+    margins:
+      l: 90
+      r: 40
+      t: 90
+      b: 80
+    legend:
+      show: true
+      orientation: h
+      yanchor: bottom
+      y: 1.02
+      xanchor: left
+      x: 0.0
+    panel:
+      column_widths: [0.72, 0.28]
+      horizontal_spacing: 0.08
+      vertical_spacing: 0.12
+      subplot_titles: ["", "CEX log-returns", "DEX log-returns", ""]
+    colors:
+      no_arb_band_fill: "rgba(180,180,180,0.35)"
+      dex_price: "#00b894"
+      cex_price: "#8b5cf6"
+      cex_returns: "#1f77b4"
+      dex_returns: "#ff7f0e"
+    line:
+      dex_width: 2.0
+      cex_width: 1.6
+      cex_dash: dash
+    histogram:
+      bins: 60
+      opacity: 0.85
+
+  microstructure_price_static_vs_toxicity:
+    figsize: [12.8, 4.4]
+    dpi: 300
+    font:
+      title_size: 13
+      axis_title_size: 11
+      tick_size: 10
+      legend_size: 9
+    legend:
+      show: true
+      loc: upper left
+      frameon: true
+    colors:
+      no_arb_band: "#d9d9d9"
+      no_arb_band_alpha: 0.85
+      cex_price: "#8b5cf6"
+      dex_price: "#00b894"
+    line:
+      cex_width: 1.7
+      cex_style: "--"
+      dex_width: 1.9
+    grid:
+      show: true
+      color: "#bbbbbb"
+      alpha: 0.35
+      width: 0.8
+
+  microstructure_acf_static_vs_toxicity:
+    figsize: [11.2, 4.0]
+    dpi: 300
+    y_padding: 0.04
+    bar_width: 0.78
+    font:
+      title_size: 13
+      axis_title_size: 11
+      tick_size: 10
+      legend_size: 9
+    legend:
+      show: true
+      loc: lower right
+      frameon: true
+    colors:
+      acf_bar: "#636EFA"
+      zero_line: "#555555"
+    line:
+      reference_width: 1.0
+      reference_style: "--"
+    no_correlation_band:
+      show: true
+      confidence_level: 0.95
+      color: "#999999"
+      alpha: 0.16
+      edge_color: "#777777"
+      edge_style: ":"
+      edge_width: 1.0
+    grid:
+      show: true
+      color: "#bbbbbb"
+      alpha: 0.35
+      width: 0.8
+
+  pnl_heatmap:
+    width: 1400
+    height: 900
+    scale: 1
+    font:
+      family: "Arial, sans-serif"
+      base_size: 22
+      axis_title_size: 24
+      tick_size: 20
+      legend_size: 20
+      subplot_title_size: 24
+    margins:
+      l: 100
+      r: 70
+      t: 95
+      b: 90
+    legend:
+      show: false
+    colors:
+      colorscale: RdBu
+    heatmap:
+      zmid: 0
+      annotation_font_size: 18
+      colorbar_title: "Mean hedged PnL"
+
+  model2_blocksize_ratio_combined:
+    width: 1500
+    height: 680
+    scale: 1
+    font:
+      base_size: 28
+      axis_title_size: 30
+      tick_size: 25
+      legend_size: 25
+      subplot_title_size: 30
+    margins:
+      l: 115
+      r: 40
+      t: 125
+      b: 110
+    legend:
+      show: true
+      orientation: h
+      yanchor: bottom
+      y: 1.08
+      xanchor: center
+      x: 0.5
+    panel:
+      horizontal_spacing: 0.08
+    line:
+      width: 4.5
+      marker_size: 10
+
+  model2_delta_lvr_blocksize_combined:
+    width: 1500
+    height: 680
+    scale: 1
+    font:
+      base_size: 28
+      axis_title_size: 30
+      tick_size: 25
+      legend_size: 25
+      subplot_title_size: 30
+    margins:
+      l: 115
+      r: 40
+      t: 125
+      b: 110
+    legend:
+      show: true
+      orientation: h
+      yanchor: bottom
+      y: 1.08
+      xanchor: center
+      x: 0.5
+    panel:
+      horizontal_spacing: 0.08
+    line:
+      width: 4.5
+      marker_size: 10

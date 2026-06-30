@@ -11,7 +11,7 @@ Tests cover:
 - Simulation output consistency
 
 Run with:
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=. pytest tests/test_pnl_calculations.py -v
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_pnl_calculations.py -v
 """
 
 import copy
@@ -22,14 +22,14 @@ from typing import Any, Dict
 import numpy as np
 import pytest
 
-from utils import build_empty_pool, minted_amounts_at_S, ReferenceMarket
-from uniswapv3_pool import V3Pool
-from agents import (
+from core.utils import build_empty_pool, minted_amounts_at_S, ReferenceMarket
+from core.uniswapv3_pool import V3Pool
+from core.agents import (
     Position, LPAgent, RebalancerState,
     lp_token0_exposure, lp_wealth_y, lp_total_fee_earned_value_y,
     lp_total_position_value_y, lp_principal_value_y, lp_fee_value_y
 )
-from run import simulate, TraderStepAccumulator
+from scripts.run import simulate, TraderStepAccumulator
 
 
 # =============================================================================
@@ -230,7 +230,7 @@ class TestArbitragerPnL:
         not at the end-of-step CEX price after intra-block diffusion.
         """
         import random
-        import utils
+        import core.utils as utils
         import numpy as np
 
         # Make noise arrivals deterministic
@@ -658,8 +658,35 @@ class TestSimulationOutputConsistency:
         """
         T = 5
         out = simulate(**_base_simulate_kwargs(tmp_path, T=T))
-        
+
         assert len(out["fee_series"]) == T
+
+    def test_volatility_fee_updates_at_block_open(self, tmp_path):
+        """
+        Non-LVR dynamic fees should be applied before recording/executing the
+        current block, not staged for the following block.
+
+        With k_sigma=0 the volatility controller's target is below f_min. If the
+        controller runs at block open, the first recorded block fee is already
+        f_min; the old end-of-block/next-block semantics would record f0 here.
+        """
+        out = simulate(
+            **_base_simulate_kwargs(
+                tmp_path,
+                T=1,
+                cex_sigma=0.0,
+                fee_mode="volatility_cex",
+                f0=0.003,
+                f_min=0.0001,
+                f_max=0.01,
+                k_sigma=0.0,
+                fee_step_bps_min=0.0,
+                fee_step_bps_max=200.0,
+                fee_cooldown=0,
+            )
+        )
+
+        np.testing.assert_allclose(out["fee_series"][0], 0.0001, rtol=0.0, atol=1e-15)
 
     def test_price_series_lengths_match_steps(self, tmp_path):
         """
@@ -744,6 +771,14 @@ class TestSimulationValidation:
         """
         with pytest.raises(ValueError, match="Invalid fee_mode"):
             simulate(**_base_simulate_kwargs(tmp_path, T=1, fee_mode="nonsense"))
+
+    @pytest.mark.parametrize("sigma_mode", ["regime", "regime_switch", "noisy_sine"])
+    def test_simulate_rejects_removed_sigma_modes(self, tmp_path, sigma_mode):
+        """
+        simulate() should reject removed CEX sigma modes.
+        """
+        with pytest.raises(ValueError, match="Invalid cex_sigma_mode"):
+            simulate(**_base_simulate_kwargs(tmp_path, T=1, cex_sigma_mode=sigma_mode))
 
     @pytest.mark.parametrize(
         "kwargs",

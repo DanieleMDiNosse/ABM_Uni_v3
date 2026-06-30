@@ -159,14 +159,14 @@ $$
 V_t^{reb} = x_t^{reb} m_t + y_t^{reb}.
 $$
 
-### Mapping to the implementation (`run.py`)
+### Mapping to the implementation (`scripts/run.py`)
 
-The computation is handled by `RebalancerState` in `agents.py` and updated inside `run.py`.
+The computation is handled by `RebalancerState` in `core/agents.py` and updated inside `scripts/run.py`.
 
-The benchmark’s *price-move accrual* is implemented by `_accrue_price_move`:
+The benchmark’s *price-move accrual* is implemented by the `_accrue_price_move(...)` helper, which is called through `_broadcast_price_move(...)` whenever the CEX moves because of diffusion or impact:
 
 ```python
-# run.py: _accrue_price_move
+# scripts/run.py: _accrue_price_move
 delta = M_new - rb.last_M
 rb.cumulative_R += rb.x_prev * delta
 rb.last_M = M_new
@@ -175,7 +175,7 @@ rb.last_M = M_new
 The benchmark’s *rebalancing trade* is implemented by `_rebalance_lp_to_target`:
 
 ```python
-# run.py: _rebalance_lp_to_target
+# scripts/run.py: _rebalance_lp_to_target
 dx = x_target - rb.x_prev
 rb.cash_y -= dx * M_now
 rb.x_prev = x_target
@@ -225,10 +225,10 @@ The main per-block series are (each split into `total` / `active` / `passive` co
 - `lp_fee_value_*_series`: $F_t$ (cumulative fees, valued at $m_t$).
 - `lp_rebal_value_*_series`: $V_t^{reb}$ (benchmark value).
 - `lp_rebal_*_series`: $R_t = V_t^{reb} - V_0^{reb}$ (benchmark PnL path).
-- `lp_pnl_*`: hedged PnL $V_t^{LP} - V_t^{reb} = F_t - \mathrm{LVR}_t$.
+- `lp_pnl_total`, `lp_pnl_active`, `lp_pnl_passive`: hedged PnL $V_t^{LP} - V_t^{reb} = F_t - \mathrm{LVR}_t$.
 - `lp_lvr_*_series`: LVR, computed as `lp_fee_value_*_series - lp_pnl_*`.
-- `lp_unhedged_*`: unhedged PnL $V_t^{LP} - V_0^{LP}$.
+- `lp_unhedged_total`, `lp_unhedged_active`, `lp_unhedged_passive`: unhedged PnL $V_t^{LP} - V_0^{LP}$.
 
 These are the quantities typically plotted in the dashboards and consumed by batch runners such as
-`run_multiple.py`, `run_parameter_surface_nd_pnl_fee_dashboard.py`, and
-`build_parameter_surface_nd_pnl_fee_dashboard.py`.
+`scripts/run_multiple.py`, `scripts/run_parameter_surface_nd_pnl_fee_dashboard.py`, and
+`scripts/build_parameter_surface_nd_pnl_fee_dashboard.py`.

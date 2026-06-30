@@ -18,19 +18,25 @@ two years. The key assumptions are:
 The script accepts CSV, Parquet, or pickle inputs and auto-detects whether
 the timestamp column is in seconds or milliseconds.
 
+Current script behavior worth knowing before you run it:
+
+- Parquet input/output requires a pandas parquet engine such as `pyarrow` or `fastparquet`. Those engines are not pinned by this repo’s default environment files, so CSV or pickle are the safer zero-setup formats.
+- `--save-csv` and `--save-parquet` never overwrite an existing file; if the target already exists, the script writes a suffixed path such as `name_1.csv`.
+- The script calibrates per-second volatility levels only. It does **not** estimate Heston parameters like `cex_heston_kappa`, `cex_heston_theta`, `cex_heston_sigma_v`, or `cex_heston_rho`.
+
 The goal is to derive **low** and **high** values of `cex_sigma` that are
 empirically grounded in the historical ETH/USDC volatility.
 
 ---
 
-## Reference Implementation (`sigma_calibration.py`)
+## Reference Implementation (`scripts/sigma_calibration.py`)
 
-The full workflow below is implemented in `sigma_calibration.py`. Run it on
+The full workflow below is implemented in `scripts/sigma_calibration.py`. Run it on
 your raw Binance CSV to produce the 1-second volatility series, percentile
 table, and low/high regime medians:
 
 ```bash
-python sigma_calibration.py /path/to/ETHUSDC_1s.csv \
+python -m scripts.sigma_calibration /path/to/ETHUSDC_1s.csv \
     --window-seconds 600 \
     --low-quantile 0.20 \
     --high-quantile 0.80 \
@@ -48,7 +54,8 @@ Key options:
 - `--low-quantile` / `--high-quantile`: define the regime thresholds used
   to extract representative `cex_sigma` values.
 - `--save-csv` / `--save-parquet`: optionally persist the time series with
-  columns `close`, `log_return_1s`, `sigma_1s`, and `sigma_annualized`.
+  columns `close`, `log_return_1s`, `sigma_1s`, and `sigma_annualized`. Existing
+  targets are preserved by auto-suffixing the requested path.
 - `--percentiles`: which percentiles of the per-second sigma distribution
   to print (defaults to `0.1 0.25 0.5 0.75 0.9 0.99`).
 
@@ -60,7 +67,7 @@ realized volatility, quantile extraction).
 
 ## 1. How `cex_sigma` Enters the Model
 
-In `utils.py`, the reference CEX is modeled as:
+In `core/utils.py`, the reference CEX is modeled as:
 
 ```python
 class ReferenceMarket:
@@ -75,13 +82,13 @@ class ReferenceMarket:
 ```
 
 If we denote the price at (discrete) time step 
-$$
+$
 t
-$$
+$
  by 
-$$
+$
 m_t
-$$
+$
 , then
 
 $$
@@ -92,14 +99,14 @@ $$
 where:
 
 - 
-  $$
+  $
   \mu
-  $$
+  $
    is the **drift per step** (here, per second),
 - 
-  $$
+  $
   \sigma
-  $$
+  $
    is the **volatility per step** of log‑returns (here, per second).
 
 Since one micro‑step is **1 second**, we interpret `cex_sigma` as:
@@ -123,13 +130,13 @@ Assume the raw CSV contains at least:
 ### 2.1. Time Index and Sorting
 
 Let 
-$$
+$
 P_t
-$$
+$
  be the close price at second 
-$$
+$
 t
-$$
+$
 . In pandas:
 
 ```python
@@ -154,19 +161,19 @@ df['Close'] = df['Close'].astype(float)
 ```
 
 This gives a time‑indexed series 
-$$
+$
 P_t = \text{Close}_t
-$$
+$
  at (approximately)
 1‑second intervals. Minor gaps (missing seconds) are acceptable; log‑returns
 are only computed where both 
-$$
+$
 P_{t-1}
-$$
+$
  and 
-$$
+$
 P_t
-$$
+$
  exist.
 
 ### 2.2. Log‑Returns at 1‑Second Frequency
@@ -187,9 +194,9 @@ log_ret_1s = log_ret_1s.replace([np.inf, -np.inf], np.nan)
 ```
 
 The sequence 
-$$
+$
 \{ r_t \}
-$$
+$
  is the empirical counterpart of the GBM
 log‑returns driven by `mu` and `sigma` in the simulator.
 
@@ -208,27 +215,27 @@ approach is to use a **rolling window** of recent log‑returns.
 ### 3.1. Rolling Realized Variance
 
 Fix a window length 
-$$
+$
 N
-$$
+$
  in seconds (e.g. 
-$$
+$
 N = 300
-$$
+$
  for 5 minutes,
 or 
-$$
+$
 N = 900
-$$
+$
  for 15 minutes). For each time 
-$$
+$
 t \ge N
-$$
+$
 , define the
 rolling empirical variance over the last 
-$$
+$
 N
-$$
+$
  returns:
 
 $$
@@ -253,9 +260,9 @@ $$
 
 Under the GBM model with small drift, this rolling standard deviation is
 an estimator of the **per‑second volatility** 
-$$
+$
 \sigma_{\text{1s}}
-$$
+$
 .
 
 In pandas, using a time‑based rolling window:
@@ -270,17 +277,7 @@ sigma_1s = (
 )
 ```
 
-This produces a **time series** 
-$$
-\{ \hat{\sigma}_{t,\text{1s}} \}
-$$
-,
-each value being an estimate of the per‑second volatility at time 
-$$
-t
-$$
-,
-based on the recent window of returns.
+This produces a **time series** $\{ \hat{\sigma}_{t,\text{1s}} \}$,each value being an estimate of the per‑second volatility at time $t$,based on the recent window of returns.
 
 ### 3.2. Link to Annualized Volatility (Optional)
 
@@ -288,14 +285,14 @@ Sometimes it is convenient to express volatility in **annualized** units.
 If:
 
 - 
-  $$
+  $
   \hat{\sigma}_{t,\text{1s}}
-  $$
+  $
    is the per‑second volatility estimate,
 - there are 
-  $$
+  $
   S_{\text{year}} = 365 \cdot 24 \cdot 60 \cdot 60
-  $$
+  $
    seconds
   per year,
 
@@ -315,9 +312,9 @@ sigma_annualized = sigma_1s * np.sqrt(seconds_per_year)
 
 **Important:** in the simulator, `cex_sigma` is *per micro‑step* (per
 second), so you should feed the **per‑second** value 
-$$
+$
 \hat{\sigma}_{t,\text{1s}}
-$$
+$
 
 directly, not the annualized one.
 
@@ -326,14 +323,14 @@ directly, not the annualized one.
 ## 4. Using the 2‑Year Dataset to Define “Low” and “High” Volatility
 
 Given the 2‑year series of 1‑second returns 
-$$
+$
 \{ r_t \}
-$$
+$
 , and the derived
 rolling volatility 
-$$
+$
 \{ \hat{\sigma}_{t,\text{1s}} \}
-$$
+$
 , we can use
 **quantiles** of this volatility series to define empirical volatility
 regimes.
@@ -368,14 +365,12 @@ print(q)
 ```
 
 Conceptually, if we denote the random per‑second volatility by
-
-$$
+$
 \Sigma_{\text{1s}}
-$$
-, the empirical quantile function 
-$$
+$, the empirical quantile function 
+$
 Q(p)
-$$
+$
 
 such that
 
@@ -397,26 +392,17 @@ over the 2‑year historical period.
 A simple and robust regime definition is:
 
 - **Low volatility regime:**  
-  per‑second volatility below a lower quantile 
-  $$
-  Q(p_{\text{low}})
-  $$
-  ,
-  e.g. 
-  $$
-  p_{\text{low}} = 0.2
-  $$
-   (20th percentile).
+  per‑second volatility below a lower quantile $Q(p_{\text{low}})$, e.g. $p_{\text{low}} = 0.2$ (20th percentile).
 - **High volatility regime:**  
   per‑second volatility above an upper quantile 
-  $$
+  $
   Q(p_{\text{high}})
-  $$
+  $
   ,
   e.g. 
-  $$
+  $
   p_{\text{high}} = 0.8
-  $$
+  $
    (80th percentile).
 
 Formally:
@@ -480,32 +466,27 @@ full 2‑year ETH/USDC dataset.
 
 Once you have `sigma_1s_low` and `sigma_1s_high`:
 
-- **Static sigma:** use `sigma_1s_low` or `sigma_1s_high` as `cex_sigma` in the corresponding scenario.
-- **Regime-switching sigma:** set `cex_sigma_mode: regime` and plug the calibrated values into `cex_sigma_low`/`cex_sigma_high` (e.g. low-vol template starts in regime `L` with `p_LL`/`p_HH` defining persistence).
-- **Noisy-sine sigma:** set `cex_sigma_mode: noisy_sine` to oscillate around `cex_sigma` (or the midpoint of `cex_sigma_low`/`cex_sigma_high` if supplied) with optional controls for amplitude (`cex_sigma_sine_amp`), period (`cex_sigma_sine_period`), noise (`cex_sigma_sine_noise`), and floor (`cex_sigma_floor`).
+- **Static sigma:** use `sigma_1s_low` or `sigma_1s_high` directly as `cex_sigma`.
+- **Heston sigma:** use `cex_sigma_mode: heston`, keep `cex_sigma` as the fallback `sqrt(v0)`, and map calibrated levels to variance targets (for example `theta_low = sigma_1s_low^2`, `theta_high = sigma_1s_high^2`).
 
-For example (static vs. regime):
+The remaining Heston parameters still need to be chosen separately in the scenario YAML; this script does not fit them.
+
+For example (static vs. Heston):
 
 ```yaml
 # scenarios/low_volatility.yml
 simulate:
   cex_sigma_mode: static
   cex_sigma: <sigma_1s_low from calibration>   # per-second volatility
-  cex_sigma_low: <sigma_1s_low>                # used if cex_sigma_mode: regime
-  cex_sigma_high: <sigma_1s_high>              # used if cex_sigma_mode: regime
-  cex_sigma_p_LL: 0.98
-  cex_sigma_p_HH: 0.95
-  cex_sigma_regime_init: L
 
 # scenarios/high_volatility.yml
 simulate:
-  cex_sigma_mode: regime
+  cex_sigma_mode: heston
   cex_sigma: <sigma_1s_high from calibration>  # still required; use high as baseline
-  cex_sigma_low: <sigma_1s_low>
-  cex_sigma_high: <sigma_1s_high>
-  cex_sigma_p_LL: 0.98
-  cex_sigma_p_HH: 0.95
-  cex_sigma_regime_init: H
+  cex_heston_theta: <sigma_1s_high^2>
+  cex_heston_kappa: <choose mean-reversion speed>
+  cex_heston_sigma_v: <choose vol-of-vol>
+  cex_heston_rho: -0.5
 ```
 
 Because one micro step equals one second in the simulation, **no further

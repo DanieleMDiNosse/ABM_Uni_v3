@@ -1,0 +1,37 @@
+scenario,cohort,mean_hedged_pnl,annotation,source_html
+Model0 — static,Passive LP,-108.81557175508533,-108.8<br>±10.5,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — toxicity,Passive LP,361.9151526114306,+361.9<br>±30.2,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — volatility_dex,Passive LP,158.778140551898,+158.8<br>±7.1,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — volatility_cex,Passive LP,87.26700215209235,+87.3<br>±0.2,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — static,Passive LP,-63.72346971679201,-63.7<br>±3.2,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — toxicity,Passive LP,77.106367089424,+77.1<br>±5.5,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — volatility_dex,Passive LP,1.8842033667993974,+1.9<br>±1.5,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — volatility_cex,Passive LP,0.800064077632328,+0.8<br>±1.3,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — static,Passive LP,-71.61529542346864,-71.6<br>±6.9,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — toxicity,Passive LP,18.326985693842516,+18.3<br>±2.8,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — volatility_dex,Passive LP,-28.54187294474582,-28.5<br>±1.1,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — volatility_cex,Passive LP,-10.156205947876288,-10.2<br>±3.1,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — static,Active LP,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — toxicity,Active LP,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — volatility_dex,Active LP,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — volatility_cex,Active LP,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — static,Active LP,-928.8426133275955,-928.8<br>±12.2,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — toxicity,Active LP,108.2938555269559,+108.3<br>±0.0,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — volatility_dex,Active LP,-602.4825020782984,-602.5<br>±54.3,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — volatility_cex,Active LP,-304.3137792078626,-304.3<br>±23.3,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — static,Active LP,-954.7396098257054,-954.7<br>±39.3,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — toxicity,Active LP,-13.638690789474822,-13.6<br>±8.0,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — volatility_dex,Active LP,-598.2555455180195,-598.3<br>±1.1,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — volatility_cex,Active LP,-307.7676567409848,-307.8<br>±35.4,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — static,JIT,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — toxicity,JIT,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — volatility_dex,JIT,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model0 — volatility_cex,JIT,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — static,JIT,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — toxicity,JIT,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — volatility_dex,JIT,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model1 — volatility_cex,JIT,,,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — static,JIT,0.0,+0.0<br>±0.0,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — toxicity,JIT,94.0835676081347,+94.1<br>±13.7,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — volatility_dex,JIT,35.29075919601877,+35.3<br>±2.0,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html
+Model2 — volatility_cex,JIT,43.977767541672236,+44.0<br>±3.8,/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/images/analysis/html/pnl_heatmap.html

@@ -1,14 +1,14 @@
 """Simulation arrival-process tests.
 
 Run with:
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=. pytest tests/test_pool_and_simulation.py
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_pool_and_simulation.py
 """
 
 from typing import Any, Dict
 
 import pytest
 
-from run import simulate
+from scripts.run import simulate
 
 
 def _base_simulate_kwargs(tmp_path, **overrides: Any) -> Dict[str, Any]:
@@ -135,3 +135,103 @@ def test_poisson_narrow_lp_mints_can_exceed_lp_count(tmp_path, monkeypatch):
     ))
 
     assert len(out["mint_steps"]) == 7
+
+
+def test_trade_arrival_lambda_legacy_per_block_is_divided_by_block_time(tmp_path, monkeypatch):
+    """Legacy: *_trades_per_block is expected per block, so lambda_micro = lambda_block / block_time."""
+    import numpy as np
+
+    lams = []
+
+    def recording_poisson(lam):
+        lams.append(float(lam))
+        return 0
+
+    monkeypatch.setattr(np.random, "poisson", recording_poisson)
+
+    block_time = 5
+    lam_block = 10.0
+    _ = simulate(**_base_simulate_kwargs(
+        tmp_path,
+        T=1,
+        seed=123,
+        block_time=block_time,
+        smart_trades_per_block=lam_block,
+        noise_trades_per_block=0.0,
+        narrow_mints_per_block=0.0,
+        passive_mints_per_block=0.0,
+        passive_burns_per_block=0.0,
+    ))
+
+    assert len(lams) == block_time
+    assert all(abs(v - (lam_block / block_time)) < 1e-12 for v in lams)
+
+
+def test_trade_arrival_lambda_per_second_override(tmp_path, monkeypatch):
+    """Per-second override: *_trades_per_second is the per-micro-step (1s) Poisson intensity."""
+    import numpy as np
+
+    lams = []
+
+    def recording_poisson(lam):
+        lams.append(float(lam))
+        return 0
+
+    monkeypatch.setattr(np.random, "poisson", recording_poisson)
+
+    block_time = 5
+    lam_second = 0.7
+    _ = simulate(**_base_simulate_kwargs(
+        tmp_path,
+        T=1,
+        seed=123,
+        block_time=block_time,
+        smart_trades_per_block=123.0,  # should be ignored when *_per_second is set
+        smart_trades_per_second=lam_second,
+        noise_trades_per_block=0.0,
+        narrow_mints_per_block=0.0,
+        passive_mints_per_block=0.0,
+        passive_burns_per_block=0.0,
+    ))
+
+    assert len(lams) == block_time
+    assert all(abs(v - lam_second) < 1e-12 for v in lams)
+
+
+def test_narrow_mints_per_second_scales_targets_per_block(tmp_path, monkeypatch):
+    """LP Poisson targets: if *_per_second is set, lambda_block = block_time * lambda_second."""
+    import numpy as np
+
+    lams = []
+
+    def recording_poisson(lam):
+        lams.append(float(lam))
+        return 0
+
+    monkeypatch.setattr(np.random, "poisson", recording_poisson)
+
+    block_time = 5
+    lam_second = 0.25
+    _ = simulate(**_base_simulate_kwargs(
+        tmp_path,
+        T=1,
+        seed=123,
+        block_time=block_time,
+        # Disable traders so only the LP target Poisson draw is exercised.
+        smart_trades_per_block=0.0,
+        noise_trades_per_block=0.0,
+        # Ensure a narrow LP is due so the scheduler draws the Poisson target.
+        N_LP=1,
+        passive_lp_share=0.0,
+        tau=1,
+        narrow_mints_per_block=999.0,  # should be ignored when *_per_second is set
+        narrow_mints_per_second=lam_second,
+        passive_mints_per_block=0.0,
+        passive_burns_per_block=0.0,
+        mint_mu=-20.0,
+        mint_sigma=0.0,
+    ))
+
+    # Exactly one Poisson draw for the narrow mint target (per block).
+    assert len(lams) == 1
+    assert abs(lams[0] - (lam_second * block_time)) < 1e-12
