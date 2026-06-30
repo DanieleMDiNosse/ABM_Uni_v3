@@ -392,6 +392,14 @@ def main() -> None:
     plot_price_zoom(runs, zoom_start=args.zoom_start, zoom_end=args.zoom_end, output_stem=price_stem)
     plot_acf_comparison(runs, max_lag=args.max_lag, output_stem=acf_stem)
 
+    def _manifest_path(path: Path) -> str:
+        """Use repo-relative paths when possible, absolute paths for temp smoke outputs."""
+        resolved = Path(path).resolve()
+        try:
+            return str(resolved.relative_to(_REPO_ROOT))
+        except ValueError:
+            return str(resolved)
+
     _write_csv(
         args.table_dir / "microstructure_fee_diagnostics_values.csv",
         _summary_rows(runs, max_lag=args.max_lag),
@@ -430,10 +438,10 @@ def main() -> None:
             "script": "scripts/analysis/microstructure_fee_diagnostics.py",
             "static_config": str(Path(args.static_config).resolve().relative_to(_REPO_ROOT)),
             "toxicity_config": str(Path(args.toxicity_config).resolve().relative_to(_REPO_ROOT)),
-            "price_figure_png": str(price_stem.with_suffix(".png").relative_to(_REPO_ROOT)),
-            "price_figure_pdf": str(price_stem.with_suffix(".pdf").relative_to(_REPO_ROOT)),
-            "acf_figure_png": str(acf_stem.with_suffix(".png").relative_to(_REPO_ROOT)),
-            "acf_figure_pdf": str(acf_stem.with_suffix(".pdf").relative_to(_REPO_ROOT)),
+            "price_figure_png": _manifest_path(price_stem.with_suffix(".png")),
+            "price_figure_pdf": _manifest_path(price_stem.with_suffix(".pdf")),
+            "acf_figure_png": _manifest_path(acf_stem.with_suffix(".png")),
+            "acf_figure_pdf": _manifest_path(acf_stem.with_suffix(".pdf")),
             "zoom_start": int(args.zoom_start),
             "zoom_end": int(args.zoom_end),
             "max_lag": int(args.max_lag),
