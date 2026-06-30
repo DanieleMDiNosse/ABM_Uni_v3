@@ -1,0 +1,95 @@
+{
+  "script": "scripts/analysis/regenerate_paper_figures.py",
+  "generated_at_utc": "2026-06-19T09:00:28.313661+00:00",
+  "dry_run": false,
+  "style_config": "paper/figure_style.yml",
+  "coverage": {
+    "active_count": 6,
+    "active_figures": [
+      "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png",
+      "images/analysis/png/pnl_heatmap.png",
+      "images/microstructure_acf_static_vs_toxicity.pdf",
+      "images/microstructure_price_static_vs_toxicity.pdf",
+      "images/model2_blocksize_ratio_combined.pdf",
+      "images/model2_delta_lvr_blocksize_combined.pdf"
+    ],
+    "missing_expected": [],
+    "extra_active": [],
+    "resolved_under_image_dir": {
+      "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png": true,
+      "images/analysis/png/pnl_heatmap.png": true,
+      "images/microstructure_acf_static_vs_toxicity.pdf": true,
+      "images/microstructure_price_static_vs_toxicity.pdf": true,
+      "images/model2_blocksize_ratio_combined.pdf": true,
+      "images/model2_delta_lvr_blocksize_combined.pdf": true
+    }
+  },
+  "plans": [
+    {
+      "figure": "representative_static_price",
+      "outputs": [
+        "paper/images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png",
+        "paper/images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.html",
+        "paper/tables/representative_static_price_values.csv"
+      ],
+      "sources": [
+        "abm_results/scenarios/section4_microstructure_diagnostics/runs/static_seed10_T13000/output_data"
+      ],
+      "note": "Rebuilt from cached static diagnostic arrays; CEX reconstructed as DEX minus signed spread."
+    },
+    {
+      "figure": "microstructure_static_vs_toxicity",
+      "outputs": [
+        "paper/images/microstructure_price_static_vs_toxicity.png",
+        "paper/images/microstructure_price_static_vs_toxicity.pdf",
+        "paper/images/microstructure_acf_static_vs_toxicity.png",
+        "paper/images/microstructure_acf_static_vs_toxicity.pdf"
+      ],
+      "sources": [
+        "paper/tables/microstructure_price_zoom_values.csv",
+        "paper/tables/microstructure_acf_values.csv"
+      ],
+      "note": "Rebuilt from microstructure CSV tables; no simulator rerun used."
+    },
+    {
+      "figure": "pnl_heatmap",
+      "outputs": [
+        "paper/images/analysis/png/pnl_heatmap.png",
+        "paper/images/analysis/html/pnl_heatmap.html",
+        "paper/tables/pnl_heatmap_values.csv"
+      ],
+      "sources": [
+        "paper/images/analysis/html/pnl_heatmap.html"
+      ],
+      "note": "Rebuilt from existing Plotly HTML sidecar and exported companion CSV."
+    },
+    {
+      "figure": "model2_blocksize_ratio_combined",
+      "outputs": [
+        "paper/images/model2_blocksize_ratio_combined.png",
+        "paper/images/model2_blocksize_ratio_combined.pdf",
+        "paper/images/model2_blocksize_ratio_combined.html",
+        "paper/tables/model2_blocksize_ratio_values.csv",
+        "paper/tables/model2_blocksize_ratio_combined_manifest.json"
+      ],
+      "sources": [
+        "paper/tables/model2_blocksize_ratio_values.csv"
+      ],
+      "note": "Rebuilt from existing companion CSV because external summary reads failed."
+    },
+    {
+      "figure": "model2_delta_lvr_blocksize_combined",
+      "outputs": [
+        "paper/images/model2_delta_lvr_blocksize_combined.png",
+        "paper/images/model2_delta_lvr_blocksize_combined.pdf",
+        "paper/images/model2_delta_lvr_blocksize_combined.html",
+        "paper/tables/model2_delta_lvr_blocksize_values.csv",
+        "paper/tables/model2_delta_lvr_blocksize_combined_manifest.json"
+      ],
+      "sources": [
+        "paper/tables/model2_delta_lvr_blocksize_values.csv"
+      ],
+      "note": "Rebuilt from existing companion CSV because external summary reads failed."
+    }
+  ]
+}

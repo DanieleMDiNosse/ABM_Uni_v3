@@ -16,7 +16,7 @@ Models
 ------
 - Model 0 : passive_lp_share=1.0, p_jit=0  (passive LPs only)
 - Model 1 : passive_lp_share=0.5, p_jit=0  (passive + active LPs)
-- Model 2 : passive_lp_share=0.5, p_jit=1  (passive + active + JIT)
+- Model 2 : passive_lp_share=0.5, p_jit=1  (passive + active + JIT; each JIT attempt targets the single largest pending swap)
 """
 
 from __future__ import annotations

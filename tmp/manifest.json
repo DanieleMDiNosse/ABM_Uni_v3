@@ -1,0 +1,101 @@
+{
+  "script": "scripts/analysis/regenerate_paper_figures.py",
+  "generated_at_utc": "2026-06-18T08:50:46.910710+00:00",
+  "dry_run": false,
+  "style_config": "paper/figure_style.yml",
+  "coverage": {
+    "active_count": 6,
+    "active_figures": [
+      "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png",
+      "images/analysis/png/pnl_heatmap.png",
+      "images/microstructure_acf_static_vs_toxicity.pdf",
+      "images/microstructure_price_static_vs_toxicity.pdf",
+      "images/model2_blocksize_ratio_combined.pdf",
+      "images/model2_delta_lvr_blocksize_combined.pdf"
+    ],
+    "missing_expected": [],
+    "extra_active": [],
+    "resolved_under_image_dir": {
+      "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png": true,
+      "images/analysis/png/pnl_heatmap.png": true,
+      "images/microstructure_acf_static_vs_toxicity.pdf": true,
+      "images/microstructure_price_static_vs_toxicity.pdf": true,
+      "images/model2_blocksize_ratio_combined.pdf": true,
+      "images/model2_delta_lvr_blocksize_combined.pdf": true
+    }
+  },
+  "plans": [
+    {
+      "figure": "representative_static_price",
+      "outputs": [
+        "tmp/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png",
+        "tmp/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.html",
+        "tmp/representative_static_price_values.csv"
+      ],
+      "sources": [
+        "abm_results/scenarios/section4_microstructure_diagnostics/runs/static_seed10_T13000/output_data"
+      ],
+      "note": "Rebuilt from cached static diagnostic arrays; CEX reconstructed as DEX minus signed spread."
+    },
+    {
+      "figure": "microstructure_static_vs_toxicity",
+      "outputs": [
+        "tmp/microstructure_price_static_vs_toxicity.png",
+        "tmp/microstructure_price_static_vs_toxicity.pdf",
+        "tmp/microstructure_acf_static_vs_toxicity.png",
+        "tmp/microstructure_acf_static_vs_toxicity.pdf"
+      ],
+      "sources": [
+        "paper/tables/microstructure_price_zoom_values.csv",
+        "paper/tables/microstructure_acf_values.csv"
+      ],
+      "note": "Rebuilt from microstructure CSV tables; no simulator rerun used."
+    },
+    {
+      "figure": "pnl_heatmap",
+      "outputs": [
+        "tmp/analysis/png/pnl_heatmap.png",
+        "tmp/analysis/html/pnl_heatmap.html",
+        "tmp/pnl_heatmap_values.csv"
+      ],
+      "sources": [
+        "paper/images/analysis/html/pnl_heatmap.html"
+      ],
+      "note": "Rebuilt from existing Plotly HTML sidecar and exported companion CSV."
+    },
+    {
+      "figure": "model2_blocksize_ratio_combined",
+      "outputs": [
+        "tmp/model2_blocksize_ratio_combined.png",
+        "tmp/model2_blocksize_ratio_combined.pdf",
+        "tmp/model2_blocksize_ratio_combined.html",
+        "tmp/model2_blocksize_ratio_values.csv",
+        "tmp/model2_blocksize_ratio_combined_manifest.json"
+      ],
+      "sources": [
+        "/mnt/external/scenarios/model2_static/lvr_vs_blocksize/static_flow_model2_static_runs50_B2to16_seed10_step1_6/dLVR_over_dFees_summary.csv",
+        "/mnt/external/scenarios/model2_tox/lvr_vs_blocksize/toxicity_flow_model2_tox_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv",
+        "/mnt/external/scenarios/model2_vol_cex/lvr_vs_blocksize/volatility_cex_flow_model2_vol_cex_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv",
+        "/mnt/external/scenarios/model2_vol_dex/lvr_vs_blocksize/volatility_dex_flow_model2_vol_dex_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv"
+      ],
+      "note": "Rebuilt from exact external dLVR_over_dFees_summary.csv files."
+    },
+    {
+      "figure": "model2_delta_lvr_blocksize_combined",
+      "outputs": [
+        "tmp/model2_delta_lvr_blocksize_combined.png",
+        "tmp/model2_delta_lvr_blocksize_combined.pdf",
+        "tmp/model2_delta_lvr_blocksize_combined.html",
+        "tmp/model2_delta_lvr_blocksize_values.csv",
+        "tmp/model2_delta_lvr_blocksize_combined_manifest.json"
+      ],
+      "sources": [
+        "/mnt/external/scenarios/model2_static/lvr_vs_blocksize/static_flow_model2_static_runs50_B2to16_seed10_step1_6/dLVR_summary.csv",
+        "/mnt/external/scenarios/model2_tox/lvr_vs_blocksize/toxicity_flow_model2_tox_runs50_B2to16_seed10_step1_2/dLVR_summary.csv",
+        "/mnt/external/scenarios/model2_vol_cex/lvr_vs_blocksize/volatility_cex_flow_model2_vol_cex_runs50_B2to16_seed10_step1_2/dLVR_summary.csv",
+        "/mnt/external/scenarios/model2_vol_dex/lvr_vs_blocksize/volatility_dex_flow_model2_vol_dex_runs50_B2to16_seed10_step1_2/dLVR_summary.csv"
+      ],
+      "note": "Rebuilt from exact external dLVR_summary.csv files."
+    }
+  ]
+}

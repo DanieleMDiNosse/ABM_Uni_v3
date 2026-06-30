@@ -1,0 +1,21 @@
+{
+  "block_times": [
+    2,
+    3
+  ],
+  "config_path": "/tmp/pytest-of-danielemdn/pytest-3/test_summary_only_matches_full0/lvr_summary_only_test.yml",
+  "created_at_utc": "2026-06-30T09:40:18Z",
+  "fee_definition": "flow",
+  "fee_mode": "static",
+  "git_commit": "80f24d3a23dd7680b74d9bee86cb848e72c7761d",
+  "max_workers": 1,
+  "platform": "linux",
+  "python": "3.11.14",
+  "run_id": "static_flow_lvr_summary_only_test_runs2_B2to3_seed7_step1_2",
+  "runs": 2,
+  "script": "LVR_vs_blocksize",
+  "seed_base": 7,
+  "seed_step": 1,
+  "skip_png": true,
+  "summary_only": false
+}

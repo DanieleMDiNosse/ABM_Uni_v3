@@ -82,6 +82,16 @@ simulate:
 """
 
 
+def _repo_runnable_scenario_paths() -> list[Path]:
+    """Return current top-level repository scenarios intended for webapp loading."""
+    scenarios_dir = Path("abm_results/scenarios")
+    return sorted(
+        p
+        for p in [*scenarios_dir.glob("*.yml"), *scenarios_dir.glob("*.yaml")]
+        if p.is_file()
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. Smoke test: short run lifecycle via storage layer
 # ---------------------------------------------------------------------------
@@ -375,15 +385,19 @@ class TestConfigValidation:
     def test_repo_scenarios_pass_full_webapp_validation(self) -> None:
         from abm_webapp.app import _validate_config_against_simulate
 
-        for scenario_name in ("test.yml", "vol_conditioned_wide.yml"):
-            yaml_text = (Path("abm_results/scenarios") / scenario_name).read_text(encoding="utf-8")
+        scenario_paths = _repo_runnable_scenario_paths()
+        assert scenario_paths, "Expected at least one runnable top-level scenario for the webapp lab."
+        for scenario_path in scenario_paths:
+            yaml_text = scenario_path.read_text(encoding="utf-8")
             ok, err = _validate_config_against_simulate(yaml_text)
-            assert ok, f"{scenario_name} should be runnable in the webapp, got: {err}"
+            assert ok, f"{scenario_path.name} should be runnable in the webapp, got: {err}"
 
     def test_list_scenario_files_filters_non_runnable_yaml(self, tmp_path: Path) -> None:
         from abm_webapp.app import _list_scenario_files, _partition_scenario_files
 
-        runnable_text = (Path("abm_results/scenarios") / "test.yml").read_text(encoding="utf-8")
+        scenario_paths = _repo_runnable_scenario_paths()
+        assert scenario_paths, "Expected at least one runnable top-level scenario fixture."
+        runnable_text = scenario_paths[0].read_text(encoding="utf-8")
         (tmp_path / "valid.yml").write_text(runnable_text, encoding="utf-8")
         (tmp_path / "sweep.yml").write_text(
             "version: 1\nname: sweep\nfee_mode: static\nsweeps: {}\n",
@@ -492,8 +506,9 @@ class TestStatusTransitions:
     def test_worker_flushes_final_snapshot_when_live_every_skips_terminal_block(self, tmp_path: Path) -> None:
         from abm_webapp.worker import run_simulation_process
 
-        base_config_path = Path("abm_results/scenarios/test.yml")
-        config = yaml.safe_load(base_config_path.read_text(encoding="utf-8"))
+        scenario_paths = _repo_runnable_scenario_paths()
+        assert scenario_paths, "Expected at least one runnable top-level scenario fixture."
+        config = yaml.safe_load(scenario_paths[0].read_text(encoding="utf-8"))
         assert isinstance(config, dict)
         simulate_block = dict(config["simulate"])
         simulate_block.update(
@@ -527,6 +542,59 @@ class TestStatusTransitions:
         assert status.state == "finished"
         assert status.t_last == 5
         assert [row["t"] for row in rows] == [0, 4, 5]
+
+    def test_webapp_worker_keeps_lab_outputs_separate_from_cli_scenario_outputs(self, tmp_path: Path) -> None:
+        from abm_webapp.worker import _normalize_params_for_webapp
+
+        params = {
+            "results_root": Path("abm_results/scenarios/canonical/runs/static_seed1"),
+            "visualize": True,
+            "liquidity_for_gif": True,
+            "light_mode": True,
+            "verbose": True,
+            "T": 10,
+            "seed": 1,
+        }
+
+        normalized = _normalize_params_for_webapp(params, run_root=tmp_path / "web_runs" / "lab")
+
+        assert normalized["results_root"] == tmp_path / "web_runs" / "lab"
+        assert normalized["visualize"] is False
+        assert normalized["liquidity_for_gif"] is False
+        assert normalized["light_mode"] is False
+        assert normalized["verbose"] is False
+        assert normalized["T"] == 10
+        assert normalized["seed"] == 1
+
+    def test_webapp_lab_copy_and_presets_are_explicitly_exploratory(self) -> None:
+        from abm_webapp.app import EXPLORATORY_LAB_NOTICE, FEE_SCHEDULE_PRESETS
+
+        notice = EXPLORATORY_LAB_NOTICE.lower()
+        assert "exploratory" in notice
+        assert "single-run" in notice
+        assert "multi-run" in notice
+        assert "paper" in notice
+        assert {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma"}.issubset(
+            set(FEE_SCHEDULE_PRESETS)
+        )
+
+    def test_apply_fee_schedule_preset_updates_top_level_and_simulate_fee_mode(self) -> None:
+        from abm_webapp.app import _apply_fee_schedule_preset
+
+        updated, err = _apply_fee_schedule_preset(_MINIMAL_YAML, "toxicity")
+
+        assert err == ""
+        data = yaml.safe_load(updated)
+        assert data["fee_mode"] == "toxicity"
+        assert data["simulate"]["fee_mode"] == "toxicity"
+
+    def test_apply_fee_schedule_preset_rejects_unknown_schedule(self) -> None:
+        from abm_webapp.app import _apply_fee_schedule_preset
+
+        updated, err = _apply_fee_schedule_preset(_MINIMAL_YAML, "magic")
+
+        assert updated == _MINIMAL_YAML
+        assert "unknown fee schedule" in err.lower()
 
 
 # ---------------------------------------------------------------------------

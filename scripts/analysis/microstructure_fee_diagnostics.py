@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,9 +29,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.artifacts import build_run_manifest, safe_tag, write_json
-from core.utils import load_simulation_parameters
-from scripts.run import simulate
+from core.artifacts import build_run_manifest, safe_tag, write_json  # noqa: E402
+from core.utils import load_simulation_parameters  # noqa: E402
+from scripts.run import simulate  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -79,11 +78,7 @@ def log_return_acf(prices: Sequence[float], *, skip: int, max_lag: int) -> np.nd
         Maximum lag in blocks for the returned ACF values.
     """
 
-    price_arr = np.asarray(prices, dtype=float)
-    s0 = max(0, min(int(skip), int(price_arr.size)))
-    clean = _finite_positive(price_arr[s0:])
-    returns = np.diff(np.log(clean))
-    returns = returns[np.isfinite(returns)]
+    returns = _clean_log_returns(prices, skip=skip)
     if returns.size < 3:
         return np.array([], dtype=float)
 
@@ -97,6 +92,33 @@ def log_return_acf(prices: Sequence[float], *, skip: int, max_lag: int) -> np.nd
     for lag in range(1, lag_cap + 1):
         out[lag - 1] = float(np.dot(centered[:-lag], centered[lag:]) / denom)
     return out
+
+
+def _clean_log_returns(prices: Sequence[float], *, skip: int) -> np.ndarray:
+    """Return finite log returns after the configured transient skip."""
+
+    price_arr = np.asarray(prices, dtype=float)
+    s0 = max(0, min(int(skip), int(price_arr.size)))
+    clean = _finite_positive(price_arr[s0:])
+    returns = np.diff(np.log(clean))
+    return returns[np.isfinite(returns)]
+
+
+def _acf_no_correlation_band(sample_size: int, confidence_level: float = 0.95) -> float:
+    """Analytic two-sided no-correlation ACF band half-width.
+
+    Under the white-noise null, sample autocorrelations at fixed non-zero lags
+    are approximately N(0, 1/N). The plotted band is therefore
+    z_{1-alpha/2}/sqrt(N), without bootstrap or permutation resampling.
+    """
+
+    n = int(sample_size)
+    if n <= 0:
+        raise ValueError(f"ACF no-correlation band requires positive sample size, got {sample_size}")
+    from statistics import NormalDist
+
+    z_value = NormalDist().inv_cdf(0.5 + float(confidence_level) / 2.0)
+    return float(z_value / np.sqrt(n))
 
 
 def _as_float_array(output: Mapping[str, Any], key: str) -> np.ndarray:
@@ -140,7 +162,11 @@ def _run_config(label: str, config_path: Path, *, artifact_root: Path, force: bo
 
     output = simulate(**params)
 
-    manifest = build_run_manifest(script="scripts.analysis.microstructure_fee_diagnostics", run_id=run_id, config_path=cfg)
+    manifest = build_run_manifest(
+        script="scripts.analysis.microstructure_fee_diagnostics",
+        run_id=run_id,
+        config_path=cfg,
+    )
     write_json(
         run_root / "metadata.json",
         {
@@ -284,8 +310,17 @@ def plot_acf_comparison(runs: Sequence[DiagnosticRun], *, max_lag: int, output_s
     """Write the static-vs-toxicity DEX return ACF comparison figure."""
 
     acfs = [log_return_acf(run.output["DEX_price"], skip=int(run.params["skip_step"]), max_lag=max_lag) for run in runs]
+    band_by_label = {
+        run.label: _acf_no_correlation_band(
+            _clean_log_returns(run.output["DEX_price"], skip=int(run.params["skip_step"])).size
+        )
+        for run in runs
+    }
     y_min = min(float(np.nanmin(acf)) for acf in acfs if acf.size)
     y_max = max(float(np.nanmax(acf)) for acf in acfs if acf.size)
+    max_band = max(band_by_label.values()) if band_by_label else 0.0
+    y_min = min(y_min, -max_band)
+    y_max = max(y_max, max_band)
     pad = 0.04
     y_limits = (min(-0.02, y_min - pad), max(0.04, y_max + pad))
 
@@ -300,6 +335,18 @@ def plot_acf_comparison(runs: Sequence[DiagnosticRun], *, max_lag: int, output_s
     for ax, run, acf in zip(axes, runs, acfs):
         lags = np.arange(1, acf.size + 1)
         ax.bar(lags, acf, color=COLOR_ACF, width=0.78)
+        band = band_by_label.get(run.label)
+        if band is not None:
+            ax.axhspan(
+                -band,
+                band,
+                color="#999999",
+                alpha=0.16,
+                label="95% no-correlation band",
+                zorder=0,
+            )
+            ax.axhline(band, color="#777777", linestyle=":", linewidth=1.0, zorder=1)
+            ax.axhline(-band, color="#777777", linestyle=":", linewidth=1.0, zorder=1)
         ax.axhline(0.0, color="#555555", linestyle="--", linewidth=1.0)
         lag1 = float(acf[0]) if acf.size else float("nan")
         ax.set_title(f"{titles.get(run.label, run.label)} (lag 1 = {lag1:.3f})", fontsize=13)
@@ -310,6 +357,7 @@ def plot_acf_comparison(runs: Sequence[DiagnosticRun], *, max_lag: int, output_s
         ax.tick_params(axis="both", labelsize=10)
 
     axes[0].set_ylabel("Autocorrelation", fontsize=11)
+    axes[0].legend(loc="lower right", fontsize=9, frameon=True)
     fig.tight_layout()
     output_stem.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_stem.with_suffix(".png"), dpi=300, bbox_inches="tight")
@@ -327,7 +375,11 @@ def main() -> None:
     parser.add_argument("--zoom-start", type=int, default=5200)
     parser.add_argument("--zoom-end", type=int, default=5260)
     parser.add_argument("--max-lag", type=int, default=15)
-    parser.add_argument("--force", action="store_true", help="Overwrite the ignored scenario-local diagnostic run folders.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the ignored scenario-local diagnostic run folders.",
+    )
     args = parser.parse_args()
 
     runs = [

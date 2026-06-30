@@ -60,6 +60,14 @@ body {
   font-size: 0.98rem;
 }
 
+.hero-note {
+  margin: 8px 0 0;
+  color: var(--ink-strong);
+  font-size: 0.88rem;
+  border-left: 3px solid var(--teal);
+  padding-left: 10px;
+}
+
 .metrics-grid {
   display: grid;
   gap: 10px;
@@ -139,6 +147,13 @@ body {
 
 .field-label.inline {
   margin: 0;
+}
+
+.field-help {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  margin-top: -4px;
 }
 
 .yaml-editor {

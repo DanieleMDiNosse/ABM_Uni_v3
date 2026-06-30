@@ -35,6 +35,17 @@ LOG_TEXT_MAX_CHARS = 120_000
 MEDIUM_FIG_UPDATE_EVERY = 2
 HEAVY_FIG_UPDATE_EVERY = 5
 TERMINAL_RUN_STATES = {"finished", "stopped", "error", "abandoned"}
+EXPLORATORY_LAB_NOTICE = (
+    "Exploratory single-run laboratory: use this webapp to quickly inspect fee schedules and parameter "
+    "effects. Use CLI multi-run scripts for paper-grade results, robustness checks, and confirmatory claims."
+)
+FEE_SCHEDULE_PRESETS = {
+    "static": "Static fee",
+    "volatility_cex": "CEX volatility fee",
+    "volatility_dex": "DEX volatility fee",
+    "toxicity": "Toxicity / basis fee",
+    "lvr_fee_ewma": "LVR EWMA fee",
+}
 
 
 def _env_optional_positive_int(name: str, default: Optional[int]) -> Optional[int]:
@@ -452,6 +463,33 @@ def _safe_yaml_parse(text: str) -> Tuple[bool, str]:
     if err:
         return False, err
     return True, ""
+
+
+def _apply_fee_schedule_preset(config_yaml: str, fee_mode: str) -> Tuple[str, str]:
+    """
+    Return YAML with top-level and simulate fee modes updated for exploratory webapp runs.
+
+    The webapp remains YAML-first: this helper only changes the fee-schedule selector
+    and leaves all other scientific parameters untouched.
+    """
+    fee_mode_s = str(fee_mode or "").strip()
+    if fee_mode_s not in FEE_SCHEDULE_PRESETS:
+        return config_yaml, f"Unknown fee schedule '{fee_mode_s}'."
+    try:
+        data = yaml.safe_load(config_yaml)
+    except yaml.YAMLError as exc:
+        return config_yaml, f"YAML parse error: {exc}"
+    if not isinstance(data, dict):
+        return config_yaml, "YAML root must be a mapping."
+    simulate_block = data.get("simulate")
+    if not isinstance(simulate_block, dict):
+        return config_yaml, "Missing required 'simulate' mapping."
+    updated = dict(data)
+    updated_simulate = dict(simulate_block)
+    updated["fee_mode"] = fee_mode_s
+    updated_simulate["fee_mode"] = fee_mode_s
+    updated["simulate"] = updated_simulate
+    return yaml.safe_dump(updated, sort_keys=False), ""
 
 
 def _validate_config_against_simulate(config_yaml: str) -> Tuple[bool, str]:
@@ -1670,9 +1708,13 @@ def _build_dash_app():
                 children=[
                     html.H1("ABM Live Lab", className="hero-title"),
                     html.P(
-                        "Interactive control room for live ABM runs with LP decomposition, routing diagnostics, and fee/LVR analytics.",
+                        (
+                            "Fast exploratory control room for live ABM runs with fee-schedule, "
+                            "LP, routing, and LVR diagnostics."
+                        ),
                         className="hero-subtitle",
                     ),
+                    html.P(EXPLORATORY_LAB_NOTICE, className="hero-note"),
                 ],
             ),
             html.Div(id="summary-cards", className="metrics-grid", children=[]),
@@ -1689,6 +1731,23 @@ def _build_dash_app():
                                 options=scenario_options,
                                 value=str(default_scenario) if default_scenario is not None else None,
                                 placeholder="Select a scenario YAML...",
+                            ),
+                            html.Label("Fee schedule preset", className="field-label"),
+                            dcc.Dropdown(
+                                id="fee-preset-dropdown",
+                                options=[
+                                    {"label": label, "value": value}
+                                    for value, label in FEE_SCHEDULE_PRESETS.items()
+                                ],
+                                value="static",
+                                clearable=False,
+                            ),
+                            html.Div(
+                                (
+                                    "Preset changes update only fee_mode; edit YAML below for all "
+                                    "other exploratory parameters."
+                                ),
+                                className="field-help",
                             ),
                             html.Label("Edit YAML config", className="field-label"),
                             dcc.Textarea(id="yaml-editor", value=default_yaml, className="yaml-editor"),
@@ -1840,14 +1899,26 @@ def _build_dash_app():
             for label, value, note in cards
         ]
 
-    @app.callback(Output("yaml-editor", "value"), Input("scenario-dropdown", "value"))
-    def _load_scenario(selected_path: Optional[str]) -> str:
+    @app.callback(
+        Output("yaml-editor", "value"),
+        Input("scenario-dropdown", "value"),
+        Input("fee-preset-dropdown", "value"),
+        State("yaml-editor", "value"),
+    )
+    def _load_or_update_scenario(selected_path: Optional[str], fee_preset: Optional[str], current_yaml: str) -> str:
+        from dash import callback_context
+
+        trigger = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else ""
+        if trigger == "fee-preset-dropdown":
+            updated, _err = _apply_fee_schedule_preset(current_yaml or "", fee_preset or "static")
+            return updated
         if not selected_path:
             return ""
         path = Path(selected_path)
         if not path.exists():
             return ""
-        return _load_text(path)
+        loaded = _load_text(path)
+        return loaded
 
     @app.callback(
         Output("run-message", "children"),

@@ -1,8 +1,11 @@
 # `abm_webapp` – ABM Live Lab
 
 Single-user Dash webapp for running ABM_Uni_v3 simulations with live plots and
-diagnostics. Designed for colleagues to install and run on
-their personal PCs (Windows / macOS / Linux).
+diagnostics. It is an exploratory single-run laboratory: use it to quickly inspect
+what happens under different fee schedules and parameter settings, then use the
+CLI/multi-run scripts for paper-grade results, robustness checks, and confirmatory
+claims. Designed for colleagues to install and run on their personal PCs
+(Windows / macOS / Linux).
 
 ## Quick Start (end user)
 
@@ -59,6 +62,10 @@ amm-abm-web
 Place runnable `.yml` scenario files under `abm_results/scenarios/`. The
 webapp only lists files that validate against the current `scripts.run.simulate()`
 contract; sweep/dashboard YAMLs that are not runnable scenarios are ignored.
+The **Fee schedule preset** dropdown updates only `fee_mode` (top-level and
+`simulate.fee_mode`) so quick comparisons keep all other YAML parameters fixed.
+Edit the YAML directly for other exploratory knobs such as `T`, `seed`,
+`block_time`, arrival rates, LP shares, JIT settings, and fee-controller gains.
 YAML configs are strictly validated before starting a run:
 
 - Unknown top-level keys are rejected
@@ -72,7 +79,8 @@ YAML configs are strictly validated before starting a run:
 
 ## Run Metadata & Reproducibility
 
-Every run persists to `abm_results/web_runs/<run_id>/`:
+Every run persists to `abm_results/web_runs/<run_id>/`; these outputs are kept
+separate from canonical CLI scenario folders under `abm_results/scenarios/`.
 
 | File | Contents |
 |------|----------|

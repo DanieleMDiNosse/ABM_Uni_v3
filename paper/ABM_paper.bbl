@@ -25,10 +25,10 @@ H.~Adams, N.~Zinsmeister, M.~Salem, R.~Keefer, and D.~Robinson.
   2026.
 \newblock Accessed 2026-01-09.
 
-\bibitem{angeris2020}
+\bibitem{angeris2021analysis}
 G.~Angeris, H.-T. Kao, R.~Chiang, C.~Noyes, and T.~Chitra.
-\newblock An analysis of uniswap markets.
-\newblock {\em arXiv preprint arXiv:1911.03380}, 2020.
+\newblock {An Analysis of Uniswap Markets}.
+\newblock {\em Cryptoeconomic Systems}, 1(1), 2021.
 
 \bibitem{avellaneda2008}
 M.~Avellaneda and S.~Stoikov.
@@ -52,19 +52,11 @@ A.~Carro, R.~Toral, and M.~San~Miguel.
 \newblock Markets, herding and response to external information.
 \newblock {\em PLoS ONE}, 10(7):e0133287, 2015.
 
-\bibitem{cartea2022execution}
+\bibitem{CARTEA2025105134}
 {\'A}.~Cartea, F.~Drissi, and M.~Monga.
 \newblock Decentralised finance and automated market making: Execution and
   speculation.
-\newblock {\em SSRN Electronic Journal}, 2022.
-\newblock Working paper.
-
-\bibitem{cartea2023}
-{\'A}.~Cartea, F.~Drissi, and M.~Monga.
-\newblock Decentralised finance and automated market making: Predictable loss
-  and optimal liquidity provision.
-\newblock {\em SSRN Electronic Journal}, 2023.
-\newblock Working paper.
+\newblock {\em Journal of Economic Dynamics and Control}, 177:105134, 2025.
 
 \bibitem{cartea2015book}
 {\'A}.~Cartea, S.~Jaimungal, and J.~Penalva.
@@ -77,10 +69,12 @@ A.~Chakraborti, I.~M. Toke, M.~Patriarca, and F.~Abergel.
 \newblock {\em Quantitative Finance}, 11(7):1013--1041, 2011.
 
 \bibitem{cohen2023}
-S.~N. Cohen, M.~Sabate-Vidales, D.~Siska, and L.~Szpruch.
-\newblock Inefficiency of cfms: Hedging perspective and agent-based
-  simulations, 2023.
-\newblock SSRN Working Paper \url{https://ssrn.com/abstract=4352120}.
+S.~N. Cohen, M.~Sabat{'e}-Vidales, D.~{\v{S}}i{\v{s}}ka, and {\L}.~Szpruch.
+\newblock {Inefficiency of CFMs: Hedging Perspective and Agent-Based
+  Simulations}.
+\newblock In {\em {Financial Cryptography and Data Security. FC 2023
+  International Workshops}}, volume 13953 of {\em Lecture Notes in Computer
+  Science}, pages 303--319. Springer, 2023.
 
 \bibitem{curve_cryptoswap_whitepaper}
 {Curve Finance}.
@@ -103,6 +97,11 @@ P.~Daian, S.~Goldfeder, T.~Kell, Y.~Li, X.~Zhao, I.~Bentov, L.~Breidenbach, and
   extractable value, and consensus instability.
 \newblock In {\em 2020 IEEE Symposium on Security and Privacy (SP)}, pages
   910--927, 2020.
+
+\bibitem{dinosse_gatta}
+D.~M. Di~Nosse, F.~Gatta, F.~Lillo, and S.~Jaimungal.
+\newblock {Deviations from Tradition: Stylized Facts in the Era of DeFi}.
+\newblock {\em Quantitative Finance}, 2026.
 
 \bibitem{fan2023}
 Z.~Fan, F.~Marmolejo-Coss{\'i}o, D.~J. Moroz, M.~Neuder, R.~Rao, and D.~C.
@@ -201,10 +200,6 @@ T.~Mizuta.
   well.
 \newblock In {\em 2020 IEEE Symposium Series on Computational Intelligence
   (SSCI)}, pages 400--406, 2020.
-
-\bibitem{dinosse_gatta}
-D.~M.~D. Nosse, F.~Gatta, F.~Lillo, and S.~Jaimungal.
-\newblock Deviations from tradition: Stylized facts in the era of defi, 2025.
 
 \bibitem{pellizzari2009}
 P.~Pellizzari and F.~Westerhoff.

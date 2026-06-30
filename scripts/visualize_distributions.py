@@ -129,7 +129,7 @@ class DistributionParams:
     N_jit : int
         JIT target count enable/disable knob (kept for config alignment).
     liquidity_perc_jit : float
-        JIT target liquidity share enable/disable knob (kept for config alignment).
+        Maximum post-mint JIT share of targeted tick liquidity; also acts as an enable/disable knob.
     n_samples : int
         Monte Carlo sample size for histogram-based distributions.
 

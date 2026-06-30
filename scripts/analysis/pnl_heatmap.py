@@ -31,6 +31,35 @@ _INACTIVE: Dict[str, set] = {
     "Model2": set(),
 }
 
+_FEE_LABELS = {
+    "static": "static",
+    "toxicity": "toxicity",
+    "volatility_dex": "vol DEX",
+    "volatility_cex": "vol CEX",
+}
+
+
+def _compact_scenario_label(scenario_label: str) -> str:
+    """Return a compact, two-line tick label for a paper-width heatmap."""
+    if " — " not in scenario_label:
+        return scenario_label
+    model, fee_mode = scenario_label.split(" — ", 1)
+    model = model.replace("Model", "M")
+    fee_mode = _FEE_LABELS.get(fee_mode, fee_mode.replace("_", " "))
+    return f"{model}<br>{fee_mode}"
+
+
+def _annotation_text(mu: float, sem: float) -> str:
+    """Format mean and standard error compactly while keeping both visible."""
+    return f"{mu:+.1f}<br>±{sem:.1f}"
+
+
+def _annotation_color(value: float, abs_max: float) -> str:
+    """Use white text on saturated cells and black text near the neutral center."""
+    if not np.isfinite(value) or abs_max <= 0:
+        return "black"
+    return "white" if abs(value) / abs_max >= 0.58 else "black"
+
 
 def _is_inactive(cohort: str, scenario_label: str) -> bool:
     """Return True if *cohort* is not active in the scenario."""
@@ -85,7 +114,7 @@ def pnl_summary_table(
                 mu = float(np.mean(vals))
                 sem = float(np.std(vals, ddof=1) / np.sqrt(len(vals))) if len(vals) > 1 else 0.0
                 row_z.append(mu)
-                row_ann.append(f"{mu:+.1f} ± {sem:.1f}")
+                row_ann.append(_annotation_text(mu, sem))
         z_vals.append(row_z)
         annotations.append(row_ann)
 
@@ -105,7 +134,10 @@ def pnl_summary_table(
       text=None,
       texttemplate=None,
       hovertemplate="Scenario: %{x}<br>Cohort: %{y}<br>Mean PnL: %{z:.2f}<extra></extra>",
-      colorbar=dict(title="Mean hedged PnL<br>(token-1)"),
+      colorbar=dict(
+          title=dict(text="Mean hedged PnL<br>(token-1)", font=dict(size=20)),
+          tickfont=dict(size=18),
+      ),
   ))
 
     for i, cohort in enumerate(cohorts):
@@ -115,8 +147,23 @@ def pnl_summary_table(
                 xref="x", yref="y",
                 text=str(annotations[i][j]),
                 showarrow=False,
-                textangle=90,
-                font=dict(size=16),
+                textangle=0,
+                font=dict(size=20, color=_annotation_color(z_arr[i, j], abs_max)),
                 xanchor="center", yanchor="middle",
+                align="center",
             )
+
+    fig.update_layout(
+        template=PLOTLY_TEMPLATE,
+        font=dict(size=22, color="black"),
+        margin=dict(l=145, r=145, t=30, b=120),
+    )
+    fig.update_xaxes(
+        tickangle=0,
+        tickfont=dict(size=18, color="black"),
+        tickvals=scenario_labels,
+        ticktext=[_compact_scenario_label(label) for label in scenario_labels],
+        automargin=True,
+    )
+    fig.update_yaxes(tickfont=dict(size=22, color="black"), automargin=True)
     return fig

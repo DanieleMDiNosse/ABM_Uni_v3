@@ -2074,9 +2074,9 @@ def simulate(
     
     # === Jiter (JIT LP searcher) parameters ===
     jit_flash_loan_fee: float = 0.0,  # percentage cost on JIT principal value , per mint
-    p_jit: float = 0.0,           # Bernoulli arrival probability per block
-    N_jit: int = 0,               # target up to top-N swaps by input amount
-    liquidity_perc_jit: float = 0.0,  # target share of active liquidity (0-1)
+    p_jit: float = 0.0,           # Bernoulli JIT attempt probability per block
+    N_jit: int = 0,               # JIT enable/disable knob; implementation targets one largest swap
+    liquidity_perc_jit: float = 0.0,  # max post-mint JIT share of targeted tick liquidity (0-1)
     
     # === CEX volatility modes ===
     cex_sigma_mode: str = "static",    # "static" | "heston"

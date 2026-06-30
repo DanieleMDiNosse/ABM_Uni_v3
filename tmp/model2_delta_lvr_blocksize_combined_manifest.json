@@ -1,0 +1,18 @@
+{
+  "script": "scripts/analysis/plot_model2_delta_lvr_combined.py",
+  "data": "tmp/model2_delta_lvr_blocksize_values.csv",
+  "style_config": "paper/figure_style.yml",
+  "source_root": "/mnt/external/scenarios",
+  "source_summaries": {
+    "static": "/mnt/external/scenarios/model2_static/lvr_vs_blocksize/static_flow_model2_static_runs50_B2to16_seed10_step1_6/dLVR_summary.csv",
+    "toxicity": "/mnt/external/scenarios/model2_tox/lvr_vs_blocksize/toxicity_flow_model2_tox_runs50_B2to16_seed10_step1_2/dLVR_summary.csv",
+    "volatility_cex": "/mnt/external/scenarios/model2_vol_cex/lvr_vs_blocksize/volatility_cex_flow_model2_vol_cex_runs50_B2to16_seed10_step1_2/dLVR_summary.csv",
+    "volatility_dex": "/mnt/external/scenarios/model2_vol_dex/lvr_vs_blocksize/volatility_dex_flow_model2_vol_dex_runs50_B2to16_seed10_step1_2/dLVR_summary.csv"
+  },
+  "outputs": {
+    "html": "tmp/model2_delta_lvr_blocksize_combined.html",
+    "png": "tmp/model2_delta_lvr_blocksize_combined.png",
+    "pdf": "tmp/model2_delta_lvr_blocksize_combined.pdf"
+  },
+  "source_note": "All plotted \u0394LVR medians are read from exact production Model 2 dLVR_summary.csv files under /mnt/external/scenarios. No PNG digitization is used for this figure. The figure plots 1000 \u00d7 the median column from each source summary."
+}
