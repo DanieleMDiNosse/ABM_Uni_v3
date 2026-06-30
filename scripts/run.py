@@ -1531,10 +1531,11 @@ def plotting_results(
         secondary_vals_full = fee_signal_series_v
         secondary_label = "Controller signal"
 
-    # Signals are computed from END-OF-STEP state at t, and the scheduled update is
-    # only committed at the START of step t+1. For visualization (signal→fee), plot
-    # fee_{t+1} at timestamp t (i.e., shift the fee series back by 1 step).
-    if len(steps_list) > 1:
+    # Volatility and toxicity schedules are evaluated from pre-block state and
+    # applied immediately at the block open, so their signal and fee are already
+    # time-aligned. The LVR feedback schedule is an ex-post artifact based on
+    # realized block outcomes, so it remains one block delayed for causality.
+    if fee_mode == "lvr_fee_ewma" and len(steps_list) > 1:
         steps_fee_plot = steps_list[:-1]
         fee_plot = fee_series_v[1:]
         secondary_vals_plot = secondary_vals_full[:-1]
@@ -1543,7 +1544,7 @@ def plotting_results(
         steps_fee_plot = steps_list
         fee_plot = fee_series_v
         secondary_vals_plot = secondary_vals_full
-        fee_label = "Fee"
+        fee_label = "Fee (applied at block open)" if fee_mode in ("volatility_cex", "volatility_dex", "toxicity") else "Fee"
 
     fig7.add_trace(
         go.Scatter(
@@ -3763,6 +3764,82 @@ def simulate(
         price_ref = agent_S_ref * agent_S_ref
         return (dy * pool.r) / max(price_ref, 1e-18)
 
+    def _stage_or_apply_fee_update(f_raw: float, stage_update: bool, *, apply_now: bool) -> None:
+        """Move the fee one bounded step toward ``f_raw``.
+
+        For pre-block volatility/toxicity schedules, ``apply_now=True`` makes the
+        computed fee the fee of the current block. For the LVR feedback artifact,
+        ``apply_now=False`` preserves the old one-block delayed commit semantics
+        because the signal uses outcomes realized inside the block.
+        """
+        nonlocal fee_next, fee_cooldown_left
+        if not stage_update:
+            return
+        min_step = fee_step_bps_min / 1e4
+        max_step = fee_step_bps_max / 1e4
+        delta_f = f_raw - pool.f
+        if abs(delta_f) < min_step:
+            return
+        step = math.copysign(min(abs(delta_f), max_step), delta_f)
+        f_new = clamp(pool.f + step, f_min, f_max)
+        if abs(f_new - pool.f) < 1e-12:
+            return
+        if apply_now:
+            if fee_cooldown_left <= 0:
+                pool.f = f_new
+                fee_cooldown_left = max(0, int(fee_cooldown))
+        else:
+            fee_next = f_new
+            # Only start the cooldown when scheduling a new change; otherwise countdown would restart every step.
+            if fee_cooldown_left <= 0:
+                fee_cooldown_left = max(0, int(fee_cooldown))
+
+    def _update_preblock_dynamic_fee() -> None:
+        """Update non-LVR dynamic fee from information known at block open.
+
+        The signal uses the current pre-block CEX/DEX state and the previous
+        pre-block observation, then applies the resulting fee before any block
+        actor (LP, trader, JIT, or arbitrageur) can execute.
+        """
+        nonlocal prev_cex_for_vol, prev_dex_for_vol
+        try:
+            log_cex_now = math.log(max(ref.m, 1e-18))
+            log_cex_prev = math.log(max(prev_cex_for_vol, 1e-18))
+            vol_obs_cex = (log_cex_now - log_cex_prev) ** 2
+            log_dex_now = math.log(max(pool.price, 1e-18))
+            log_dex_prev = math.log(max(prev_dex_for_vol, 1e-18))
+            vol_obs_dex = (log_dex_now - log_dex_prev) ** 2
+        except ValueError:
+            _vprint("[fee_mode] ValueError in pre-block log computation for volatility observation")
+            vol_obs_cex = 0.0
+            vol_obs_dex = 0.0
+        prev_cex_for_vol = ref.m
+        prev_dex_for_vol = pool.price
+
+        vol_obs = vol_obs_dex if fee_mode == "volatility_dex" else vol_obs_cex
+        sigma_signal = ewma_sigma_fee.update(vol_obs)
+
+        fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f)) at the pre-update fee quote
+        log_gap = abs(math.log(max(pool.price, 1e-18)) - math.log(max(ref.m, 1e-18)))
+        B_obs = max(0.0, log_gap - fee_band_ln)
+        B_hat = ewma_basis_fee.update(B_obs)
+        basis_ticks = B_hat / TICK_LN
+
+        fee_sigma_series.append(sigma_signal)
+        fee_basis_ticks_series.append(basis_ticks)
+
+        if fee_mode in ("volatility_cex", "volatility_dex"):
+            ctrl_sig = sigma_signal
+            f_raw = k_sigma * np.sqrt(sigma_signal)
+            _stage_or_apply_fee_update(f_raw, True, apply_now=True)
+        elif fee_mode == "toxicity":
+            ctrl_sig = basis_ticks
+            f_raw = k_basis * basis_ticks
+            _stage_or_apply_fee_update(f_raw, True, apply_now=True)
+        else:
+            ctrl_sig = 0.0
+        fee_signal_series.append(ctrl_sig)
+
     def _rollback_pool_state(tick_before: int, S_before: float) -> None:
         """Restore pool tick/S and derived active liquidity after a no-op swap."""
         pool.tick = tick_before
@@ -3848,6 +3925,20 @@ def simulate(
         agent_tick_ref = validated_tick
         cex_ref_for_agents = validated_cex
 
+        # --- Dynamic fee update: first block action, before LPs/traders/arbs ---
+        if fee_cooldown_left > 0:
+            fee_cooldown_left -= 1
+        if fee_mode == "lvr_fee_ewma":
+            # LVR feedback is based on the previous block's realized outcomes, so
+            # it remains delayed. Volatility/toxicity schedules are computed and
+            # applied immediately from pre-block information below.
+            if fee_next is not None and fee_cooldown_left <= 0:
+                pool.f = clamp(fee_next, f_min, f_max)
+                fee_next = None
+        else:
+            _update_preblock_dynamic_fee()
+        r = pool.r
+
         # --- Update Heston theta if schedule is provided ---
         if cex_heston_theta_schedule and heston_mode:
             for _sched_step, _sched_theta in reversed(cex_heston_theta_schedule):
@@ -3865,14 +3956,6 @@ def simulate(
                         )
                         ref.heston_theta = _sched_theta
                     break
-
-        # --- Apply any committed fee update (commit→reveal) ---
-        if fee_cooldown_left > 0:
-            fee_cooldown_left -= 1
-        if fee_next is not None and fee_cooldown_left <= 0:
-            pool.f = clamp(fee_next, f_min, f_max)
-            fee_next = None
-        r = pool.r
 
         # Start-of-step rebalance benchmark update (predictable integrand)
         _rebalance_all(ref.m, pool.S)
@@ -5108,102 +5191,28 @@ def simulate(
         jiter_pnl_series.append(jiter_pnl_now)
         jiter_flash_fee_paid_series.append(jiter_flash_fee_paid_now)
 
-        # ================== Dynamic fee controller  ==================
-        # By default, signals are based on END-OF-STEP state and the new
-        # fee applies NEXT step.
-
-        # 1) Volatility signal (squared log-return)
-        # Compute for both CEX and DEX prices; use the appropriate one based on fee_mode
-        try:
-            # CEX volatility (for volatility_cex mode)
-            log_cex_now = math.log(max(ref.m, 1e-18))
-            log_cex_prev = math.log(max(prev_cex_for_vol, 1e-18))
-            vol_obs_cex = (log_cex_now - log_cex_prev)**2
-            # DEX volatility (for volatility_dex mode)
-            log_dex_now = math.log(max(pool.price, 1e-18))
-            log_dex_prev = math.log(max(prev_dex_for_vol, 1e-18))
-            vol_obs_dex = (log_dex_now - log_dex_prev)**2
-        except ValueError:
-            _vprint("[fee_mode] ValueError in log computation for volatility observation")
-            vol_obs_cex = 0.0
-            vol_obs_dex = 0.0
-        prev_cex_for_vol = ref.m
-        prev_dex_for_vol = pool.price
-        # Select which volatility observation to use based on fee_mode
-        if fee_mode == "volatility_dex":
-            vol_obs = vol_obs_dex
-        else:
-            vol_obs = vol_obs_cex  # default to CEX for volatility_cex and other modes
-        sigma_hat_ewma = ewma_sigma_fee.update(vol_obs)
-
-        # 2) Toxicity / basis (fee-adjusted log gap)
-        fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f))
-        log_gap = abs(math.log(max(pool.price, 1e-18)) - math.log(max(ref.m, 1e-18)))
-        B_obs = max(0.0, log_gap - fee_band_ln)
-        B_hat = ewma_basis_fee.update(B_obs)
-        basis_ticks = B_hat / TICK_LN   # convert log-gap to "ticks"
-
-        # 3) LVR-gap (dLVR - dFees), normalized by DEX notional 
+        # ================== LVR fee artifact controller  ==================
+        # Volatility and toxicity fee schedules are already updated at block open
+        # from pre-block information. LVR remains an ex-post feedback artifact:
+        # it observes realized block outcomes and can only affect the next block.
         delta_fee_value_total = lp_fee_value_total - prev_lp_fee_value_total
         delta_lvr_total = lp_lvr_total - prev_lp_lvr_total
         prev_lp_fee_value_total = lp_fee_value_total
         prev_lp_lvr_total = lp_lvr_total
-        lvr_gap_signal = ewma_lvr_gap_fee.v
-        lvr_gap_signal_valid = dex_notional_y_this > 1e-18
-        if lvr_gap_signal_valid:
-            lvr_gap_obs = (delta_lvr_total - delta_fee_value_total) / dex_notional_y_this
-            lvr_gap_signal = ewma_lvr_gap_fee.update(lvr_gap_obs)
+        if fee_mode == "lvr_fee_ewma":
+            lvr_gap_signal = ewma_lvr_gap_fee.v
+            lvr_gap_signal_valid = dex_notional_y_this > 1e-18
+            if lvr_gap_signal_valid:
+                lvr_gap_obs = (delta_lvr_total - delta_fee_value_total) / dex_notional_y_this
+                lvr_gap_signal = ewma_lvr_gap_fee.update(lvr_gap_obs)
+            fee_sigma_series.append(ewma_sigma_fee.v)
+            fee_basis_ticks_series.append(ewma_basis_fee.v / TICK_LN)
+            fee_signal_series.append(lvr_gap_signal)
+            if lvr_gap_signal_valid:
+                _stage_or_apply_fee_update(pool.f + k_lvr * lvr_gap_signal, True, apply_now=False)
 
-        # Record raw signals for diagnostics/plotting.
-        # For volatility-based fee mode, fee_sigma_series tracks EWMA(|log-return|).
-        sigma_signal = sigma_hat_ewma
-        fee_sigma_series.append(sigma_signal)
-        fee_basis_ticks_series.append(basis_ticks)
-
-        # Select controller
-        f_raw = pool.f
-        stage_update = True
-        if fee_mode in ("volatility_cex", "volatility_dex"):
-            f_raw = k_sigma * np.sqrt(sigma_signal)
-        elif fee_mode == "toxicity":
-            f_raw = k_basis * basis_ticks
-        elif fee_mode == "lvr_fee_ewma":
-            # Feedback controller around the current fee.
-            if not lvr_gap_signal_valid:
-                f_raw = pool.f
-                stage_update = False
-            else:
-                f_raw = pool.f + k_lvr * lvr_gap_signal
-        else:
-            f_raw = pool.f  # "static": no change
-
-        # Controller signal used for plotting (depends on fee_mode)
-        if fee_mode in ("volatility_cex", "volatility_dex"):
-            ctrl_sig = sigma_signal
-        elif fee_mode == "toxicity":
-            ctrl_sig = basis_ticks
-        elif fee_mode == "lvr_fee_ewma":
-            ctrl_sig = lvr_gap_signal
-        else:
-            ctrl_sig = 0.0
-        fee_signal_series.append(ctrl_sig)
-
-        # Clip and apply hysteresis (min/max step in bps, cooldown).
-        if stage_update:
-            # f_tgt = clamp(f_raw, f_min, f_max)
-            min_step = fee_step_bps_min / 1e4
-            max_step = fee_step_bps_max / 1e4
-            delta_f = f_raw - pool.f
-            if abs(delta_f) >= min_step:
-                step = math.copysign(min(abs(delta_f), max_step), delta_f)
-                f_new = clamp(pool.f + step, f_min, f_max)
-                if abs(f_new - pool.f) >= 1e-12:
-                    fee_next = f_new
-                    # Only start the cooldown when scheduling a new change; otherwise countdown would restart every step.
-                    if fee_cooldown_left <= 0:
-                        fee_cooldown_left = max(0, int(fee_cooldown))
-
-        # record current fee (before next-step commit)
+        # Record the fee that applied to this block. For LVR feedback this is
+        # still the delayed fee committed at the next block open.
         fee_series.append(pool.f)
         fee_sum += float(pool.f)
         fee_count += 1

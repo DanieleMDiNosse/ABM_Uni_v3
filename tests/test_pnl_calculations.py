@@ -658,8 +658,35 @@ class TestSimulationOutputConsistency:
         """
         T = 5
         out = simulate(**_base_simulate_kwargs(tmp_path, T=T))
-        
+
         assert len(out["fee_series"]) == T
+
+    def test_volatility_fee_updates_at_block_open(self, tmp_path):
+        """
+        Non-LVR dynamic fees should be applied before recording/executing the
+        current block, not staged for the following block.
+
+        With k_sigma=0 the volatility controller's target is below f_min. If the
+        controller runs at block open, the first recorded block fee is already
+        f_min; the old end-of-block/next-block semantics would record f0 here.
+        """
+        out = simulate(
+            **_base_simulate_kwargs(
+                tmp_path,
+                T=1,
+                cex_sigma=0.0,
+                fee_mode="volatility_cex",
+                f0=0.003,
+                f_min=0.0001,
+                f_max=0.01,
+                k_sigma=0.0,
+                fee_step_bps_min=0.0,
+                fee_step_bps_max=200.0,
+                fee_cooldown=0,
+            )
+        )
+
+        np.testing.assert_allclose(out["fee_series"][0], 0.0001, rtol=0.0, atol=1e-15)
 
     def test_price_series_lengths_match_steps(self, tmp_path):
         """
