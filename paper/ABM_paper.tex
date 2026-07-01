@@ -149,8 +149,7 @@ on the state of the pool and a reference market, a Centralized Exchange (CEX). S
   PnL decomposition;
 \end{itemize}
 
-The primary objective is to understand how (and if) dynamical liquidity taker fees can be beneficial for liquidity provision, 
-reducing LVR and/or increasing fee revenue for the LPs.
+\textcolor{blue}{The primary objective is to understand whether dynamic taker fees can improve liquidity-provision economics by compensating LPs for stale-quote adverse-selection losses, either by increasing fee revenue in high-risk states, reducing realized LVR, or both.}
 
 These findings extend the analytical and empirical AMM literature on predictable loss, LVR, and arbitrage losses by studying
 how adaptive fee rules interact with block-time execution and strategic liquidity provision
@@ -426,8 +425,7 @@ At the end of block $t$, the simulator records a validated on-chain snapshot
   S_t \;=\; \bigl(P_t^{\mathrm{DEX}},\, L_t,\, m_t\bigr),
 \]
 where $P_t^{\mathrm{DEX}}$ is the AMM price, $L_t$ is the active liquidity state, and
-$m_t$ is the external CEX mid-price. At the beginning of block $t+1$, all agents
-observe $S_t$ and condition their decisions on it.
+$m_t$ is the external CEX mid-price. \textcolor{blue}{At the beginning of block $t+1$, the protocol first observes the last validated snapshot $S_t$ and updates any dynamic fee using only information available at this block open. The resulting fee is then the taker fee applied to swaps executed in block $t+1$. All agents observe this block-open state and fee before conditioning their decisions on it.}
 This captures (i) confirmation latency—agents react to the last confirmed on-chain
 state—and (ii) a common reference for evaluating slippage, basis, and range placement
 within the block.
@@ -1202,15 +1200,15 @@ where $k_{\sigma}>0$ scales sensitivity.
 
 \paragraph{Toxicity based fee}
 This controller measures arbitrage ``toxicity'' via the price gap that exceeds the current fee band.
-Let $f_{\mathrm{current}}$ be the fee currently applied by the pool and define the fee band in log-space:
+\textcolor{blue}{Let $f_{t^-}$ be the fee inherited at the opening of block $t$, before the controller commits any same-block update, and define the fee band in log-space:}
 \begin{equation}
-  f_{\mathrm{band ln}} = -\ln(1-f_{\mathrm{current}}).
+  f_{\mathrm{band ln}} = -\ln(1-f_{t^-}).
 \end{equation}
 Let the absolute log price gap be
 \begin{equation}
       \Delta_{\mathrm{cex\_dex}} = \bigl|\ln(P^{\mathrm{DEX}}_t) - \ln(m_t)\bigr|.
 \end{equation}
-The excess basis observation (using the \emph{current} fee) is
+\textcolor{blue}{The excess basis observation uses this inherited block-open fee, avoiding any circular dependence on the fee that is being computed for the current block:}
 \begin{equation}
   B_{obs,t} = \max\!\bigl(0,\ \Delta_{\mathrm{cex\_dex}} - f_{\mathrm{band ln}}\bigr),
   \label{eq:basis-obs}
@@ -1261,11 +1259,11 @@ where $s_t=\sqrt{\hat\sigma_t}$ for volatility controllers and $s_t=\tilde B_t$ 
 % with feedback gain $k_{\mathrm{lvr}}$ (motivated by the idea of offsetting LVR with fee revenue; cf.\ \cite{milionis2024automatedmarketmakinglossversusrebalancing}).
 
 \paragraph{Shared fee update controller}
-Regardless of mode, $f^{\mathrm{raw}}_t$ is transformed into the applied fee through the same mechanism:
+\textcolor{blue}{Regardless of mode, $f^{\mathrm{raw}}_t$ is transformed into the fee applied to block $t$ through the same causal block-open mechanism. The controller only uses the last validated snapshot and lagged signal histories, and the committed fee is known before block-$t$ intents are generated and later replayed.}
 
 (i) Define the increment
 \begin{equation}
-  \Delta f_t = f^{\mathrm{raw}}_t - f_t
+  \Delta f_t = f^{\mathrm{raw}}_t - f_{t^-}
 \end{equation}
 
 (ii) Hysteresis and step-size limits \newline
@@ -1277,17 +1275,18 @@ If the change is too small, no update is performed. If it is too high, it is cap
 \end{align}
 
 (iii) Fee update \newline
-The new fee is set to
+\textcolor{blue}{The block-$t$ fee is committed at block open as}
 
 \begin{equation}
-    f_{t+1} = f_t + \Delta f_t
+    f_t = f_{t^-} + \Delta f_t
 \end{equation}
 
-clamped between a minimum and maximum fee value to prevent extreme situations.
+clamped between a minimum and maximum fee value to prevent extreme situations. \textcolor{blue}{This fee is applied to all AMM swaps executed in the same block.}
 
 
 (iv) Cooldown \newline 
-After a fee change is scheduled, further changes are ignored for $\tau_{\text{cool}}$ steps, preventing rapid oscillations.
+\textcolor{blue}{After a fee change is committed, further changes are ignored for $\tau_{\text{cool}}$ blocks, preventing rapid oscillations.}
+\textcolor{blue}{In the baseline experiments reported below, however, $\tau_{\text{cool}}=0$, so this cooldown constraint is non-binding; fee smoothing is instead governed by the EWMA signal, hysteresis threshold, and maximum step size.}
 Overall, this controller keeps fees bounded, smooth, and responsive only to meaningful shifts in the underlying signal.
 
 This controller ensures that the fee path is bounded, piecewise smooth, and only reacts to material changes in the underlying signals.
@@ -1477,12 +1476,11 @@ latency generates transient CEX--DEX deviations that are harvested by priority a
 
 Figure~\ref{fig:microstructure_prices} compares the reference (CEX) price with the AMM (DEX) price and the implied 
 no-arbitrage band. The DEX series exhibits pronounced spikes because the CEX price evolves within each block while 
-on-chain swaps are executed at the block boundary. More broadly, this channel is consistent with artificial-market evidence that latency and high-frequency priority mechanisms can generate short-horizon volatility and instability even when they improve price alignment in normal periods \cite{leal2016,gao2024,yagi2020}. Under static fees, mispricings are then corrected by arbitrage at
-the beginning of the next block, generating the spike-and-reversion dynamics documented empirically in \cite{dinosse_gatta}. 
+on-chain swaps are executed at the block boundary. More broadly, this channel is consistent with artificial-market evidence that latency and high-frequency priority mechanisms can generate short-horizon volatility and instability even when they improve price alignment in normal periods \cite{leal2016,gao2024,yagi2020}. Under static fees, \textcolor{blue}{mispricings are then corrected by the prioritized arbitrage intent in the next block replay,} generating the spike-and-reversion dynamics documented empirically in \cite{dinosse_gatta}. 
 Under toxicity-based fees, the same stale-quote gaps are often absorbed by a wider no-arbitrage band, so fewer 
 economically sensible arbitrage swaps are executed and the visible pull of the DEX price back toward the CEX price is attenuated. 
-In the representative Model~0 seed used for the zoom, executed arbitrage swaps fall from 9,725 under static fees to 
-6,571 under toxicity fees, while in-band arbitrage no-ops rise from 3,275 to 6,428. Sparse or low-liquidity tick regions 
+In the representative Model~0 seed used for the zoom, \textcolor{blue}{executed arbitrage swaps fall from 9,651 under static fees to 
+6,549 under toxicity fees, while in-band arbitrage no-ops rise from 3,349 to 6,451.} Sparse or low-liquidity tick regions 
 can also stop an arbitrage swap before its unconstrained target; this liquidity-friction mechanism is present under both 
 fee schedules, whereas the comparative attenuation in panel (b) is driven by the wider dynamic-fee no-arbitrage wedge. 
 The apparent lag between the CEX series and the shaded band is structural: the band is computed from the lagged snapshot 
@@ -1522,8 +1520,8 @@ sensible arbitrage corrections documented in Figure~\ref{fig:microstructure_pric
   \centering
   \includegraphics[width=0.95\linewidth]{images/microstructure_acf_static_vs_toxicity.pdf}
   \caption{Autocorrelation function of end-of-block DEX log returns in the representative Model~0 seed used in Figure~\ref{fig:microstructure_prices}. 
-  Static fees generate a pronounced lag-1 negative spike (\(-0.450\)); toxicity-based fees attenuate the lag-1 autocorrelation 
-  to \(-0.049\), consistent with fewer next-block arbitrage corrections.}
+  Static fees generate a pronounced lag-1 negative spike \textcolor{blue}{(\(-0.458\)); toxicity-based fees attenuate the lag-1 autocorrelation 
+  to \(-0.024\)}, consistent with fewer next-block arbitrage corrections.}
   \label{fig:microstructure_acf}
 \end{figure}
 
@@ -1930,16 +1928,12 @@ Figure~\ref{fig:model2_blocksize_ratio} reports the results of this analysis for
 plotted object is the median of block-level ratios, values below one should be read as improved marginal fee coverage,
 not as a guarantee that cumulative hedged PnL over the entire run is positive. The main findings are:
 \begin{itemize}
-  \item \textbf{Static fee mode:} both passive and active LP cohorts start with median ratios around $2.16$--$2.20$ at 
-  $B=2$ and remain above one for almost the entire sweep, crossing below one only at the extreme right tail 
-  ($B\approx 14$ for passive LPs and $B\approx 15$ for active LPs). Fees therefore lag LVR over most of the block-size 
-  range, and the active cohort is slightly more exposed than the passive one. However, the $\Delta LVR$ per block grows
-  for both passive and active LPs, even if for the former the growth is monotone, while for the latter it is positive 
-  between $B>2$ and $B<6$ and then starts to decline. This suggests that, as we expected, LVR is mitigated also by just
-  having more uniformed flow.
+  \item \textbf{Static fee mode:} \textcolor{blue}{both passive and active LP cohorts start with median ratios around $2.21$--$2.24$ at 
+  $B=2$ and remain above one throughout the entire sweep, reaching about $2.47$ for passive LPs and $2.65$ for active LPs at 
+  $B=16$. Static fees therefore fail to cover marginal LVR at every tested block duration, with the active cohort slightly more exposed than the passive one. The corresponding per-block $\Delta\mathrm{LVR}$ medians increase with $B$ for both cohorts, from $0.004$ to $0.909$ in units of $10^3\times\Delta\mathrm{LVR}$ for passive LPs and from $0.050$ to $27.03$ for active LPs. This reinforces the interpretation that longer block intervals magnify stale-quote losses when the fee does not adapt.}
   \item \textbf{Toxicity fee mode:} this is the earliest and cleanest improvement for standing liquidity. The passive 
   and active cohorts are already near break-even at $B=2$ ($1.07$ and $1.08$, respectively), fall below one by 
-  $B=3$--$4$, and decline further to about $0.54$--$0.55$ at $B=16$. The toxicity signal therefore raises fees in 
+  $B=3$--$4$, and decline further to \textcolor{blue}{about $0.51$--$0.52$ at $B=16$.} The toxicity signal therefore raises fees in 
   the same blocks in which stale-price risk is concentrated, rather than only after volatility has accumulated. However,
   $\Delta LVR$ in this case grows monotonically with $B$ for both passive and active LPs, a symptom of the fact that even if 
   the schedule widens the no arbitrage bands, the AMM quotes remain outdated for longer leading to a bigger correction
@@ -1948,13 +1942,12 @@ not as a guarantee that cumulative hedged PnL over the entire run is positive. T
   \item \textbf{Volatility fee modes:} both volatility-based schedules produce a monotone decline in the coverage ratio, 
   but they react more slowly than toxicity. The CEX-volatility rule crosses below one at $B\approx 4$ for passive LPs 
   and $B\approx 5$ for active LPs, while the DEX-volatility rule crosses at about $B\approx 5$ for both cohorts. By 
-  $B=16$ the DEX-volatility controller ends slightly lower ($\approx 0.40$--$0.42$) than the CEX-volatility one 
-  ($\approx 0.45$--$0.47$), but both remain less targeted than toxicity at short block times.
+  $B=16$ \textcolor{blue}{the two volatility controllers end close to each other, around $0.47$--$0.50$ for passive and active LPs,} but both remain less targeted than toxicity at short block times.
   \item \textbf{Jiter:} ratios are reported conditional on successful JIT executions. Under static fees the number of 
   successful JIT opportunities is very small, so the estimated ratio is extremely noisy and the median is strongly 
-  negative. Under dynamic fees the Jiter ratio is much more stable and generally stays below one: around $0.57 \to 0.49$ 
-  under toxicity as $B$ moves from $2$ to $16$, and close to zero at short blocks under the two volatility rules before 
-  turning modestly positive at longer blocks. This is consistent with a strategy that captures elevated fees while 
+  negative. Under dynamic fees the Jiter ratio is much more stable and generally stays below one: \textcolor{blue}{around $0.56 \to 0.45$ 
+  under toxicity as $B$ moves from $2$ to $16$, and slightly negative at short blocks under the two volatility rules before 
+  turning modestly positive at longer blocks.} This is consistent with a strategy that captures elevated fees while 
   keeping inventory exposure very short-lived.
 \end{itemize}
 

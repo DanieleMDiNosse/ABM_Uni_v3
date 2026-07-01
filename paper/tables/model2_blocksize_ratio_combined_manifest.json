@@ -2,12 +2,12 @@
   "script": "scripts/analysis/plot_model2_lvr_ratio_combined.py",
   "data": "paper/tables/model2_blocksize_ratio_values.csv",
   "style_config": "paper/figure_style.yml",
-  "source_root": "/mnt/external/scenarios",
+  "source_root": "/home/danieledinosse/repositories/ABM_Uni_v3/paper/tables/run_paper_figures_blocksize_sources",
   "source_summaries": {
-    "static": "/mnt/external/scenarios/model2_static/lvr_vs_blocksize/static_flow_model2_static_runs50_B2to16_seed10_step1_6/dLVR_over_dFees_summary.csv",
-    "toxicity": "/mnt/external/scenarios/model2_tox/lvr_vs_blocksize/toxicity_flow_model2_tox_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv",
-    "volatility_cex": "/mnt/external/scenarios/model2_vol_cex/lvr_vs_blocksize/volatility_cex_flow_model2_vol_cex_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv",
-    "volatility_dex": "/mnt/external/scenarios/model2_vol_dex/lvr_vs_blocksize/volatility_dex_flow_model2_vol_dex_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv"
+    "static": "/home/danieledinosse/repositories/ABM_Uni_v3/paper/tables/run_paper_figures_blocksize_sources/model2_static/lvr_vs_blocksize/static_flow_model2_static_runs50_B2to16_seed10_step1_6/dLVR_over_dFees_summary.csv",
+    "toxicity": "/home/danieledinosse/repositories/ABM_Uni_v3/paper/tables/run_paper_figures_blocksize_sources/model2_tox/lvr_vs_blocksize/toxicity_flow_model2_tox_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv",
+    "volatility_cex": "/home/danieledinosse/repositories/ABM_Uni_v3/paper/tables/run_paper_figures_blocksize_sources/model2_vol_cex/lvr_vs_blocksize/volatility_cex_flow_model2_vol_cex_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv",
+    "volatility_dex": "/home/danieledinosse/repositories/ABM_Uni_v3/paper/tables/run_paper_figures_blocksize_sources/model2_vol_dex/lvr_vs_blocksize/volatility_dex_flow_model2_vol_dex_runs50_B2to16_seed10_step1_2/dLVR_over_dFees_summary.csv"
   },
   "outputs": {
     "html": "paper/images/model2_blocksize_ratio_combined.html",

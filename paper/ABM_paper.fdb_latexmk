@@ -1,15 +1,15 @@
 # Fdb version 4
-["bibtex ABM_paper"] 1782118011.98761 "ABM_paper.aux" "ABM_paper.bbl" "ABM_paper" 1782118020.627 0
-  "./bibliography.bib" 1781876023.3509 13142 f42bd3d19990914a98e4d3f55a4f2f68 ""
+["bibtex ABM_paper"] 1782898459.46583 "ABM_paper.aux" "ABM_paper.bbl" "ABM_paper" 1782898759.57904 0
+  "./bibliography.bib" 1782826360.73437 13142 f42bd3d19990914a98e4d3f55a4f2f68 ""
   "/usr/share/texlive/texmf-dist/bibtex/bst/base/abbrv.bst" 1292289607 20329 b5fed53e10044d0f8112183785c759b1 ""
-  "ABM_paper.aux" 1782118020.47648 21652 3d292b0b9bf91cff25ae91d4dd3184af "pdflatex"
+  "ABM_paper.aux" 1782898759.407 21690 04677bc065ad43c0fcbad2a94dcb09ad "pdflatex"
   (generated)
   "ABM_paper.bbl"
   "ABM_paper.blg"
   (rewritten before read)
-["pdflatex"] 1782118019.63957 "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" "ABM_paper.pdf" "ABM_paper" 1782118020.62718 0
+["pdflatex"] 1782898758.34865 "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" "ABM_paper.pdf" "ABM_paper" 1782898759.57922 0
   "/etc/texmf/web2c/texmf.cnf" 1769361868.29643 475 c0e671620eb5563b2130f56340a5fde8 ""
-  "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" 1782118019.46715 155107 aac966150ab3a8367107b40f3ae5a235 ""
+  "/home/danielemdn/Documents/repositories/ABM_Uni_v3/paper/ABM_paper.tex" 1782898758.13836 156366 d912b230285bc6d8be50003ddc52578c ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm0800.tfm" 1136768653 1536 05df9db6aeccc4eea94fec15c9024f79 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm0900.tfm" 1136768653 1536 c4f439db76ef96a9c53bc437f35ffe20 ""
@@ -225,16 +225,16 @@
   "/usr/share/texmf/web2c/texmf.cnf" 1707919699 40399 f2c302f7d2af602abb742093540a5834 ""
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1781186137.07178 5349216 bf3a80e68d946c7acd95ff030fd9bb63 ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1772126331 6831208 d2f0d249532bdb35075dfaab5e991280 ""
-  "ABM_paper.aux" 1782118020.47648 21652 3d292b0b9bf91cff25ae91d4dd3184af "pdflatex"
-  "ABM_paper.bbl" 1782118012.04117 8760 09cdd97617687a587f095be266dfcdab "bibtex ABM_paper"
-  "ABM_paper.out" 1782118020.47748 5641 2675d9f68d7acd4aff36a44155babec3 "pdflatex"
-  "ABM_paper.tex" 1782118019.46715 155107 aac966150ab3a8367107b40f3ae5a235 ""
-  "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png" 1781859619.74198 280688 005ac53ff313eaa4398fc51d3d85cf2b ""
-  "images/analysis/png/pnl_heatmap.png" 1781859622.34839 171002 1d853e48d47ce9693aa12d51ccc89b88 ""
-  "images/microstructure_acf_static_vs_toxicity.pdf" 1781859620.81911 16923 5e3cc74496b62d98cfd32c8b7eca72b3 ""
-  "images/microstructure_price_static_vs_toxicity.pdf" 1781859620.5485 23600 3b0175df94e7a310045bc9aaa3dc6924 ""
-  "images/model2_blocksize_ratio_combined.pdf" 1781859625.30833 32904 645ecb6eb10f094b57222bef9dada884 ""
-  "images/model2_delta_lvr_blocksize_combined.pdf" 1781859628.31302 32247 d7e50d23faf8081dcb70974fdcb3fe87 ""
+  "ABM_paper.aux" 1782898759.407 21690 04677bc065ad43c0fcbad2a94dcb09ad "pdflatex"
+  "ABM_paper.bbl" 1782898459.51092 8760 09cdd97617687a587f095be266dfcdab "bibtex ABM_paper"
+  "ABM_paper.out" 1782898759.408 5641 2675d9f68d7acd4aff36a44155babec3 "pdflatex"
+  "ABM_paper.tex" 1782898758.13836 156366 d912b230285bc6d8be50003ddc52578c ""
+  "images/259572_static_LPpassiveshare1_pjit0.0_1_price_steps10000.png" 1782826989 264418 8b8650c4dd6433eacb944f372012ab09 ""
+  "images/analysis/png/pnl_heatmap.png" 1782828386 183198 34447aa6c8b7ce47940e2e39669594d7 ""
+  "images/microstructure_acf_static_vs_toxicity.pdf" 1782826985 16970 db1dd7a56a35e1c21c6a17314b6305a0 ""
+  "images/microstructure_price_static_vs_toxicity.pdf" 1782826984 23549 fdff97fdf6dc18b5c7c6fb1aedf231fd ""
+  "images/model2_blocksize_ratio_combined.pdf" 1782835024 38337 da832de6277ffbedde7eb89ab87a39b4 ""
+  "images/model2_delta_lvr_blocksize_combined.pdf" 1782835031 37792 ba21aa09ef48aa7008fa65a7d0692156 ""
   (generated)
   "ABM_paper.aux"
   "ABM_paper.log"
