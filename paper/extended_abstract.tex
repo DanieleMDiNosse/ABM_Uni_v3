@@ -188,8 +188,7 @@ have accrued to longer-horizon LPs can be gained by ultra-short-lived liquidity 
 \section{Dynamic fee schedules}
 
 The paper evaluates fee dynamics through a set of simple, implementable controllers updated on a block clock. The fee is 
-bounded between a floor and a cap; changes are gated by a minimum-change threshold and a cooldown between fee updates, 
-and are further limited by a maximum per-update step size, preventing rapid oscillations. Within that infrastructure,  
+bounded between a floor and a cap; changes are gated by a minimum-change threshold and limited by a maximum per-update step size, preventing rapid oscillations. Within that infrastructure,  
 the study focuses on two main signal families:
 
 \begin{itemize}

@@ -84,7 +84,6 @@ def _base_simulate_kwargs(tmp_path, **overrides: Any) -> Dict[str, Any]:
         k_basis=0.0,
         fee_step_bps_min=0.0,
         fee_step_bps_max=200.0,
-        fee_cooldown=0,
         visualize=False,
         skip_step=0,
         results_root=tmp_path,

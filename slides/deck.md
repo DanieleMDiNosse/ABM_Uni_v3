@@ -137,7 +137,7 @@ Schedules in the paper:
 - **Volatility:** $f_t^{raw}\propto \sqrt{\mathrm{EWMA}((\Delta\ln m_t)^2)}$ (or DEX analog).
 - **Toxicity:** $f_t^{raw}\propto$ EWMA(excess CEX–DEX log-gap outside the current fee band).
 
-Controller: bounds $[f_{min},f_{max}]$, hysteresis ($\Delta f_{min}$), step cap ($\Delta f_{max}$), optional cooldown.
+Controller: bounds $[f_{min},f_{max}]$, hysteresis ($\Delta f_{min}$), and step cap ($\Delta f_{max}$).
 
 ---
 

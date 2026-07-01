@@ -2048,7 +2048,6 @@ def simulate(
     k_basis: float,         # fee per tick of dislocation (basis in ticks)
     fee_step_bps_min: float, # do not change fee unless ≥ 0.5 bps move
     fee_step_bps_max: float, # max step per update (bps)
-    fee_cooldown: int,         # blocks between fee changes (hysteresis)
     k_lvr: float = 0.0,     # feedback gain for "lvr_fee_ewma" (dimensionless)
 
     # === Arrival-rate parameters ===
@@ -3092,7 +3091,6 @@ def simulate(
     # --- Dynamic fee controller state (new) ---
     pool.f = float(f0)  # initial fee overrides builder default
     fee_next: Optional[float] = None
-    fee_cooldown_left: int = 0
     fee_series: List[float] = []
     if requested_record_keys is not None and not _record_requested("fee_series"):
         fee_series = _NullList()
@@ -3772,7 +3770,7 @@ def simulate(
         ``apply_now=False`` preserves the old one-block delayed commit semantics
         because the signal uses outcomes realized inside the block.
         """
-        nonlocal fee_next, fee_cooldown_left
+        nonlocal fee_next
         if not stage_update:
             return
         min_step = fee_step_bps_min / 1e4
@@ -3785,14 +3783,9 @@ def simulate(
         if abs(f_new - pool.f) < 1e-12:
             return
         if apply_now:
-            if fee_cooldown_left <= 0:
-                pool.f = f_new
-                fee_cooldown_left = max(0, int(fee_cooldown))
+            pool.f = f_new
         else:
             fee_next = f_new
-            # Only start the cooldown when scheduling a new change; otherwise countdown would restart every step.
-            if fee_cooldown_left <= 0:
-                fee_cooldown_left = max(0, int(fee_cooldown))
 
     def _update_preblock_dynamic_fee() -> None:
         """Update non-LVR dynamic fee from information known at block open.
@@ -3926,13 +3919,11 @@ def simulate(
         cex_ref_for_agents = validated_cex
 
         # --- Dynamic fee update: first block action, before LPs/traders/arbs ---
-        if fee_cooldown_left > 0:
-            fee_cooldown_left -= 1
         if fee_mode == "lvr_fee_ewma":
             # LVR feedback is based on the previous block's realized outcomes, so
             # it remains delayed. Volatility/toxicity schedules are computed and
             # applied immediately from pre-block information below.
-            if fee_next is not None and fee_cooldown_left <= 0:
+            if fee_next is not None:
                 pool.f = clamp(fee_next, f_min, f_max)
                 fee_next = None
         else:

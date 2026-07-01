@@ -1284,10 +1284,7 @@ If the change is too small, no update is performed. If it is too high, it is cap
 clamped between a minimum and maximum fee value to prevent extreme situations. \textcolor{blue}{This fee is applied to all AMM swaps executed in the same block.}
 
 
-(iv) Cooldown \newline 
-\textcolor{blue}{After a fee change is committed, further changes are ignored for $\tau_{\text{cool}}$ blocks, preventing rapid oscillations.}
-\textcolor{blue}{In the baseline experiments reported below, however, $\tau_{\text{cool}}=0$, so this cooldown constraint is non-binding; fee smoothing is instead governed by the EWMA signal, hysteresis threshold, and maximum step size.}
-Overall, this controller keeps fees bounded, smooth, and responsive only to meaningful shifts in the underlying signal.
+Overall, this controller keeps fees bounded, smooth, and responsive only to meaningful shifts in the underlying signal. \textcolor{blue}{Fee smoothing is governed by the EWMA signal, hysteresis threshold, and maximum step size.}
 
 This controller ensures that the fee path is bounded, piecewise smooth, and only reacts to material changes in the underlying signals.
 
@@ -1462,8 +1459,6 @@ The main metrics of interest are:
 \(\Delta f_{\min}\) & Min absolute fee change to commit & \(5.0\times10^{-8}\) \\
 \hline
 \(\Delta f_{\max}\) & Max fee change per update step & \(0.01\) \\
-\hline
-\(\tau_{\text{cool}}\) & Fee update cooldown (blocks) & \(0\) \\
 \hline
 \end{longtable}
 \endgroup

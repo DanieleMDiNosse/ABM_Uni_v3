@@ -60,5 +60,4 @@ simulate:
   k_lvr: 0.1
   fee_step_bps_min: 0.0005
   fee_step_bps_max: 100.0
-  fee_cooldown: 0
   fee_mode: static

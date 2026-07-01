@@ -132,18 +132,17 @@ If there is no DEX notional in the current step, the update is skipped and the f
 
 ## Shared Update Mechanism
 
-Regardless of fee mode, the raw target passes through the same staged controller.
+Regardless of fee mode, the raw target passes through the same bounded step controller.
 
-### 1. Start-of-block commit
+### 1. Block-open update for volatility/toxicity schedules
 
-At the start of each block:
+At the start of each block, volatility and toxicity schedules compute their signal from pre-block information and apply the resulting bounded fee step before LP, trader, JIT, or arbitrage execution in that block.
 
-- if `fee_cooldown_left > 0`, decrement it by one;
-- if `fee_next` is staged and `fee_cooldown_left <= 0`, commit it to `pool.f`.
+### 2. Delayed staging for realized-LVR feedback
 
-This is why the controller is effectively commit/reveal: signals are computed from end-of-step data, but the new fee applies from the next block onward.
+The optional LVR-feedback artifact is different because its signal uses realized outcomes from the current block. Its bounded target is staged in `fee_next` and committed at the start of the next block.
 
-### 2. End-of-step staging
+### 3. Bounded step rule
 
 Given the current fee `pool.f`, define:
 
@@ -166,9 +165,7 @@ $$
 f_{t+1}^{\text{staged}} = \mathrm{clip}(pool.f + \Delta f^{\text{clip}}, f_{\min}, f_{\max})
 $$
 
-If the staged value differs from the current fee, it is written to `fee_next`. If no cooldown is already active, the controller starts one with `fee_cooldown_left = fee_cooldown`.
-
-Important implementation detail: while the cooldown counts down, the pending value can be overwritten by a newer staged fee. The committed fee is therefore the latest `fee_next` available when the cooldown expires.
+For volatility/toxicity schedules, the clipped and clamped value is applied immediately to `pool.f` at block open. For realized-LVR feedback, the clipped and clamped value is written to `fee_next` and committed on the following block.
 
 ## Diagnostics Returned By `simulate(...)`
 

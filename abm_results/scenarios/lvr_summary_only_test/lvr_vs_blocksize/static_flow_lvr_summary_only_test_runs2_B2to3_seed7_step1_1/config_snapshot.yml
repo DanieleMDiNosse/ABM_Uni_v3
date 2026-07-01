@@ -14,7 +14,6 @@ simulate:
   f0: 0.003
   f_max: 0.01
   f_min: 0.0001
-  fee_cooldown: 0
   fee_half_life: 2
   fee_mode: static
   fee_step_bps_max: 200.0

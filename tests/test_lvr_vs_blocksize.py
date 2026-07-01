@@ -218,7 +218,6 @@ def _write_lvr_test_config(config_path: Path) -> None:
             "k_basis": 0.0,
             "fee_step_bps_min": 0.0,
             "fee_step_bps_max": 200.0,
-            "fee_cooldown": 0,
             "smart_trades_per_block": 1.5,
             "noise_trades_per_block": 1.0,
             "narrow_mints_per_block": 0.0,

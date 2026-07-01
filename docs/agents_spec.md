@@ -46,8 +46,9 @@ At a high level, each block `t` follows this structure:
    - `agent_tick_ref ← validated_tick`
    - `cex_ref_for_agents ← validated_cex`
 
-2) **(Optional) apply a scheduled fee update** (dynamic fee controller commit→reveal):
-   - If `fee_next` is staged and cooldown allows it, the pool fee `pool.f` is updated at the *start* of the block.
+2) **Apply the dynamic fee update**:
+   - Volatility/toxicity schedules compute and apply the block fee at the *start* of the block from pre-block information.
+   - LVR-feedback schedules, if enabled, commit the previously staged `fee_next` at the start of the next block because their signal uses realized in-block outcomes.
 
 3) **Update bookkeeping benchmark** (LVR rebalancer) at block start:
    - `_rebalance_all(ref.m, pool.S)` aligns the benchmark exposures to current positions before any within-block moves.

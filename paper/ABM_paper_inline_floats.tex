@@ -1166,9 +1166,6 @@ The new fee is set to
 
 clamped between a minimum and maximum fee value to prevent extreme situations.
 
-
-(iv) Cooldown \newline 
-After a fee change is scheduled, further changes are ignored for $\tau_{\text{cool}}$ steps, preventing rapid oscillations.
 Overall, this controller keeps fees bounded, smooth, and responsive only to meaningful shifts in the underlying signal.
 
 This controller ensures that the fee path is bounded, piecewise smooth, and only reacts to material changes in the underlying signals.
@@ -1327,8 +1324,6 @@ The main metrics of interest are:
 \(\Delta f_{\min}\) & Min absolute fee change to commit & \(5.0\times10^{-8}\) \\
 \hline
 \(\Delta f_{\max}\) & Max fee change per update step & \(0.01\) \\
-\hline
-\(\tau_{\text{cool}}\) & Fee update cooldown (blocks) & \(0\) \\
 \hline
 \end{tabularx}
 \caption{Baseline simulation parameters shared across all models.}
