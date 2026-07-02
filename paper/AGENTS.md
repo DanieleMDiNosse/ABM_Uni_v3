@@ -53,7 +53,7 @@ Every claim, number, and figure in `paper/*.tex` must be traceable to:
 
 Minimum provenance to record per figure/table (store as a short note near the figure/table in LaTeX, or in a small manifest file in `paper/`):
 - Source script(s) (e.g., `scripts/run.py`, `scripts/stylized_facts_report.py`)
-- Scenario YAML path (e.g., `abm_results/scenarios/<name>.yml`) and the run id folder
+- Scenario YAML path (e.g., `configs/scenarios/<name>.yml`) and the run id folder
 - Seed(s) and any inference settings (bootstraps, aggregation windows, sampling frequency)
 - Code provenance: git commit hash (if available) and the exact command line used
 

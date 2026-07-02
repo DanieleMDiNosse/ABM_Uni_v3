@@ -153,8 +153,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--config", type=Path,
-        default=Path("abm_results/scenarios/test.yml"),
-        help="Scenario YAML path (default: abm_results/scenarios/test.yml).",
+        default=Path("configs/scenarios/section4_microstructure_model0_static.yml"),
+        help="Scenario YAML path (default: configs/scenarios/section4_microstructure_model0_static.yml).",
     )
     p.add_argument("--T", type=_positive_int, default=2_000, help="Override simulation horizon (blocks).")
     p.add_argument("--skip-step", type=_nonnegative_int, default=100, help="Override skip_step burn-in.")

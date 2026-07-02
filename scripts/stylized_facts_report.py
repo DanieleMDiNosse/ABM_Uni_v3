@@ -1405,7 +1405,7 @@ def run_stylized_facts(
     --------
     >>> from pathlib import Path
     >>> import json
-    >>> latest = json.loads(Path("abm_results/scenarios/test/latest_run.json").read_text())
+    >>> latest = json.loads(Path("abm_results/scenarios/section4_microstructure_model0_static/latest_run.json").read_text())
     >>> series_path = Path(latest["run_root"]) / "output_data" / "dex_price_end_of_block.npy"
     >>> summary = run_stylized_facts(series_path, input_kind="prices", return_type="log")  # doctest: +SKIP
     >>> print(summary["report_path"])

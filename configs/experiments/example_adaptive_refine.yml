@@ -1,11 +1,11 @@
 version: 1
-name: example_bayesopt
+name: example_adaptive_refine
 
-base_config: ../scenarios/test.yml
+base_config: ../scenarios/section4_microstructure_model0_static.yml
 
 outputs:
-  root: ../experiments_runs
-  tag: example_bayesopt
+  root: ../../abm_results/experiments_runs
+  tag: example_adaptive_refine
   keep_worker_tmp: false
 
 seed:
@@ -30,13 +30,14 @@ metrics:
   sr_dex_share_hist_bins: 60
 
 design:
-  type: bayesopt
-  n_points: 120
-  n_init: 24
-  batch_size: 1
-  target_metric: pnl_rate_p50_lp_pnl_passive
-  direction: maximize
-  seed: 202
+  type: adaptive_refine
+  n_points: 320
+  n_init: 96
+  batch_size: 32
+  # Adaptive refinement uses this metric to train a surrogate and propose points
+  # with high uncertainty (or, if regime_threshold is provided, near the decision boundary).
+  target_metric: fee_mean
+  seed: 101
 
 space:
   - name: k_sigma

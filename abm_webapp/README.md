@@ -59,11 +59,14 @@ amm-abm-web
 
 ## Scenario Configuration
 
-Place runnable `.yml` scenario files under `abm_results/scenarios/`. The
+Place runnable `.yml` scenario files under `configs/scenarios/`. The
 webapp only lists files that validate against the current `scripts.run.simulate()`
 contract; sweep/dashboard YAMLs that are not runnable scenarios are ignored.
-The **Fee schedule preset** dropdown updates only `fee_mode` (top-level and
+The **Fee schedule preset** dropdown updates `fee_mode` (top-level and
 `simulate.fee_mode`) so quick comparisons keep all other YAML parameters fixed.
+For the `linear_asymmetric` preset it also inserts a default
+`simulate.asymmetric_fee_slope` when that key is absent, because this schedule
+requires a signed DEX/oracle gap gain.
 Edit the YAML directly for other exploratory knobs such as `T`, `seed`,
 `block_time`, arrival rates, LP shares, JIT settings, and fee-controller gains.
 YAML configs are strictly validated before starting a run:
@@ -139,7 +142,8 @@ ruff format abm_webapp/ tests/
 
 - DB schema is auto-migrated: new columns (`pid`, `heartbeat_at`,
   `stop_reason`, `stopped_at`, `meta_json`) and a `schema_info` table
-  are added transparently.
+  are added transparently. v0.2.0+ databases also migrate directional fee
+  columns (`fee_x_to_y`, `fee_y_to_x`) for the linear-asymmetric schedule.
 - Existing runs are not affected; the migration only adds columns.
 - The `abandoned` state is new; pre-existing "stuck running" runs will be
   marked abandoned on next startup.

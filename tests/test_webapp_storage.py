@@ -44,6 +44,8 @@ def test_sqlite_live_sink_writes_and_reads(tmp_path: Path) -> None:
             sr_cex_exec_count=0,
             sr_dex_exec_count=0,
             fee=0.0001,
+            fee_x_to_y=0.0002,
+            fee_y_to_x=0.00005,
             fee_sigma=0.0,
             fee_basis_ticks=0.0,
             fee_signal=0.0,
@@ -77,6 +79,8 @@ def test_sqlite_live_sink_writes_and_reads(tmp_path: Path) -> None:
             sr_cex_exec_count=1,
             sr_dex_exec_count=0,
             fee=0.0001,
+            fee_x_to_y=0.0003,
+            fee_y_to_x=0.00004,
             fee_sigma=0.123,
             fee_basis_ticks=5.0,
             fee_signal=-0.4,
@@ -102,3 +106,5 @@ def test_sqlite_live_sink_writes_and_reads(tmp_path: Path) -> None:
     assert rows[-1]["d_lvr_total"] == 0.006
     assert rows[-1]["sr_exec_count"] == 1
     assert rows[-1]["fee_sigma"] == 0.123
+    assert rows[-1]["fee_x_to_y"] == 0.0003
+    assert rows[-1]["fee_y_to_x"] == 0.00004

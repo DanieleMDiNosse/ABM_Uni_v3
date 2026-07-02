@@ -6,7 +6,7 @@ Each module exposes functions that accept the raw dict returned by
 Quick start::
 
     python -m scripts.analysis.run_paper_figures \\
-        --config abm_results/scenarios/test.yml \\
+        --config configs/scenarios/section4_microstructure_model0_static.yml \\
         --runs 10 --max-workers 4 \\
         --output-dir paper/images/analysis
 """

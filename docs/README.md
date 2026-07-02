@@ -11,7 +11,7 @@ nav_order: 2
 
 `ABM_Uni_v3` is a Python-first research simulator for a Uniswap v3-style pool with concentrated liquidity, block-level mempool execution, external CEX reference pricing, LP accounting, experiment-design tooling, and a single-user live Dash webapp.
 
-The main engine lives in `scripts/run.py` and is configured by scenario YAML files under `abm_results/scenarios/`. The canonical starting point is `abm_results/scenarios/test.yml`.
+The main engine lives in `scripts/run.py` and is configured by scenario YAML files under `configs/scenarios/`. A bundled starting point is `configs/scenarios/section4_microstructure_model0_static.yml`.
 
 ## What The Simulator Implements
 
@@ -62,10 +62,10 @@ For the code-level execution rules, see [Agent Behaviour Details](agents_spec.md
 
 ```bash
 conda activate main
-python -m scripts.run --config abm_results/scenarios/test.yml
+python -m scripts.run --config configs/scenarios/section4_microstructure_model0_static.yml
 ```
 
-Recommended workflow: copy `abm_results/scenarios/test.yml`, rename it, then edit only the parameters you intend to change. The YAML loader is strict: missing required fields, unknown keys, or conflicting top-level vs `simulate.fee_mode` definitions fail fast.
+Recommended workflow: copy a file from `configs/scenarios/`, rename it, then edit only the parameters you intend to change. The YAML loader is strict: missing required fields, unknown keys, or conflicting top-level vs `simulate.fee_mode` definitions fail fast.
 
 ### Preferred Scenario Knobs
 
@@ -104,7 +104,7 @@ simulate:
 
 ## Output Layout
 
-For a scenario file `abm_results/scenarios/foo.yml`, the scenario root is:
+For a scenario file `configs/scenarios/foo.yml`, the scenario output root is:
 
 ```text
 abm_results/scenarios/foo/

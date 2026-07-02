@@ -17,9 +17,9 @@ This note records the provenance for the cross-scenario summary figures used in 
 - Entry point:
   - `python -m scripts.analysis.run_paper_figures`
 - Base scenario:
-  - `abm_results/scenarios/test.yml`
+  - `configs/scenarios/section4_microstructure_model0_static.yml`
 - Command (as used for the paper figures):
-  - `python -m scripts.analysis.run_paper_figures --config abm_results/scenarios/test.yml --runs 100 --output-dir paper/images/analysis`
+  - `python -m scripts.analysis.run_paper_figures --config configs/scenarios/section4_microstructure_model0_static.yml --runs 100 --output-dir paper/images/analysis`
 
 ## Paper-stable artifacts
 - PNG figures: `paper/images/analysis/png/`

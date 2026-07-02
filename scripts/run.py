@@ -30,6 +30,44 @@ PLOTLY_STATIC_WARNING_EMITTED = False
 _DEFAULT_GRID_STYLE = dict(showgrid=True, gridcolor="#e1e1e1", gridwidth=1)
 
 
+def _linear_asymmetric_fee_targets(
+    *,
+    base_fee: float,
+    slope: float,
+    dex_price: float,
+    oracle_price: float,
+    f_min: float,
+    f_max: float,
+) -> tuple[float, float, float]:
+    """Leandro-style linear asymmetric fees from signed DEX/oracle mispricing.
+
+    The repository price convention is token1 per token0. When the DEX price is
+    above the oracle, token0 is expensive on the DEX and the adverse-selection
+    direction is X_to_Y (trader sells token0 into the pool), so that directional
+    input fee is raised. When the DEX price is below the oracle, Y_to_X is the
+    adverse-selection direction and its input fee is raised.
+
+    Returns ``(fee_x_to_y, fee_y_to_x, log_dex_minus_log_oracle)``.
+    """
+    log_gap = math.log(max(float(dex_price), 1e-18)) - math.log(max(float(oracle_price), 1e-18))
+    fee_x_to_y = clamp(float(base_fee) + float(slope) * log_gap, f_min, f_max)
+    fee_y_to_x = clamp(float(base_fee) - float(slope) * log_gap, f_min, f_max)
+    return fee_x_to_y, fee_y_to_x, log_gap
+
+
+def _normalize_optional_bool(value: Any, *, name: str) -> Optional[bool]:
+    """Normalize optional boolean YAML/CLI values used by simulation configs."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean or null, got {value!r}")
+
+
 def _downsample_xy(
     x: np.ndarray, y: np.ndarray, max_points: int
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -1952,6 +1990,8 @@ SUPPORTED_RECORD_KEYS: Set[str] = {
     "cex_sigma_series",
     "fee_mean",
     "fee_series",
+    "fee_x_to_y_series",
+    "fee_y_to_x_series",
     "jiter_activity_cum",
     "jiter_fee_value_series",
     "jiter_fees0_earned_series",
@@ -2039,7 +2079,7 @@ def simulate(
     initial_total_L: float,
     
     # === Fee controller parameters ===
-    fee_mode: str,      # "static" | "volatility_cex" | "volatility_dex" | "toxicity" | "lvr_fee_ewma"
+    fee_mode: str,      # "static" | "volatility_cex" | "volatility_dex" | "toxicity" | "lvr_fee_ewma" | "linear_asymmetric"
     f0: float,             # initial fee (and static fee level), e.g. 30 bps
     f_min: float,         # 5 bps
     f_max: float,           # 200 bps safety cap
@@ -2049,6 +2089,8 @@ def simulate(
     fee_step_bps_min: float, # do not change fee unless ≥ 0.5 bps move
     fee_step_bps_max: float, # max step per update (bps)
     k_lvr: float = 0.0,     # feedback gain for "lvr_fee_ewma" (dimensionless)
+    asymmetric_fee_slope: float = 0.0,  # fee change per signed log(DEX/CEX) gap for "linear_asymmetric"
+    fee_use_ewma: Optional[bool] = None,  # smooth controller observations; None preserves legacy per-mode defaults
 
     # === Arrival-rate parameters ===
     # Preferred: per-second Poisson intensities (micro-step = 1 second). Expected arrivals per
@@ -2108,9 +2150,15 @@ def simulate(
     log_flush_every: int = 200,
 ) -> Dict[str, Any]:
 
-    valid_fee_modes = {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma"}
+    valid_fee_modes = {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma", "linear_asymmetric"}
     if fee_mode not in valid_fee_modes:
         raise ValueError(f"Invalid fee_mode '{fee_mode}'. Expected one of {sorted(valid_fee_modes)}.")
+    fee_use_ewma = _normalize_optional_bool(fee_use_ewma, name="fee_use_ewma")
+    if fee_use_ewma is None:
+        # Preserve historical behavior: volatility/toxicity/LVR schedules used
+        # EWMA-smoothed observations; linear_asymmetric used the raw block-open
+        # signed DEX/oracle gap. YAML configs can now override either choice.
+        fee_use_ewma = fee_mode in {"volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma"}
     requested_record_keys: Optional[Set[str]] = None
     if record_keys is not None:
         requested_record_keys = {str(key) for key in record_keys}
@@ -2862,6 +2910,8 @@ def simulate(
     fee_basis_ticks_series = []    # EWMA fee-adjusted basis, in ticks
     fee_imb_series = []            # EWMA |imbalance| in [0,1]
     fee_signal_series = []         # controller signal actually used (per fee_mode)
+    fee_x_to_y_series = []         # directional input fee for X_to_Y swaps
+    fee_y_to_x_series = []         # directional input fee for Y_to_X swaps
 
     if light_mode:
         P_series = _NullList()
@@ -2958,6 +3008,8 @@ def simulate(
         fee_basis_ticks_series = _NullList()
         fee_imb_series = _NullList()
         fee_signal_series = _NullList()
+        fee_x_to_y_series = _NullList()
+        fee_y_to_x_series = _NullList()
     elif requested_record_keys is not None:
         def _select_recorder(buffer: List[Any], *keys: str) -> List[Any]:
             """Keep a recorder only when a requested output depends on it."""
@@ -3091,6 +3143,8 @@ def simulate(
     # --- Dynamic fee controller state (new) ---
     pool.f = float(f0)  # initial fee overrides builder default
     fee_next: Optional[float] = None
+    fee_x_to_y_current = float(f0)
+    fee_y_to_x_current = float(f0)
     fee_series: List[float] = []
     if requested_record_keys is not None and not _record_requested("fee_series"):
         fee_series = _NullList()
@@ -3142,6 +3196,7 @@ def simulate(
     # EWMA signals for controllers
     ewma_sigma_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # |log m_t - log m_{t-1}|
     ewma_basis_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # fee-adjusted log gap
+    ewma_asym_fee = EWMA(half_life_steps=fee_half_life, init=0.0)  # signed log DEX/oracle gap
     # EWMA of (dLVR - dFees) normalized by DEX notional 
     ewma_lvr_gap_fee = EWMA(half_life_steps=fee_half_life, init=0.0)
     prev_cex_for_vol = ref.m   # for volatility_cex mode
@@ -3616,6 +3671,9 @@ def simulate(
         L_first
         """
         P = pool.price
+        old_fee = pool.f
+        if fee_mode == "linear_asymmetric":
+            pool.f = _fee_for_swap_side("Y_to_X" if P < arb_ref_m else "X_to_Y")
         r = pool.r
         lo = (arb_ref_m * r) / flash_loan_mult
         hi = (arb_ref_m * flash_loan_mult) / max(r, 1e-18)
@@ -3623,12 +3681,18 @@ def simulate(
             # up: returns (dy_in, dx_out, 0.0, direction, L_first)
             dy_in, dx_out, Lff = swap_exact_to_target(lo, "up", fee_cb=allocate_fees)
             _flush_pending_rebalance()  # Batch rebalance all LPs touched during arb
+            if fee_mode == "linear_asymmetric":
+                pool.f = old_fee
             return dy_in, dx_out, 0.0, ("up" if dy_in > 0 else None), Lff
         if P > hi * (1 + 1e-9):
             # down: returns (dx_in, 0.0, dy_out, direction, L_first)
             dx_in, dy_out, Lff = swap_exact_to_target(hi, "down", fee_cb=allocate_fees)
             _flush_pending_rebalance()  # Batch rebalance all LPs touched during arb
+            if fee_mode == "linear_asymmetric":
+                pool.f = old_fee
             return dx_in, 0.0, dy_out, ("down" if dx_in > 0 else None), Lff
+        if fee_mode == "linear_asymmetric":
+            pool.f = old_fee
         return 0.0, 0.0, 0.0, None, 0.0
 
     def _clone_pool_for_preview() -> V3Pool:
@@ -3714,6 +3778,8 @@ def simulate(
         """
         pool_sim = _clone_pool_for_preview()
         P = pool_sim.price
+        if fee_mode == "linear_asymmetric":
+            pool_sim.f = _fee_for_swap_side("Y_to_X" if P < arb_ref_m else "X_to_Y")
         r = pool_sim.r
         lo = (arb_ref_m * r) / flash_loan_mult
         hi = (arb_ref_m * flash_loan_mult) / max(r, 1e-18)
@@ -3749,21 +3815,63 @@ def simulate(
     agent_tick_ref = validated_tick
     cex_ref_for_agents = validated_cex
     def _baseline_quote_x_to_y(dx: float) -> float:
-        """Reference quote using last validated price (pre-block) and current fee."""
+        """Reference quote using last validated price (pre-block) and current side fee."""
         if dx <= 0.0:
             return 0.0
         price_ref = agent_S_ref * agent_S_ref
-        return dx * pool.r * price_ref
+        return dx * (1.0 - _fee_for_swap_side("X_to_Y")) * price_ref
 
     def _baseline_quote_y_to_x(dy: float) -> float:
-        """Reference quote using last validated price (pre-block) and current fee."""
+        """Reference quote using last validated price (pre-block) and current side fee."""
         if dy <= 0.0:
             return 0.0
         price_ref = agent_S_ref * agent_S_ref
-        return (dy * pool.r) / max(price_ref, 1e-18)
+        return (dy * (1.0 - _fee_for_swap_side("Y_to_X"))) / max(price_ref, 1e-18)
+
+    def _fee_for_swap_side(side: str) -> float:
+        """Return the currently committed input fee for a swap side."""
+        if fee_mode == "linear_asymmetric":
+            if side == "X_to_Y":
+                return float(fee_x_to_y_current)
+            if side == "Y_to_X":
+                return float(fee_y_to_x_current)
+        return float(pool.f)
+
+    def _call_with_pool_fee(side: str, fn: Callable[[], Any]) -> Any:
+        """Temporarily set ``pool.f`` so existing v3 math uses the side fee."""
+        if fee_mode != "linear_asymmetric":
+            return fn()
+        old_fee = pool.f
+        pool.f = _fee_for_swap_side(side)
+        try:
+            return fn()
+        finally:
+            pool.f = old_fee
+
+    def _quote_x_to_y_directional(dx: float) -> float:
+        return _call_with_pool_fee("X_to_Y", lambda: V3Pool.quote_x_to_y(pool, dx))
+
+    def _quote_y_to_x_directional(dy: float) -> float:
+        return _call_with_pool_fee("Y_to_X", lambda: V3Pool.quote_y_to_x(pool, dy))
+
+    def _swap_x_to_y_directional(dx: float) -> Tuple[float, float, float]:
+        return _call_with_pool_fee("X_to_Y", lambda: V3Pool.swap_x_to_y(pool, dx, fee_cb=allocate_fees))
+
+    def _swap_y_to_x_directional(dy: float) -> Tuple[float, float, float]:
+        return _call_with_pool_fee("Y_to_X", lambda: V3Pool.swap_y_to_x(pool, dy, fee_cb=allocate_fees))
+
+    def _bounded_fee_step(current_fee: float, target_fee: float) -> float:
+        """Move one bounded controller step from ``current_fee`` toward ``target_fee``."""
+        min_step = fee_step_bps_min / 1e4
+        max_step = fee_step_bps_max / 1e4
+        delta_f = target_fee - current_fee
+        if abs(delta_f) < min_step:
+            return clamp(current_fee, f_min, f_max)
+        step = math.copysign(min(abs(delta_f), max_step), delta_f)
+        return clamp(current_fee + step, f_min, f_max)
 
     def _stage_or_apply_fee_update(f_raw: float, stage_update: bool, *, apply_now: bool) -> None:
-        """Move the fee one bounded step toward ``f_raw``.
+        """Move the symmetric pool fee one bounded step toward ``f_raw``.
 
         For pre-block volatility/toxicity schedules, ``apply_now=True`` makes the
         computed fee the fee of the current block. For the LVR feedback artifact,
@@ -3773,13 +3881,7 @@ def simulate(
         nonlocal fee_next
         if not stage_update:
             return
-        min_step = fee_step_bps_min / 1e4
-        max_step = fee_step_bps_max / 1e4
-        delta_f = f_raw - pool.f
-        if abs(delta_f) < min_step:
-            return
-        step = math.copysign(min(abs(delta_f), max_step), delta_f)
-        f_new = clamp(pool.f + step, f_min, f_max)
+        f_new = _bounded_fee_step(pool.f, f_raw)
         if abs(f_new - pool.f) < 1e-12:
             return
         if apply_now:
@@ -3794,7 +3896,7 @@ def simulate(
         pre-block observation, then applies the resulting fee before any block
         actor (LP, trader, JIT, or arbitrageur) can execute.
         """
-        nonlocal prev_cex_for_vol, prev_dex_for_vol
+        nonlocal prev_cex_for_vol, prev_dex_for_vol, fee_x_to_y_current, fee_y_to_x_current
         try:
             log_cex_now = math.log(max(ref.m, 1e-18))
             log_cex_prev = math.log(max(prev_cex_for_vol, 1e-18))
@@ -3810,12 +3912,16 @@ def simulate(
         prev_dex_for_vol = pool.price
 
         vol_obs = vol_obs_dex if fee_mode == "volatility_dex" else vol_obs_cex
-        sigma_signal = ewma_sigma_fee.update(vol_obs)
+        sigma_signal = ewma_sigma_fee.update(vol_obs) if fee_use_ewma else float(vol_obs)
+        if not fee_use_ewma:
+            ewma_sigma_fee.v = sigma_signal
 
         fee_band_ln = -math.log1p(-pool.f)  # ln(1/(1-f)) at the pre-update fee quote
         log_gap = abs(math.log(max(pool.price, 1e-18)) - math.log(max(ref.m, 1e-18)))
         B_obs = max(0.0, log_gap - fee_band_ln)
-        B_hat = ewma_basis_fee.update(B_obs)
+        B_hat = ewma_basis_fee.update(B_obs) if fee_use_ewma else float(B_obs)
+        if not fee_use_ewma:
+            ewma_basis_fee.v = B_hat
         basis_ticks = B_hat / TICK_LN
 
         fee_sigma_series.append(sigma_signal)
@@ -3825,12 +3931,37 @@ def simulate(
             ctrl_sig = sigma_signal
             f_raw = k_sigma * np.sqrt(sigma_signal)
             _stage_or_apply_fee_update(f_raw, True, apply_now=True)
+            fee_x_to_y_current = pool.f
+            fee_y_to_x_current = pool.f
         elif fee_mode == "toxicity":
             ctrl_sig = basis_ticks
             f_raw = k_basis * basis_ticks
             _stage_or_apply_fee_update(f_raw, True, apply_now=True)
+            fee_x_to_y_current = pool.f
+            fee_y_to_x_current = pool.f
+        elif fee_mode == "linear_asymmetric":
+            _, _, raw_signal = _linear_asymmetric_fee_targets(
+                base_fee=float(f0),
+                slope=float(asymmetric_fee_slope),
+                dex_price=float(pool.price),
+                oracle_price=float(ref.m),
+                f_min=float(f_min),
+                f_max=float(f_max),
+            )
+            ctrl_sig = ewma_asym_fee.update(raw_signal) if fee_use_ewma else float(raw_signal)
+            if not fee_use_ewma:
+                ewma_asym_fee.v = ctrl_sig
+            target_x_to_y = clamp(float(f0) + float(asymmetric_fee_slope) * ctrl_sig, f_min, f_max)
+            target_y_to_x = clamp(float(f0) - float(asymmetric_fee_slope) * ctrl_sig, f_min, f_max)
+            fee_x_to_y_current = _bounded_fee_step(fee_x_to_y_current, target_x_to_y)
+            fee_y_to_x_current = _bounded_fee_step(fee_y_to_x_current, target_y_to_x)
+            # Keep legacy single-fee diagnostics and actors that only understand
+            # pool.f on the neutral midpoint of the directional quote pair.
+            pool.f = clamp(0.5 * (fee_x_to_y_current + fee_y_to_x_current), f_min, f_max)
         else:
             ctrl_sig = 0.0
+            fee_x_to_y_current = pool.f
+            fee_y_to_x_current = pool.f
         fee_signal_series.append(ctrl_sig)
 
     def _rollback_pool_state(tick_before: int, S_before: float) -> None:
@@ -3891,6 +4022,8 @@ def simulate(
                     sr_cex_exec_count=int(sr_cex_execs_this),
                     sr_dex_exec_count=int(sr_dex_execs_this),
                     fee=float(pool.f),
+                    fee_x_to_y=float(fee_x_to_y_current),
+                    fee_y_to_x=float(fee_y_to_x_current),
                     fee_sigma=float(fee_sigma_series[-1]) if fee_sigma_series else None,
                     fee_basis_ticks=float(fee_basis_ticks_series[-1]) if fee_basis_ticks_series else None,
                     fee_signal=float(fee_signal_series[-1]) if fee_signal_series else None,
@@ -4046,7 +4179,7 @@ def simulate(
                 dx = notional_y / price_snapshot
                 if dx <= 0.0:
                     return
-                initial_quote = pool.quote_x_to_y(dx)
+                initial_quote = _quote_x_to_y_directional(dx)
                 if initial_quote <= 0.0:
                     return
                 # best-ex vs CEX: compare dy_out to dx * m_now (value in token1)
@@ -4091,7 +4224,7 @@ def simulate(
                 dy = _draw_trader_notional()
                 if dy <= 0.0:
                     return
-                initial_quote = pool.quote_y_to_x(dy)
+                initial_quote = _quote_y_to_x_directional(dy)
                 if initial_quote <= 0.0:
                     return
                 # best-ex vs CEX: compare dx_out to dy / m_now (value in token0)
@@ -4140,7 +4273,7 @@ def simulate(
                     price_snapshot = max(m_now, 1e-18)
                     dx = notional_y / price_snapshot
                     if dx > 0.0:
-                        initial_quote = pool.quote_x_to_y(dx)
+                        initial_quote = _quote_x_to_y_directional(dx)
                         if initial_quote <= 0.0:
                             return
                         baseline_quote = _baseline_quote_x_to_y(dx)
@@ -4157,7 +4290,7 @@ def simulate(
             else:
                 dy = _draw_trader_notional()
                 if dy > 0.0:
-                    initial_quote = pool.quote_y_to_x(dy)
+                    initial_quote = _quote_y_to_x_directional(dy)
                     if initial_quote <= 0.0:
                         return
                     baseline_quote = _baseline_quote_y_to_x(dy)
@@ -4299,8 +4432,8 @@ def simulate(
                     # where fee capture is limited to the portion of the swap that stays inside
                     # this single tick band, and flash fee is proportional to the token1 value
                     # of minted principal.
-                    fee_rate = float(getattr(pool, "f", 0.0))
-                    r_t = float(getattr(pool, "r", 1.0 - fee_rate))
+                    fee_rate = _fee_for_swap_side(str(side))
+                    r_t = 1.0 - fee_rate
                     if fee_rate <= 0.0 or r_t <= 0.0:
                         _disable_jit_target(tgt)
                         return
@@ -4628,7 +4761,7 @@ def simulate(
                 if o.get('side') == 'X_to_Y':
                     min_output = o.get('min_output')
                     if min_output is not None:
-                        final_quote = pool.quote_x_to_y(o['amount'])
+                        final_quote = _quote_x_to_y_directional(o['amount'])
                         if final_quote <= min_output:
                             agent = o.get('agent')
                             if agent == 'smart':
@@ -4643,7 +4776,7 @@ def simulate(
                     if pool.L_active <= EPS_LIQ:
                         return
                     S_before = pool.S; tick_before = pool.tick
-                    used_dx_pre, dy_out_real, fee_x = pool.swap_x_to_y(o['amount'], fee_cb=allocate_fees)
+                    used_dx_pre, dy_out_real, fee_x = _swap_x_to_y_directional(o['amount'])
                     _flush_pending_rebalance()  # Batch rebalance all LPs touched during this swap
                     _assert_active_liquidity_state_fast("mempool_swap_x_to_y")
                     if used_dx_pre <= EPS_LIQ:
@@ -4692,7 +4825,7 @@ def simulate(
                 else:
                     min_output = o.get('min_output')
                     if min_output is not None:
-                        final_quote = pool.quote_y_to_x(o['amount'])
+                        final_quote = _quote_y_to_x_directional(o['amount'])
                         if final_quote <= min_output:
                             agent = o.get('agent')
                             if agent == 'smart':
@@ -4707,7 +4840,7 @@ def simulate(
                     if pool.L_active <= EPS_LIQ:
                         return
                     S_before = pool.S; tick_before = pool.tick
-                    used_dy_pre, dx_out_real, fee_y = pool.swap_y_to_x(o['amount'], fee_cb=allocate_fees)
+                    used_dy_pre, dx_out_real, fee_y = _swap_y_to_x_directional(o['amount'])
                     _flush_pending_rebalance()  # Batch rebalance all LPs touched during this swap
                     _assert_active_liquidity_state_fast("mempool_swap_y_to_x")
                     if used_dy_pre <= EPS_LIQ:
@@ -5195,7 +5328,9 @@ def simulate(
             lvr_gap_signal_valid = dex_notional_y_this > 1e-18
             if lvr_gap_signal_valid:
                 lvr_gap_obs = (delta_lvr_total - delta_fee_value_total) / dex_notional_y_this
-                lvr_gap_signal = ewma_lvr_gap_fee.update(lvr_gap_obs)
+                lvr_gap_signal = ewma_lvr_gap_fee.update(lvr_gap_obs) if fee_use_ewma else float(lvr_gap_obs)
+                if not fee_use_ewma:
+                    ewma_lvr_gap_fee.v = lvr_gap_signal
             fee_sigma_series.append(ewma_sigma_fee.v)
             fee_basis_ticks_series.append(ewma_basis_fee.v / TICK_LN)
             fee_signal_series.append(lvr_gap_signal)
@@ -5203,7 +5338,14 @@ def simulate(
                 _stage_or_apply_fee_update(pool.f + k_lvr * lvr_gap_signal, True, apply_now=False)
 
         # Record the fee that applied to this block. For LVR feedback this is
-        # still the delayed fee committed at the next block open.
+        # still the delayed fee committed at the next block open. For asymmetric
+        # linear fees, fee_series keeps the midpoint for backward-compatible
+        # consumers and the direction-specific series carry the actual input fees.
+        if fee_mode != "linear_asymmetric":
+            fee_x_to_y_current = pool.f
+            fee_y_to_x_current = pool.f
+        fee_x_to_y_series.append(fee_x_to_y_current)
+        fee_y_to_x_series.append(fee_y_to_x_current)
         fee_series.append(pool.f)
         fee_sum += float(pool.f)
         fee_count += 1
@@ -5384,6 +5526,9 @@ def simulate(
             "lp_unhedged_active": list(lp_unhedged_active_series),
             "lp_unhedged_passive": list(lp_unhedged_passive_series),
             "fee_series": list(fee_series),
+            "fee_x_to_y_series": list(fee_x_to_y_series),
+            "fee_y_to_x_series": list(fee_y_to_x_series),
+            "fee_use_ewma": bool(fee_use_ewma),
             "total_noise_trader_swaps": int(total_noise_swaps_executed),
             "noise_trader_swaps_rejected_slippage": int(total_noise_swaps_skipped),
             "total_smart_router_swaps": int(total_smart_swaps_executed),
@@ -5486,6 +5631,10 @@ def simulate(
             selective_results["fee_mean"] = float(fee_mean)
         if "fee_series" in requested_record_keys:
             selective_results["fee_series"] = list(fee_series)
+        if "fee_x_to_y_series" in requested_record_keys:
+            selective_results["fee_x_to_y_series"] = list(fee_x_to_y_series)
+        if "fee_y_to_x_series" in requested_record_keys:
+            selective_results["fee_y_to_x_series"] = list(fee_y_to_x_series)
         if "jiter_activity_cum" in requested_record_keys:
             jiter_activity = np.zeros(int(T), dtype=float)
             for s, sign in zip(jiter_activity_steps, jiter_activity_signs):
@@ -5771,7 +5920,10 @@ def simulate(
         "lp_lvr_passive_series": lp_lvr_passive_series.tolist(),
         "trader_exec_count": trader_exec_count,
         "fee_series": fee_series,
+        "fee_x_to_y_series": fee_x_to_y_series,
+        "fee_y_to_x_series": fee_y_to_x_series,
         "fee_mode": fee_mode,
+        "fee_use_ewma": bool(fee_use_ewma),
         "f_min": f_min,
         "f_max": f_max,
         "fee_sigma_series": fee_sigma_series.tolist(),

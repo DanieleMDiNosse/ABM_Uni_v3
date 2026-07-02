@@ -6,21 +6,21 @@
   "price_figure_png": "paper/images/microstructure_price_static_vs_toxicity.png",
   "runs": [
     {
-      "config_path": "abm_results/scenarios/section4_microstructure_model0_static.yml",
+      "config_path": "configs/scenarios/section4_microstructure_model0_static.yml",
       "fee_mode": "static",
       "run_root": "abm_results/scenarios/section4_microstructure_diagnostics/runs/static_seed10_T13000",
       "seed": 10
     },
     {
-      "config_path": "abm_results/scenarios/section4_microstructure_model0_toxicity.yml",
+      "config_path": "configs/scenarios/section4_microstructure_model0_toxicity.yml",
       "fee_mode": "toxicity",
       "run_root": "abm_results/scenarios/section4_microstructure_diagnostics/runs/toxicity_seed10_T13000",
       "seed": 10
     }
   ],
   "script": "scripts/analysis/microstructure_fee_diagnostics.py",
-  "static_config": "abm_results/scenarios/section4_microstructure_model0_static.yml",
-  "toxicity_config": "abm_results/scenarios/section4_microstructure_model0_toxicity.yml",
+  "static_config": "configs/scenarios/section4_microstructure_model0_static.yml",
+  "toxicity_config": "configs/scenarios/section4_microstructure_model0_toxicity.yml",
   "zoom_end": 5260,
   "zoom_start": 5200
 }

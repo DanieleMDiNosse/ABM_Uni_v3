@@ -16,7 +16,7 @@ Outputs:
   abm_results/scenarios/<scenario>/multi_runs/<run_id>/metadata.json
 
 Example:
-  python -m scripts.run_multiple --config abm_results/scenarios/test.yml --runs 20 --seed-base 1 --max-workers 8
+  python -m scripts.run_multiple --config configs/scenarios/section4_microstructure_model0_static.yml --runs 20 --seed-base 1 --max-workers 8
 
 Notes:
 - We call scripts.run.simulate() directly (instead of spawning `python -m scripts.run`) so that we

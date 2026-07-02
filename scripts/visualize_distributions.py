@@ -16,7 +16,7 @@ Outputs Plotly figures (HTML, and PNG if kaleido is installed) for:
   - LPs: target mint/burn counts per block
 - Effective Bernoulli distribution for JIT (Jiter) attempt blocks.
 
-By default this script mirrors the parameters in `abm_results/scenarios/test.yml`.
+By default this script mirrors the parameters in `configs/scenarios/section4_microstructure_model0_static.yml`.
 You can point it at any run-style scenario YAML (the same config used by `scripts/run.py`)
 to visualize the implied distributions for that scenario.
 """
@@ -54,10 +54,10 @@ from core.artifacts import (
 
 
 # =============================================================================
-# Global hyperparameters (aligned with abm_results/scenarios/test.yml by default)
+# Global hyperparameters (aligned with configs/scenarios/section4_microstructure_model0_static.yml by default)
 # =============================================================================
 
-DEFAULT_CONFIG_PATH = Path("abm_results") / "scenarios" / "test.yml"
+DEFAULT_CONFIG_PATH = Path("configs") / "scenarios" / "section4_microstructure_model0_static.yml"
 PLOTLY_STATIC_WARNING_EMITTED = False
 _DEFAULT_GRID_STYLE = dict(showgrid=True, gridcolor="#e1e1e1", gridwidth=1)
 LP_COOLDOWN_BLOCK_MIN = 3
@@ -326,7 +326,7 @@ def build_distribution_params(
     Parameters
     ----------
     simulate_params : dict[str, Any]
-        Run parameters (typically loaded from `abm_results/scenarios/*.yml`).
+        Run parameters (typically loaded from `configs/scenarios/*.yml`).
     n_steps : int
         Number of reference-market steps to simulate for the path plot.
     n_samples : int

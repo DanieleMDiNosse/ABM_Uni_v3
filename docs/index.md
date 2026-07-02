@@ -11,7 +11,7 @@ Documentation for the current `ABM_Uni_v3` codebase: a Python simulator for a Un
 
 ```bash
 conda activate main
-python -m scripts.run --config abm_results/scenarios/test.yml
+python -m scripts.run --config configs/scenarios/section4_microstructure_model0_static.yml
 pytest -q
 ```
 
@@ -24,6 +24,7 @@ Main outputs land under `abm_results/scenarios/<scenario_name>/`. The newest CLI
 - [Loss-Versus-Rebalancing](LVR_explanation.md): theory and the repo’s discrete-time benchmark construction.
 - [LP PnL](LP_PnL.md): unhedged vs hedged LP accounting, fees, LVR, and reported series.
 - [Fee Schedules](fee_schedules.md): the five fee modes and the shared controller logic.
+- [Asymmetric Dynamic Fees Paper Summary](asymmetric_dynamic_fees_paper_summary.md): reading note for arXiv:2506.02869v1 and its proposed direction-specific fee schedules.
 - [Sigma Calibration](sigma_calibration.md): turning Binance 1-second ETH/USDC data into `cex_sigma` inputs.
 - [Stress Tests](stress_tests.md): YAML-only stress scenarios and recommended diagnostics.
 - [Webapp](webapp.md): Dash architecture, persistence, crash recovery, and live telemetry.
@@ -32,7 +33,7 @@ Main outputs land under `abm_results/scenarios/<scenario_name>/`. The newest CLI
 
 ## Output Conventions
 
-- Scenario configs live under `abm_results/scenarios/*.yml`.
+- Run config YAMLs live under `configs/` (`configs/scenarios/`, `configs/experiments/`, and `configs/paper/`).
 - Each CLI run writes a new record under `abm_results/scenarios/<scenario_name>/runs/<run_id>/`.
 - Experiment-design caches write immutable tagged folders under `abm_results/experiments_runs/`.
 - ND grid sweeps write global caches under `abm_results/grid_search/dashboard_nd/`.

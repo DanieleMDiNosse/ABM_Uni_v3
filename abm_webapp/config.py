@@ -47,6 +47,8 @@ _SIMULATE_BOUNDS: Dict[str, Tuple[type, Optional[float], Optional[float], bool]]
     "f0": (float, 0.0, 1.0, False),
     "f_min": (float, 0.0, 1.0, False),
     "f_max": (float, 0.0, 1.0, False),
+    "fee_use_ewma": (bool, None, None, False),
+    "asymmetric_fee_slope": (float, 0.0, None, False),
     "smart_trades_per_second": (float, 0.0, None, False),
     "noise_trades_per_second": (float, 0.0, None, False),
     "narrow_mints_per_second": (float, 0.0, None, False),
@@ -67,7 +69,14 @@ _SIMULATE_BOUNDS: Dict[str, Tuple[type, Optional[float], Optional[float], bool]]
     "cex_heston_v0": (float, 0.0, None, False),
 }
 
-_VALID_FEE_MODES: Set[str] = {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma"}
+_VALID_FEE_MODES: Set[str] = {
+    "static",
+    "volatility_cex",
+    "volatility_dex",
+    "toxicity",
+    "lvr_fee_ewma",
+    "linear_asymmetric",
+}
 _VALID_SIGMA_MODES: Set[str] = {"static", "heston"}
 
 
@@ -160,6 +169,10 @@ def validate_scenario(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
                 coerced = float(val)
             elif expected_type is str:
                 coerced = str(val)
+            elif expected_type is bool:
+                if not isinstance(val, bool):
+                    raise ValueError
+                coerced = val
             else:
                 coerced = val
         except (TypeError, ValueError):

@@ -100,7 +100,7 @@ run_module.tqdm = _silent_tqdm  # type: ignore[attr-defined]
 simulate = run_module.simulate
 
 
-BASE_CONFIG_PATH = Path("abm_results/scenarios/test.yml")
+BASE_CONFIG_PATH = Path("configs/scenarios/section4_microstructure_model0_static.yml")
 
 RUNS_PER_POINT_DEFAULT = 5
 SEED_BASE_DEFAULT = 1

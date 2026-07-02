@@ -225,8 +225,8 @@ Minimal recipe:
 ```bash
 conda activate main
 python -m scripts.run_parameter_surface_nd_pnl_fee_dashboard \
-  --config abm_results/scenarios/test.yml \
-  --sweep-config abm_results/scenarios/dashboard_nd_sweeps.yml \
+  --config configs/scenarios/section4_microstructure_model0_static.yml \
+  --sweep-config configs/scenarios/dashboard_nd_sweeps.yml \
   --dry-run
 ```
 
@@ -234,8 +234,8 @@ Run a slice:
 
 ```bash
 python -m scripts.run_parameter_surface_nd_pnl_fee_dashboard \
-  --config abm_results/scenarios/test.yml \
-  --sweep-config abm_results/scenarios/dashboard_nd_sweeps.yml \
+  --config configs/scenarios/section4_microstructure_model0_static.yml \
+  --sweep-config configs/scenarios/dashboard_nd_sweeps.yml \
   --index-start 0 \
   --index-stop 50 \
   --runs-per-point 10 \
@@ -279,24 +279,24 @@ Minimal recipes:
 ```bash
 conda activate main
 python -m scripts.run_experiment_design \
-  --experiment abm_results/experiments/example_lhs_screening.yml \
+  --experiment configs/experiments/example_lhs_screening.yml \
   --dry-run
 python -m scripts.run_experiment_design \
-  --experiment abm_results/experiments/example_lhs_screening.yml
+  --experiment configs/experiments/example_lhs_screening.yml
 ```
 
 Sobol-Saltelli example:
 
 ```bash
 python -m scripts.run_experiment_design \
-  --experiment abm_results/experiments/example_sobol_saltelli.yml
+  --experiment configs/experiments/example_sobol_saltelli.yml
 ```
 
 Sequential example:
 
 ```bash
 python -m scripts.run_experiment_design \
-  --experiment abm_results/experiments/example_adaptive_refine.yml \
+  --experiment configs/experiments/example_adaptive_refine.yml \
   --max-workers 8
 ```
 

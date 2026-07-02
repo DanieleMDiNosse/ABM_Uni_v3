@@ -35,7 +35,7 @@ from scripts import run as run_module
 from core.utils import load_simulation_parameters
 
 
-BASE_CONFIG_PATH = Path("abm_results/scenarios/test.yml")
+BASE_CONFIG_PATH = Path("configs/scenarios/section4_microstructure_model0_static.yml")
 
 
 PNL_METRICS: Tuple[Tuple[str, str], ...] = (

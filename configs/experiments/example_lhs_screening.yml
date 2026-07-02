@@ -1,11 +1,12 @@
 version: 1
-name: example_adaptive_refine
+name: example_lhs_screening
 
-base_config: ../scenarios/test.yml
+# Base scenario YAML used to load simulator defaults.
+base_config: ../scenarios/section4_microstructure_model0_static.yml
 
 outputs:
-  root: ../experiments_runs
-  tag: example_adaptive_refine
+  root: ../../abm_results/experiments_runs
+  tag: example_lhs_screening
   keep_worker_tmp: false
 
 seed:
@@ -22,7 +23,9 @@ compute:
 metrics:
   pnl_metrics:
     - lp_pnl_passive
+    - lp_pnl_active
     - arb_pnl_cum
+    - noise_trader_pnl_cum
   pnl_quantiles: [0.10, 0.50, 0.90]
   include_fee_hist: true
   fee_hist_bins: 60
@@ -30,14 +33,9 @@ metrics:
   sr_dex_share_hist_bins: 60
 
 design:
-  type: adaptive_refine
-  n_points: 320
-  n_init: 96
-  batch_size: 32
-  # Adaptive refinement uses this metric to train a surrogate and propose points
-  # with high uncertainty (or, if regime_threshold is provided, near the decision boundary).
-  target_metric: fee_mean
-  seed: 101
+  type: lhs
+  n_points: 256
+  seed: 123
 
 space:
   - name: k_sigma

@@ -261,7 +261,7 @@ def load_experiment_spec(path: Path) -> ExperimentSpec:
     >>> import tempfile
     >>> from pathlib import Path
     >>> p = Path(tempfile.gettempdir()) / "experiment.yml"
-    >>> _ = p.write_text(\"\"\"version: 1\\nname: demo\\nbase_config: abm_results/scenarios/test.yml\\noutputs: {root: abm_results/experiments_runs}\\nseed: {seed_base: 1, runs_per_point: 2}\\ncompute: {max_workers: 1}\\nmetrics: {pnl_metrics: [lp_pnl_passive], pnl_quantiles: [0.5], include_fee_hist: false, fee_hist_bins: 10, include_sr_dex_share_hist: false, sr_dex_share_hist_bins: 10}\\ndesign: {type: lhs, n_points: 4}\\nspace: [{name: k_sigma, kind: continuous, bounds: [0.0, 1.0]}]\\n\"\"\", encoding=\"utf-8\")  # doctest: +SKIP
+    >>> _ = p.write_text(\"\"\"version: 1\\nname: demo\\nbase_config: configs/scenarios/section4_microstructure_model0_static.yml\\noutputs: {root: abm_results/experiments_runs}\\nseed: {seed_base: 1, runs_per_point: 2}\\ncompute: {max_workers: 1}\\nmetrics: {pnl_metrics: [lp_pnl_passive], pnl_quantiles: [0.5], include_fee_hist: false, fee_hist_bins: 10, include_sr_dex_share_hist: false, sr_dex_share_hist_bins: 10}\\ndesign: {type: lhs, n_points: 4}\\nspace: [{name: k_sigma, kind: continuous, bounds: [0.0, 1.0]}]\\n\"\"\", encoding=\"utf-8\")  # doctest: +SKIP
     """
     path = Path(path).expanduser().resolve()
     if not path.exists():
@@ -703,7 +703,7 @@ def experiment_yaml_content_hash(path: Path) -> str:
 
     Examples
     --------
-    >>> isinstance(experiment_yaml_content_hash(Path("abm_results/scenarios/test.yml")), str)  # doctest: +SKIP
+    >>> isinstance(experiment_yaml_content_hash(Path("configs/scenarios/section4_microstructure_model0_static.yml")), str)  # doctest: +SKIP
     True
     """
     path = Path(path).expanduser().resolve()

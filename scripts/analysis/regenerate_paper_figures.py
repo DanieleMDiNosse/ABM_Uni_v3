@@ -1119,14 +1119,16 @@ def _copy_external_scenarios_if_missing(
     *,
     dry_run: bool,
 ) -> PlannedOutput | None:
-    """Copy the external base scenario YAML into the repo if no local test config exists."""
+    """Copy the external base scenario YAML into the repo if no local scenario config exists."""
 
-    local = _REPO_ROOT / "abm_results" / "scenarios" / "test.yml"
+    local = _REPO_ROOT / "configs" / "scenarios" / "section4_microstructure_model0_static.yml"
     if local.exists():
         return None
-    source = _find_external_file(source_roots, Path("abm_results/scenarios/test.yml"))
+    source = _find_external_file(source_roots, Path("configs/scenarios/section4_microstructure_model0_static.yml"))
     if source is None:
-        source = _find_external_file(source_roots, Path("test.yml"))
+        source = _find_external_file(source_roots, Path("abm_results/scenarios/test.yml"))
+    if source is None:
+        source = _find_external_file(source_roots, Path("section4_microstructure_model0_static.yml"))
     if source is None:
         return None
     if not dry_run:
@@ -1147,13 +1149,13 @@ def maybe_run_full_heatmap_simulation(args: argparse.Namespace) -> PlannedOutput
         return None
     config = args.heatmap_config
     if config is None:
-        config = _REPO_ROOT / "abm_results" / "scenarios" / "test.yml"
+        config = _REPO_ROOT / "configs" / "scenarios" / "section4_microstructure_model0_static.yml"
     if not config.exists():
         copied = _copy_external_scenarios_if_missing(args.source_roots, config, dry_run=args.dry_run)
         if copied is None and not config.exists():
             raise FileNotFoundError(
                 f"Heatmap simulation config not found: {config}. "
-                "Pass --heatmap-config or provide /mnt/external/scenarios/test.yml."
+                "Pass --heatmap-config or provide /mnt/external/configs/scenarios/section4_microstructure_model0_static.yml."
             )
         if args.dry_run:
             return copied

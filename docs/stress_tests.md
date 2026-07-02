@@ -289,17 +289,17 @@ Enable Jiter (`p_jit > 0`, `liquidity_perc_jit > 0`, `jit_flash_loan_fee` small)
 
 ## Reproduction recipe (recommended workflow)
 
-1) Create a new scenario YAML under `abm_results/scenarios/` (do not overwrite existing runs).
+1) Create a new scenario YAML under `configs/scenarios/` (do not overwrite existing runs).
 2) Run one seed:
 ```bash
-python -m scripts.run --config abm_results/scenarios/<your_scenario>.yml
+python -m scripts.run --config configs/scenarios/<your_scenario>.yml
 ```
 Outputs are written under:
 `abm_results/scenarios/<scenario_name>/runs/<fee_mode>_seed<seed>_<n>/`, and the newest CLI run is recorded in `abm_results/scenarios/<scenario_name>/latest_run.json`.
 
 3) Run multiple seeds to stabilize conclusions:
 ```bash
-python -m scripts.run_multiple --config abm_results/scenarios/<your_scenario>.yml --runs 20 --seed-base 1 --max-workers 8
+python -m scripts.run_multiple --config configs/scenarios/<your_scenario>.yml --runs 20 --seed-base 1 --max-workers 8
 ```
 This writes mean ± std bands under:
 `abm_results/scenarios/<scenario_name>/multi_runs/...`.

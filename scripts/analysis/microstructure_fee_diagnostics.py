@@ -46,8 +46,8 @@ class DiagnosticRun:
 
 
 DEFAULT_CONFIGS = {
-    "static": _REPO_ROOT / "abm_results/scenarios/section4_microstructure_model0_static.yml",
-    "toxicity": _REPO_ROOT / "abm_results/scenarios/section4_microstructure_model0_toxicity.yml",
+    "static": _REPO_ROOT / "configs/scenarios/section4_microstructure_model0_static.yml",
+    "toxicity": _REPO_ROOT / "configs/scenarios/section4_microstructure_model0_toxicity.yml",
 }
 DEFAULT_IMAGE_DIR = _REPO_ROOT / "paper/images"
 DEFAULT_TABLE_DIR = _REPO_ROOT / "paper/tables"

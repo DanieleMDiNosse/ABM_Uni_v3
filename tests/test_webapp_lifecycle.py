@@ -83,8 +83,8 @@ simulate:
 
 
 def _repo_runnable_scenario_paths() -> list[Path]:
-    """Return current top-level repository scenarios intended for webapp loading."""
-    scenarios_dir = Path("abm_results/scenarios")
+    """Return current repository scenarios intended for webapp loading."""
+    scenarios_dir = Path("configs/scenarios")
     return sorted(
         p
         for p in [*scenarios_dir.glob("*.yml"), *scenarios_dir.glob("*.yaml")]
@@ -357,6 +357,32 @@ class TestConfigValidation:
         assert ok, f"Expected valid, got error: {err}"
         assert err == ""
 
+    def test_linear_asymmetric_fee_config_accepted(self) -> None:
+        from abm_webapp.config import validate_scenario
+
+        yaml_text = """
+fee_mode: linear_asymmetric
+simulate:
+  fee_mode: linear_asymmetric
+  T: 100
+  seed: 1
+  block_time: 5
+  cex_mu: 0.0
+  cex_sigma: 0.0001
+  f0: 0.003
+  f_min: 0.0001
+  f_max: 0.01
+  fee_use_ewma: true
+  asymmetric_fee_slope: 0.5
+"""
+        result, err = validate_scenario(yaml_text)
+
+        assert err == ""
+        assert result is not None
+        assert result["simulate"]["fee_mode"] == "linear_asymmetric"
+        assert result["simulate"]["fee_use_ewma"] is True
+        assert result["simulate"]["asymmetric_fee_slope"] == 0.5
+
     def test_oversized_yaml_rejected(self) -> None:
         from abm_webapp.config import safe_load_yaml
 
@@ -574,7 +600,7 @@ class TestStatusTransitions:
         assert "single-run" in notice
         assert "multi-run" in notice
         assert "paper" in notice
-        assert {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma"}.issubset(
+        assert {"static", "volatility_cex", "volatility_dex", "toxicity", "lvr_fee_ewma", "linear_asymmetric"}.issubset(
             set(FEE_SCHEDULE_PRESETS)
         )
 
@@ -587,6 +613,17 @@ class TestStatusTransitions:
         data = yaml.safe_load(updated)
         assert data["fee_mode"] == "toxicity"
         assert data["simulate"]["fee_mode"] == "toxicity"
+
+    def test_apply_linear_asymmetric_preset_adds_default_slope(self) -> None:
+        from abm_webapp.app import _apply_fee_schedule_preset
+
+        updated, err = _apply_fee_schedule_preset(_MINIMAL_YAML, "linear_asymmetric")
+
+        assert err == ""
+        data = yaml.safe_load(updated)
+        assert data["fee_mode"] == "linear_asymmetric"
+        assert data["simulate"]["fee_mode"] == "linear_asymmetric"
+        assert data["simulate"]["asymmetric_fee_slope"] > 0.0
 
     def test_apply_fee_schedule_preset_rejects_unknown_schedule(self) -> None:
         from abm_webapp.app import _apply_fee_schedule_preset
@@ -663,6 +700,13 @@ class TestMigration:
         assert status.run_id == "old_run"
         assert status.pid is None  # was not set in V1
         assert status.heartbeat_at is None
+
+        conn3 = _connect_sqlite(db_path)
+        try:
+            metric_cols = {row[1] for row in conn3.execute("PRAGMA table_info(metrics);").fetchall()}
+        finally:
+            conn3.close()
+        assert {"fee_x_to_y", "fee_y_to_x"}.issubset(metric_cols)
 
         # Verify schema version was set
         assert read_schema_version(db_path) == SCHEMA_VERSION

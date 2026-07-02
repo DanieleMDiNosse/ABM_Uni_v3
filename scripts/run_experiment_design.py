@@ -886,7 +886,7 @@ def main() -> None:
     Examples
     --------
     - Preview the design:
-      `python -m scripts.run_experiment_design --experiment abm_results/experiments/example.yml --dry-run`
+      `python -m scripts.run_experiment_design --experiment configs/experiments/example_lhs_screening.yml --dry-run`
     """
     parser = argparse.ArgumentParser(description="Run an experiment design and cache point summaries to CSV.")
     parser.add_argument("--experiment", type=Path, required=True, help="Experiment YAML file.")

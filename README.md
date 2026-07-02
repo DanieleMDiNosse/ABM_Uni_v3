@@ -7,10 +7,10 @@ Agent-Based Model (ABM) simulator for a Uniswap v3 style pool (simulation engine
 ```bash
 conda env create -f environment.yml
 conda activate main
-python -m scripts.run --config abm_results/scenarios/test.yml
+python -m scripts.run --config configs/scenarios/section4_microstructure_model0_static.yml
 ```
 
-Outputs are written under `abm_results/scenarios/<scenario_name>/`.
+Run config YAMLs live under `configs/`; outputs are written under `abm_results/scenarios/<scenario_name>/`.
 
 ## Tests
 

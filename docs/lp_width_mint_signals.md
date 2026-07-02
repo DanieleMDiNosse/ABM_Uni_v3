@@ -404,9 +404,9 @@ For each width signal policy:
 Run the existing baseline scenario:
 
 1. Activate env: `conda activate main`
-2. Run: `python -m scripts.run --config abm_results/scenarios/test.yml`
+2. Run: `python -m scripts.run --config configs/scenarios/section4_microstructure_model0_static.yml`
 
-Outputs land under `abm_results/scenarios/test/` (a new run subfolder), including LP PnL plots and the standard price/fee diagnostics. The narrow-LP width path is currently used for plotting and logging, but `simulate()` does not persist a raw `w_ticks_series` in its returned output dict.
+Outputs land under `abm_results/scenarios/<scenario_name>/` (a new run subfolder), including LP PnL plots and the standard price/fee diagnostics. The narrow-LP width path is currently used for plotting and logging, but `simulate()` does not persist a raw `w_ticks_series` in its returned output dict.
 
 ### Next step (implementation sketch, not done here)
 Add a config switch like `active_lp_width_mode: {volatility_cex, net_edge, vpin, markout, ...}` and implement each signal as a separate function to keep comparisons honest.

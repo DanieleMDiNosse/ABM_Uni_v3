@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SCHEMA_VERSION: int = 2  # bump when DDL changes
+SCHEMA_VERSION: int = 3  # bump when DDL changes
 _RETRY_ATTEMPTS: int = 5
 _RETRY_DELAY_S: float = 0.15
 HEARTBEAT_STALE_SECONDS: float = 60.0  # worker must update more often than this
@@ -141,6 +141,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             sr_cex_exec_count INTEGER,
             sr_dex_exec_count INTEGER,
             fee REAL,
+            fee_x_to_y REAL,
+            fee_y_to_x REAL,
             fee_sigma REAL,
             fee_basis_ticks REAL,
             fee_signal REAL
@@ -177,6 +179,8 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         "noise_exec_count INTEGER",
         "sr_cex_exec_count INTEGER",
         "sr_dex_exec_count INTEGER",
+        "fee_x_to_y REAL",
+        "fee_y_to_x REAL",
         "fee_sigma REAL",
         "fee_basis_ticks REAL",
         "fee_signal REAL",
@@ -379,6 +383,8 @@ class SQLiteLiveSink:
                 int(row.get("sr_cex_exec_count")) if row.get("sr_cex_exec_count") is not None else None,
                 int(row.get("sr_dex_exec_count")) if row.get("sr_dex_exec_count") is not None else None,
                 float(row.get("fee")) if row.get("fee") is not None else None,
+                float(row.get("fee_x_to_y")) if row.get("fee_x_to_y") is not None else None,
+                float(row.get("fee_y_to_x")) if row.get("fee_y_to_x") is not None else None,
                 float(row.get("fee_sigma")) if row.get("fee_sigma") is not None else None,
                 float(row.get("fee_basis_ticks")) if row.get("fee_basis_ticks") is not None else None,
                 float(row.get("fee_signal")) if row.get("fee_signal") is not None else None,
@@ -429,10 +435,10 @@ class SQLiteLiveSink:
                             dex_notional_y, d_lvr_total, d_fee_value_total,
                             trader_exec_count, arb_exec_count, sr_exec_count,
                             noise_exec_count, sr_cex_exec_count, sr_dex_exec_count,
-                            fee,
+                            fee, fee_x_to_y, fee_y_to_x,
                             fee_sigma, fee_basis_ticks, fee_signal
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         self._pending_metrics,
                     )
@@ -562,7 +568,8 @@ def read_metrics(
                 {_sel("trader_exec_count")}, {_sel("arb_exec_count")},
                 {_sel("sr_exec_count")}, {_sel("noise_exec_count")},
                 {_sel("sr_cex_exec_count")}, {_sel("sr_dex_exec_count")},
-                fee, {_sel("fee_sigma")}, {_sel("fee_basis_ticks")}, {_sel("fee_signal")}
+                fee, {_sel("fee_x_to_y")}, {_sel("fee_y_to_x")},
+                {_sel("fee_sigma")}, {_sel("fee_basis_ticks")}, {_sel("fee_signal")}
             FROM metrics
             {where}
         """
@@ -618,9 +625,11 @@ def read_metrics(
                     sr_cex_exec_count=r[23],
                     sr_dex_exec_count=r[24],
                     fee=r[25],
-                    fee_sigma=r[26],
-                    fee_basis_ticks=r[27],
-                    fee_signal=r[28],
+                    fee_x_to_y=r[26],
+                    fee_y_to_x=r[27],
+                    fee_sigma=r[28],
+                    fee_basis_ticks=r[29],
+                    fee_signal=r[30],
                 )
             )
         return out

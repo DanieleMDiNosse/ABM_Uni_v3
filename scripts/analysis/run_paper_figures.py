@@ -12,7 +12,7 @@ Usage
 ::
 
     python -m scripts.analysis.run_paper_figures \
-        --config abm_results/scenarios/section4_microstructure_model0_static.yml \
+        --config configs/scenarios/section4_microstructure_model0_static.yml \
         --runs 100 --max-workers 4 \
         --image-dir paper/images --table-dir paper/tables
 
@@ -58,13 +58,14 @@ MODELS: Dict[str, Dict[str, Any]] = {
     "Model2": {"passive_lp_share": 0.5, "p_jit": 1},
 }
 
-FEE_MODES = ("static", "toxicity", "volatility_dex", "volatility_cex")
+FEE_MODES = ("static", "toxicity", "volatility_dex", "volatility_cex", "linear_asymmetric")
 
 BLOCKSIZE_CONFIG_NAMES = {
     "static": "model2_static",
     "toxicity": "model2_tox",
     "volatility_cex": "model2_vol_cex",
     "volatility_dex": "model2_vol_dex",
+    "linear_asymmetric": "model2_linear_asym",
 }
 
 
@@ -80,12 +81,16 @@ def _scenario_params(
     base_params: Dict[str, Any],
     model_name: str,
     fee_mode: str,
+    *,
+    fee_use_ewma: bool | None = None,
 ) -> Dict[str, Any]:
     """Build the simulation parameter dict for one (model, fee_mode) scenario."""
     params = dict(base_params)
     model_overrides = MODELS[model_name]
     params.update(model_overrides)
     params["fee_mode"] = fee_mode
+    if fee_use_ewma is not None:
+        params["fee_use_ewma"] = bool(fee_use_ewma)
     return params
 
 
@@ -95,7 +100,29 @@ def _run_command(cmd: List[str]) -> None:
     subprocess.run(cmd, cwd=_REPO_ROOT, check=True)
 
 
-def _write_model2_blocksize_config(base_config_path: Path, fee_mode: str, output_dir: Path) -> Path:
+def _write_fee_override_config(base_config_path: Path, output_path: Path, *, fee_use_ewma: bool) -> Path:
+    """Write a scenario YAML copy with an explicit EWMA fee-controller override."""
+    data = yaml.safe_load(base_config_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("simulate"), dict):
+        raise ValueError(f"Expected {base_config_path} to contain a mapping with a simulate block")
+
+    data = dict(data)
+    simulate_block = dict(data["simulate"])
+    simulate_block["fee_use_ewma"] = bool(fee_use_ewma)
+    data["simulate"] = simulate_block
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return output_path
+
+
+def _write_model2_blocksize_config(
+    base_config_path: Path,
+    fee_mode: str,
+    output_dir: Path,
+    *,
+    fee_use_ewma: bool | None = None,
+) -> Path:
     """Write a generated Model 2 scenario YAML for one block-size sweep."""
     data = yaml.safe_load(base_config_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("simulate"), dict):
@@ -112,6 +139,8 @@ def _write_model2_blocksize_config(base_config_path: Path, fee_mode: str, output
             "p_jit": 1,
         }
     )
+    if fee_use_ewma is not None:
+        simulate_block["fee_use_ewma"] = bool(fee_use_ewma)
     data["fee_mode"] = fee_mode
     data["simulate"] = simulate_block
 
@@ -189,6 +218,11 @@ def main() -> None:
     p.add_argument("--skip-microstructure", action="store_true", help="Skip fresh microstructure diagnostic runs.")
     p.add_argument("--skip-cross-scenario", action="store_true", help="Skip fresh cross-scenario outcome runs.")
     p.add_argument("--skip-blocksize", action="store_true", help="Skip fresh Model 2 block-size runs.")
+    p.add_argument(
+        "--no-ewma",
+        action="store_true",
+        help="Disable EWMA smoothing for all generated fee-schedule simulations and configs.",
+    )
     p.add_argument("--blocksize-runs", type=int, default=50)
     p.add_argument("--blocksize-seed-base", type=int, default=10)
     p.add_argument("--blocksize-seed-step", type=int, default=1)
@@ -201,6 +235,9 @@ def main() -> None:
     config_path = args.config.expanduser().resolve()
     _, base_params = load_simulation_parameters(config_path, simulate_func=simulate)
     base_params = dict(base_params)
+    fee_use_ewma_override = False if args.no_ewma else None
+    if args.no_ewma:
+        base_params["fee_use_ewma"] = False
     skip = args.skip if args.skip is not None else int(base_params.get("skip_step", 0))
 
     out_dir = args.output_dir.expanduser().resolve()
@@ -216,11 +253,29 @@ def main() -> None:
     # -----------------------------------------------------------------------
     if not args.skip_microstructure:
         print("[run_paper_figures] Phase 0: running microstructure diagnostics ...")
+        microstructure_static_config = _REPO_ROOT / "configs/scenarios/section4_microstructure_model0_static.yml"
+        microstructure_toxicity_config = _REPO_ROOT / "configs/scenarios/section4_microstructure_model0_toxicity.yml"
+        if args.no_ewma:
+            generated_config_dir = _REPO_ROOT / "configs/paper/run_paper_figures_no_ewma_configs"
+            microstructure_static_config = _write_fee_override_config(
+                microstructure_static_config,
+                generated_config_dir / "section4_microstructure_model0_static_no_ewma.yml",
+                fee_use_ewma=False,
+            )
+            microstructure_toxicity_config = _write_fee_override_config(
+                microstructure_toxicity_config,
+                generated_config_dir / "section4_microstructure_model0_toxicity_no_ewma.yml",
+                fee_use_ewma=False,
+            )
         _run_command(
             [
                 sys.executable,
                 "-m",
                 "scripts.analysis.microstructure_fee_diagnostics",
+                "--static-config",
+                str(microstructure_static_config),
+                "--toxicity-config",
+                str(microstructure_toxicity_config),
                 "--image-dir",
                 str(image_dir),
                 "--table-dir",
@@ -257,7 +312,12 @@ def main() -> None:
         for model in args.models:
             for fee_mode in args.fee_modes:
                 label = _label(model, fee_mode)
-                params = _scenario_params(base_params, model, fee_mode)
+                params = _scenario_params(
+                    base_params,
+                    model,
+                    fee_mode,
+                    fee_use_ewma=fee_use_ewma_override,
+                )
                 print(f"  [{model}, {fee_mode}] running {args.runs} seeds ...")
                 with tempfile.TemporaryDirectory(prefix=f"abm_paper_{model}_{fee_mode}_") as tmp_dir:
                     artifact_dir = Path(tmp_dir)
@@ -311,10 +371,15 @@ def main() -> None:
     # -----------------------------------------------------------------------
     if not args.skip_blocksize:
         print("[run_paper_figures] Phase 3: running Model 2 block-size sweeps ...")
-        generated_config_dir = table_dir / "run_paper_figures_blocksize_configs"
+        generated_config_dir = _REPO_ROOT / "configs/paper/run_paper_figures_blocksize_configs"
         blocksize_dirs: Dict[str, Path] = {}
         for fee_mode in FEE_MODES:
-            cfg = _write_model2_blocksize_config(config_path, fee_mode, generated_config_dir)
+            cfg = _write_model2_blocksize_config(
+                config_path,
+                fee_mode,
+                generated_config_dir,
+                fee_use_ewma=fee_use_ewma_override,
+            )
             _run_command(
                 [
                     sys.executable,

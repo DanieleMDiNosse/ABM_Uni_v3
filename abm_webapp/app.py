@@ -45,7 +45,9 @@ FEE_SCHEDULE_PRESETS = {
     "volatility_dex": "DEX volatility fee",
     "toxicity": "Toxicity / basis fee",
     "lvr_fee_ewma": "LVR EWMA fee",
+    "linear_asymmetric": "Linear asymmetric fee",
 }
+LINEAR_ASYMMETRIC_DEFAULT_SLOPE = 0.5
 
 
 def _env_optional_positive_int(name: str, default: Optional[int]) -> Optional[int]:
@@ -488,6 +490,8 @@ def _apply_fee_schedule_preset(config_yaml: str, fee_mode: str) -> Tuple[str, st
     updated_simulate = dict(simulate_block)
     updated["fee_mode"] = fee_mode_s
     updated_simulate["fee_mode"] = fee_mode_s
+    if fee_mode_s == "linear_asymmetric" and "asymmetric_fee_slope" not in updated_simulate:
+        updated_simulate["asymmetric_fee_slope"] = LINEAR_ASYMMETRIC_DEFAULT_SLOPE
     updated["simulate"] = updated_simulate
     return yaml.safe_dump(updated, sort_keys=False), ""
 
@@ -934,6 +938,8 @@ def _build_fee_figure(rows: List[Dict[str, Any]], *, fee_mode: str) -> go.Figure
     """
     steps = [r["t"] for r in rows]
     fee_series = [r.get("fee") for r in rows]
+    fee_x_to_y_series = [r.get("fee_x_to_y", r.get("fee")) for r in rows]
+    fee_y_to_x_series = [r.get("fee_y_to_x", r.get("fee")) for r in rows]
     fee_sigma_series = [r.get("fee_sigma") for r in rows]
     fee_basis_ticks_series = [r.get("fee_basis_ticks") for r in rows]
     fee_signal_series = [r.get("fee_signal") for r in rows]
@@ -947,6 +953,9 @@ def _build_fee_figure(rows: List[Dict[str, Any]], *, fee_mode: str) -> go.Figure
     elif fee_mode == "lvr_fee_ewma":
         secondary_vals_full = fee_signal_series
         secondary_label = "EWMA(dLVR - dFees) / notional"
+    elif fee_mode == "linear_asymmetric":
+        secondary_vals_full = fee_signal_series
+        secondary_label = "log(DEX/CEX)"
     else:
         secondary_vals_full = fee_signal_series
         secondary_label = "Controller signal"
@@ -954,27 +963,47 @@ def _build_fee_figure(rows: List[Dict[str, Any]], *, fee_mode: str) -> go.Figure
     if len(steps) > 1:
         steps_fee_plot = steps[:-1]
         fee_plot = fee_series[1:]
+        fee_x_to_y_plot = fee_x_to_y_series[1:]
+        fee_y_to_x_plot = fee_y_to_x_series[1:]
         secondary_vals_plot = secondary_vals_full[:-1]
         fee_label = "Fee (applies next step; aligned to signal)"
     else:
         steps_fee_plot = steps
         fee_plot = fee_series
+        fee_x_to_y_plot = fee_x_to_y_series
+        fee_y_to_x_plot = fee_y_to_x_series
         secondary_vals_plot = secondary_vals_full
         fee_label = "Fee"
-    steps_fee_plot, fee_plot, secondary_vals_plot = _downsample_xy(
+    steps_fee_plot, fee_plot, fee_x_to_y_plot, fee_y_to_x_plot, secondary_vals_plot = _downsample_xy(
         steps_fee_plot,
         fee_plot,
+        fee_x_to_y_plot,
+        fee_y_to_x_plot,
         secondary_vals_plot,
         max_points=MAX_TIMESERIES_POINTS,
     )
 
     fig = make_subplots(rows=2, cols=1, specs=[[{"secondary_y": True}], [{"secondary_y": False}]])
-    fig.add_trace(
-        go.Scatter(x=steps_fee_plot, y=fee_plot, mode="lines", name=fee_label, line=dict(width=1.9, color=CLR_FEE)),
-        row=1,
-        col=1,
-        secondary_y=False,
-    )
+    if fee_mode == "linear_asymmetric":
+        fig.add_trace(
+            go.Scatter(x=steps_fee_plot, y=fee_x_to_y_plot, mode="lines", name="X→Y fee", line=dict(width=1.9, color=CLR_FEE)),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
+        fig.add_trace(
+            go.Scatter(x=steps_fee_plot, y=fee_y_to_x_plot, mode="lines", name="Y→X fee", line=dict(width=1.9, color=CLR_LVR)),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
+    else:
+        fig.add_trace(
+            go.Scatter(x=steps_fee_plot, y=fee_plot, mode="lines", name=fee_label, line=dict(width=1.9, color=CLR_FEE)),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
     fig.add_trace(
         go.Scatter(
             x=steps_fee_plot,
@@ -988,8 +1017,9 @@ def _build_fee_figure(rows: List[Dict[str, Any]], *, fee_mode: str) -> go.Figure
         secondary_y=True,
     )
 
+    fee_distribution_source = fee_x_to_y_series + fee_y_to_x_series if fee_mode == "linear_asymmetric" else fee_series
     fee_vals = _downsample_series(
-        _finite([_to_float(v) for v in fee_series]),
+        _finite([_to_float(v) for v in fee_distribution_source]),
         max_points=MAX_DISTRIBUTION_POINTS,
     )
     fig.add_trace(
@@ -1576,13 +1606,13 @@ def _build_dash_app():
     except Exception as exc:
         print(f"[webapp] Warning: crash recovery scan failed: {exc}")
 
-    scenarios_dir = Path("abm_results") / "scenarios"
+    scenarios_dir = Path("configs") / "scenarios"
     scenario_files, rejected_scenarios = _partition_scenario_files(scenarios_dir)
     for scenario_name, reason in rejected_scenarios.items():
         first_line = reason.splitlines()[0] if reason else "Unknown validation error."
         print(f"[webapp] Ignoring non-runnable scenario file {scenario_name}: {first_line}")
     scenario_options = [{"label": p.name, "value": str(p)} for p in scenario_files]
-    default_scenario = next((p for p in scenario_files if p.name == "test.yml"), None)
+    default_scenario = next((p for p in scenario_files if p.name == "section4_microstructure_model0_static.yml"), None)
     if default_scenario is None and scenario_files:
         default_scenario = scenario_files[0]
     default_yaml = _load_text(default_scenario) if default_scenario is not None else ""

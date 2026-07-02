@@ -77,6 +77,16 @@ SCHEDULES: Dict[str, Dict[str, Any]] = {
             "dLVR_summary.csv"
         ),
     },
+    "linear_asymmetric": {
+        "label": "Linear asymmetric",
+        "color": "#CC79A7",
+        "dash": "longdash",
+        "source_csv": Path(
+            "model2_linear_asym/lvr_vs_blocksize/"
+            "linear_asymmetric_flow_model2_linear_asym_runs50_B2to16_seed10_step1/"
+            "dLVR_summary.csv"
+        ),
+    },
 }
 
 DEFAULT_STYLE: Dict[str, Any] = {

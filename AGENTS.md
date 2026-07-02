@@ -8,7 +8,7 @@ This repository is a scientific instrument: changes must make the simulator **mo
 
 ## Repo map (quick orientation)
 - `scripts/run.py` is the main simulation runner; simulations are configured via YAML scenario files.
-- Example scenarios live under `abm_results/scenarios/` (e.g. `abm_results/scenarios/test.yml`).
+- Example scenario configs live under `configs/scenarios/` (e.g. `configs/scenarios/section4_microstructure_model0_static.yml`).
 - Per-scenario outputs (plots/logs/results) are written under `abm_results/scenarios/<scenario_name>/`.
 - Core mechanics:
   - v3 pool math: `core/uniswapv3_pool.py`
@@ -38,10 +38,10 @@ This repository is a scientific instrument: changes must make the simulator **mo
 
 ## How to run (local workflow)
 - Activate conda env: `conda activate main`
-- Run minimal scenario (example): `python -m scripts.run --config abm_results/scenarios/test.yml`
+- Run a scenario (example): `python -m scripts.run --config configs/scenarios/section4_microstructure_model0_static.yml`
 - Run tests: `pytest -q`
 
-If you add new CLI flags or scenario keys, update `docs/` and ensure `test.yml` stays runnable.
+If you add new CLI flags or scenario keys, update `docs/` and ensure at least one `configs/scenarios/*.yml` example stays runnable.
 
 ## What to do when asked to change something
 Always follow this sequence:

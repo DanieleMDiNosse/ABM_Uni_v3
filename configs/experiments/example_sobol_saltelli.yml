@@ -1,10 +1,10 @@
 version: 1
 name: example_sobol_saltelli
 
-base_config: ../scenarios/test.yml
+base_config: ../scenarios/section4_microstructure_model0_static.yml
 
 outputs:
-  root: ../experiments_runs
+  root: ../../abm_results/experiments_runs
   tag: example_sobol_saltelli
   keep_worker_tmp: false
 

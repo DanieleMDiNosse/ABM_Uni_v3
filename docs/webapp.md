@@ -58,7 +58,7 @@ This keeps the UI process separate from the simulation process and makes failure
 
 ## Validation And Run Startup
 
-On startup, the app scans `abm_results/scenarios/` and only lists YAML files
+On startup, the app scans `configs/scenarios/` and only lists YAML files
 that validate against the current `scripts.run.simulate()` interface. Auxiliary
 sweep/dashboard YAMLs are ignored so the default dropdown always points at a
 runnable scenario.

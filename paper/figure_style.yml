@@ -57,6 +57,10 @@ paper_figure_style:
       label: "Volatility (DEX)"
       color: "#009E73"
       dash: dashdot
+    linear_asymmetric:
+      label: "Linear asymmetric"
+      color: "#CC79A7"
+      dash: longdash
 
 figures:
   representative_static_price:

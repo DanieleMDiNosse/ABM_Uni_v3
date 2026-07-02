@@ -8,7 +8,7 @@ block and the fees earned in that block change?*
 
 How it works
 ------------
-1) Load a base scenario YAML (e.g., `abm_results/scenarios/test.yml`).
+1) Load a base scenario YAML (e.g., `configs/scenarios/section4_microstructure_model0_static.yml`).
 2) Build a grid of block sizes B (via `block_time`; default 2..16 inclusive),
    optionally repeated across a list of `fee_mode` values.
 3) For each B, run `--runs` simulations with different seeds (optionally in parallel via
@@ -49,14 +49,14 @@ Example
 -------
   conda activate main
   # Default: medians only
-  python -m scripts.LVR_vs_blocksize --config abm_results/scenarios/test.yml --runs 50 --fee-definition flow
+  python -m scripts.LVR_vs_blocksize --config configs/scenarios/section4_microstructure_model0_static.yml --runs 50 --fee-definition flow
 
   # Overlay violin distributions and means
-  python -m scripts.LVR_vs_blocksize --config abm_results/scenarios/test.yml --runs 50 --fee-definition flow \\
+  python -m scripts.LVR_vs_blocksize --config configs/scenarios/section4_microstructure_model0_static.yml --runs 50 --fee-definition flow \\
     --plot-violin-plot --plot-means --plot-medians
 
   # Sweep multiple fee modes with the same B/seed grid
-  python -m scripts.LVR_vs_blocksize --config abm_results/scenarios/test.yml --runs 50 \\
+  python -m scripts.LVR_vs_blocksize --config configs/scenarios/section4_microstructure_model0_static.yml --runs 50 \\
     --fee-modes static toxicity
 """
 
@@ -1191,8 +1191,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--config",
         type=Path,
-        default=Path("abm_results/scenarios/test.yml"),
-        help="Path to the YAML scenario config. Default: abm_results/scenarios/test.yml",
+        default=Path("configs/scenarios/section4_microstructure_model0_static.yml"),
+        help="Path to the YAML scenario config. Default: configs/scenarios/section4_microstructure_model0_static.yml",
     )
     p.add_argument("--runs", type=int, default=10, help="Number of runs/seeds per block size. Default: 10.")
     p.add_argument("--block-min", type=int, default=2, help="Minimum block_time (inclusive). Default: 2.")
