@@ -59,6 +59,7 @@ MODELS: Dict[str, Dict[str, Any]] = {
 }
 
 FEE_MODES = ("static", "toxicity", "volatility_dex", "volatility_cex", "linear_asymmetric")
+LINEAR_ASYMMETRIC_DEFAULT_SLOPE = 0.5
 
 BLOCKSIZE_CONFIG_NAMES = {
     "static": "model2_static",
@@ -77,18 +78,31 @@ def _label(model: str, fee_mode: str) -> str:
     return f"{model} — {fee_mode}"
 
 
+def _apply_linear_asymmetric_defaults(params: Dict[str, Any], fee_mode: str, slope: float | None) -> None:
+    """Ensure paper linear-asymmetric runs are not silently equivalent to static fees."""
+    if fee_mode != "linear_asymmetric":
+        return
+    if slope is not None:
+        params["asymmetric_fee_slope"] = float(slope)
+        return
+    if "asymmetric_fee_slope" not in params:
+        params["asymmetric_fee_slope"] = LINEAR_ASYMMETRIC_DEFAULT_SLOPE
+
+
 def _scenario_params(
     base_params: Dict[str, Any],
     model_name: str,
     fee_mode: str,
     *,
     fee_use_ewma: bool | None = None,
+    linear_asymmetric_slope: float | None = None,
 ) -> Dict[str, Any]:
     """Build the simulation parameter dict for one (model, fee_mode) scenario."""
     params = dict(base_params)
     model_overrides = MODELS[model_name]
     params.update(model_overrides)
     params["fee_mode"] = fee_mode
+    _apply_linear_asymmetric_defaults(params, fee_mode, linear_asymmetric_slope)
     if fee_use_ewma is not None:
         params["fee_use_ewma"] = bool(fee_use_ewma)
     return params
@@ -122,6 +136,7 @@ def _write_model2_blocksize_config(
     output_dir: Path,
     *,
     fee_use_ewma: bool | None = None,
+    linear_asymmetric_slope: float | None = None,
 ) -> Path:
     """Write a generated Model 2 scenario YAML for one block-size sweep."""
     data = yaml.safe_load(base_config_path.read_text(encoding="utf-8"))
@@ -139,6 +154,7 @@ def _write_model2_blocksize_config(
             "p_jit": 1,
         }
     )
+    _apply_linear_asymmetric_defaults(simulate_block, fee_mode, linear_asymmetric_slope)
     if fee_use_ewma is not None:
         simulate_block["fee_use_ewma"] = bool(fee_use_ewma)
     data["fee_mode"] = fee_mode
@@ -222,6 +238,16 @@ def main() -> None:
         "--no-ewma",
         action="store_true",
         help="Disable EWMA smoothing for all generated fee-schedule simulations and configs.",
+    )
+    p.add_argument(
+        "--linear-asymmetric-slope",
+        type=float,
+        default=None,
+        help=(
+            "Slope used when generating linear_asymmetric paper scenarios. If omitted, "
+            f"uses an explicit nonzero default ({LINEAR_ASYMMETRIC_DEFAULT_SLOPE}) "
+            "when the base config does not already define asymmetric_fee_slope."
+        ),
     )
     p.add_argument("--blocksize-runs", type=int, default=50)
     p.add_argument("--blocksize-seed-base", type=int, default=10)
@@ -317,6 +343,7 @@ def main() -> None:
                     model,
                     fee_mode,
                     fee_use_ewma=fee_use_ewma_override,
+                    linear_asymmetric_slope=args.linear_asymmetric_slope,
                 )
                 print(f"  [{model}, {fee_mode}] running {args.runs} seeds ...")
                 with tempfile.TemporaryDirectory(prefix=f"abm_paper_{model}_{fee_mode}_") as tmp_dir:
@@ -379,6 +406,7 @@ def main() -> None:
                 fee_mode,
                 generated_config_dir,
                 fee_use_ewma=fee_use_ewma_override,
+                linear_asymmetric_slope=args.linear_asymmetric_slope,
             )
             _run_command(
                 [

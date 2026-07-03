@@ -37,6 +37,27 @@ def test_scenario_params_can_disable_fee_ewma_for_cross_scenario_runs() -> None:
     assert params["fee_use_ewma"] is False
 
 
+def test_scenario_params_give_linear_asymmetric_a_nonzero_default_slope() -> None:
+    params = run_paper_figures._scenario_params(
+        {"fee_use_ewma": True, "other": 1},
+        "Model1",
+        "linear_asymmetric",
+    )
+
+    assert params["fee_mode"] == "linear_asymmetric"
+    assert params["asymmetric_fee_slope"] > 0.0
+
+
+def test_scenario_params_preserve_explicit_linear_asymmetric_slope() -> None:
+    params = run_paper_figures._scenario_params(
+        {"asymmetric_fee_slope": 0.25},
+        "Model1",
+        "linear_asymmetric",
+    )
+
+    assert params["asymmetric_fee_slope"] == 0.25
+
+
 def test_model2_blocksize_config_can_disable_fee_ewma(tmp_path: Path) -> None:
     base_config = tmp_path / "base.yml"
     _write_base_config(base_config)
@@ -55,6 +76,24 @@ def test_model2_blocksize_config_can_disable_fee_ewma(tmp_path: Path) -> None:
     assert data["simulate"]["passive_lp_share"] == 0.5
     assert data["simulate"]["p_jit"] == 1
     assert data["simulate"]["fee_use_ewma"] is False
+    assert data["simulate"]["asymmetric_fee_slope"] > 0.0
+
+
+def test_model2_blocksize_config_preserves_explicit_linear_asymmetric_slope(tmp_path: Path) -> None:
+    base_config = tmp_path / "base.yml"
+    _write_base_config(base_config)
+    data = yaml.safe_load(base_config.read_text(encoding="utf-8"))
+    data["simulate"]["asymmetric_fee_slope"] = 0.25
+    base_config.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    generated = run_paper_figures._write_model2_blocksize_config(
+        base_config,
+        "linear_asymmetric",
+        tmp_path / "generated",
+    )
+
+    data = yaml.safe_load(generated.read_text(encoding="utf-8"))
+    assert data["simulate"]["asymmetric_fee_slope"] == 0.25
 
 
 def test_fee_override_config_can_disable_ewma_for_microstructure_diagnostics(tmp_path: Path) -> None:
