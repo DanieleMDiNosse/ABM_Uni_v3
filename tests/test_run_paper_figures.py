@@ -39,7 +39,7 @@ def test_scenario_params_can_disable_fee_ewma_for_cross_scenario_runs() -> None:
 
 def test_scenario_params_give_linear_asymmetric_a_nonzero_default_slope() -> None:
     params = run_paper_figures._scenario_params(
-        {"fee_use_ewma": True, "other": 1},
+        {"fee_use_ewma": True, "other": 1, "asymmetric_fee_slope": 0.0},
         "Model1",
         "linear_asymmetric",
     )

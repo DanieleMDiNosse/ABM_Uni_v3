@@ -85,7 +85,8 @@ def _apply_linear_asymmetric_defaults(params: Dict[str, Any], fee_mode: str, slo
     if slope is not None:
         params["asymmetric_fee_slope"] = float(slope)
         return
-    if "asymmetric_fee_slope" not in params:
+    current_slope = params.get("asymmetric_fee_slope")
+    if current_slope is None or float(current_slope) <= 0.0:
         params["asymmetric_fee_slope"] = LINEAR_ASYMMETRIC_DEFAULT_SLOPE
 
 
